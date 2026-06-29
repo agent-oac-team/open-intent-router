@@ -123,6 +123,54 @@ describe("意图路由测试台", () => {
             },
           });
         }
+        if (url.endsWith("/api/v1/route") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body));
+          return json({
+            request_id: "req_plan",
+            session_id: body.session_id,
+            decision: {
+              status: "ok",
+              action: "reply",
+              target_agent_id: null,
+              confidence: 0.8,
+              reason: "multi intent",
+              message: "已生成计划。",
+            },
+            context: {
+              relation: "multi_task",
+              candidate_agent_ids: ["summarizer"],
+              evidence: [],
+            },
+            execution_policy: "require_confirmation",
+            next_action: {
+              type: "confirm_plan",
+              message: "请确认是否执行该计划。",
+              plan_id: "plan_1",
+            },
+            plan: {
+              plan_id: "plan_1",
+              session_id: body.session_id,
+              status: "pending",
+              current_step_id: "step_1",
+              execution_policy: "require_confirmation",
+              next_action: {
+                type: "confirm_plan",
+                message: "请确认是否执行该计划。",
+                plan_id: "plan_1",
+              },
+              steps: [
+                {
+                  step_id: "step_1",
+                  agent_id: "summarizer",
+                  description: "总结文本",
+                  status: "pending",
+                  depends_on: [],
+                  artifact_refs: [],
+                },
+              ],
+            },
+          });
+        }
         return json({});
       }),
     );
@@ -149,6 +197,18 @@ describe("意图路由测试台", () => {
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
 
     expect(screen.getByText("agent_chat 需要填写当前 Agent ID")).toBeInTheDocument();
+  });
+
+  it("有 plan 时不依赖 show_plan 也展示计划和下一步动作", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "只路由" }));
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+
+    expect(await screen.findByText("plan_1")).toBeInTheDocument();
+    expect(screen.getByText(/策略：require_confirmation/)).toBeInTheDocument();
+    expect(screen.getByText(/下一步：confirm_plan/)).toBeInTheDocument();
   });
 });
 

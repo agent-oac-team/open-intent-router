@@ -82,11 +82,24 @@ def route_response_schema_hint(candidate_agent_ids: list[str]) -> dict:
             "evidence": [],
             "metadata": {},
         },
+        "execution_policy": "return_plan_only|require_confirmation|auto_execute|host_managed|null",
+        "next_action": {
+            "type": "confirm_plan|open_ui|collect_input|wait_for_agent_event|none",
+            "message": "string",
+            "agent_id": "string|null",
+            "plan_id": "string|null",
+            "step_id": "string|null",
+            "route": "string|null",
+            "params": {},
+            "metadata": {},
+        },
         "plan": {
-            "plan_id": "string|null; required when action=show_plan, may be omitted and server will fill",
+            "plan_id": "string|null; required when plan is present, may be omitted and server will fill",
             "session_id": "string|null",
             "status": "pending|running|blocked|completed|failed|cancelled",
             "current_step_id": "string|null",
+            "execution_policy": "return_plan_only|require_confirmation|auto_execute|host_managed|null",
+            "next_action": "same shape as top-level next_action|null",
             "steps": [
                 {
                     "step_id": "string",
@@ -101,7 +114,9 @@ def route_response_schema_hint(candidate_agent_ids: list[str]) -> dict:
         "invocation": None,
         "rules": [
             "Single-agent requests should use open_agent or continue_agent and plan must be null.",
-            "Multi-intent or ordered requests such as 'first summarize, then create a task' must use action=show_plan, context.relation=multi_task, target_agent_id=null, invocation=null, and include plan.steps.",
+            "Multi-intent or ordered requests such as 'first summarize, then create a task' must set context.relation=multi_task, target_agent_id=null, invocation=null, and include plan.steps.",
+            "For multi-intent requests, plan presence is the primary contract. action=show_plan is accepted for compatibility but is not required.",
+            "If execution_policy=require_confirmation, include next_action.type=confirm_plan.",
             "Every plan step agent_id must be selected from candidate_agent_ids.",
             "Use dependency edges in depends_on when a later step needs the previous step output.",
         ],

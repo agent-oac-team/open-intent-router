@@ -46,6 +46,30 @@ class InvocationService:
         )
         return await self._invoke_definition(definition, invocation)
 
+    async def invoke_agent(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        user,
+        input: dict,
+        context: dict | None = None,
+        request_id: str | None = None,
+    ) -> AgentInvocationResult:
+        definition = await self.registry.get_definition(agent_id)
+        if definition is None:
+            raise InvocationError(f"Agent not found: {agent_id}")
+        invocation = AgentInvocation(
+            run_id=f"run_{uuid4().hex}",
+            request_id=request_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            user=user,
+            input=input,
+            context=context or {},
+        )
+        return await self._invoke_definition(definition, invocation)
+
     async def invoke_from_route(
         self,
         route_request: RouteRequest,
@@ -118,6 +142,8 @@ class InvocationService:
                 run_id=invocation.run_id,
                 session_id=invocation.session_id,
                 agent_id=definition.agent_id,
+                plan_id=_context_str(invocation.context, "plan_id"),
+                step_id=_context_str(invocation.context, "step_id"),
                 status=result.status,
                 output=result.output,
                 artifact_refs=[ref.model_dump() for ref in result.artifact_refs],
@@ -154,3 +180,23 @@ def _validate_output(definition, result: AgentInvocationResult) -> AgentInvocati
             }
         )
     return result
+
+
+def build_invocation_input(definition, text: str | None = None, values: dict | None = None) -> dict:
+    input_values = dict(values or {})
+    if text and "text" in definition.input_schema.required and not input_values.get("text"):
+        input_values["text"] = text
+    if text:
+        for key in definition.input_schema.properties:
+            if key not in input_values and key in {"query", "title"}:
+                input_values[key] = text
+    return input_values
+
+
+def missing_required_inputs(definition, invocation_input: dict) -> list[str]:
+    return [item for item in definition.input_schema.required if not invocation_input.get(item)]
+
+
+def _context_str(context: dict, key: str) -> str | None:
+    value = context.get(key)
+    return str(value) if value is not None else None

@@ -9,8 +9,10 @@ system_prompt: |
   5. 如果缺少调用目标 Agent 必需的信息，应返回 clarify。
   6. 如果 Evidence 中存在可信固定问题命中，应优先参考 Evidence，但仍必须遵守候选 Agent 范围。
   7. 不要编造不存在的 Agent、字段或执行结果。
-  8. 如果用户表达多个意图，例如“先总结，再创建任务”，必须返回 action=show_plan、context.relation=multi_task，并在 plan.steps 中给出每个步骤。
+  8. 如果用户表达多个意图，例如“先总结，再创建任务”，必须返回 context.relation=multi_task，并在 plan.steps 中给出每个步骤。
   9. 多步骤计划中的 step.agent_id 只能来自 candidate_agent_ids；后续步骤依赖前序结果时，在 depends_on 中引用前序 step_id。
+  10. 多意图的核心契约是返回 plan；action=show_plan 仅作为兼容语义，不是必需动作。
+  11. 如果需要用户或宿主应用确认后执行，返回 execution_policy=require_confirmation，并设置 next_action.type=confirm_plan。
 
   输出约束：
   - 只返回严格 JSON。
@@ -42,9 +44,11 @@ user_template: |
 
   多意图示例：
   - 用户说“先 summarize，再 task creator”时，应识别为多步骤任务。
-  - 返回 decision.action=show_plan。
+  - 返回 context.relation=multi_task，并包含 plan。
+  - decision.action 可以为 show_plan 兼容旧客户端，也可以为 reply；只要返回 plan，就表示有多步骤任务。
   - decision.target_agent_id 必须为 null。
   - plan.steps 至少包含 summarizer 和 task_creator 两步。
   - task_creator 步骤的 depends_on 应引用 summarizer 步骤。
+  - 如果不确定是否可自动执行，使用 execution_policy=require_confirmation。
 
   请只输出 JSON。

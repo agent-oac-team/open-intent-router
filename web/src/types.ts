@@ -140,6 +140,8 @@ export type RouteResponse = {
     message: string;
   };
   context: JsonRecord;
+  execution_policy?: string | null;
+  next_action?: JsonRecord | null;
   plan?: JsonRecord | null;
   invocation?: JsonRecord | null;
   error?: JsonRecord | null;
@@ -159,4 +161,16 @@ export type InvocationResult = {
 export type RouteAndInvokeResponse = {
   route: RouteResponse;
   result?: InvocationResult | null;
+};
+
+export type PlanExecutionResponse = {
+  plan: JsonRecord;
+  results: JsonRecord[];
+  next_action?: JsonRecord | null;
+};
+
+export type RouteAndExecuteResponse = {
+  route: RouteResponse;
+  results: JsonRecord[];
+  next_action?: JsonRecord | null;
 };

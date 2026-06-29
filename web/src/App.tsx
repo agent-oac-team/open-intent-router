@@ -429,6 +429,69 @@ function App() {
     }
   }
 
+  function buildPlanExecutionPayload(extraInput: JsonRecord = {}): JsonRecord {
+    return {
+      user: {
+        id: userId,
+        roles: splitList(roles),
+        groups: splitList(groups),
+        attributes: parseJsonRecord(userAttributes, "用户属性"),
+      },
+      input: {
+        text: message.trim() || "plan execution",
+        query: message.trim() || "plan execution",
+        title: message.trim() || "plan execution",
+        ...extraInput,
+      },
+      context: {
+        frontend_context: parseJsonRecord(frontendContext, "前端上下文"),
+      },
+      max_steps: 10,
+    };
+  }
+
+  async function runPlanAction(action: "confirm-and-execute" | "execute" | "resume" | "cancel") {
+    const targetPlanId = planId.trim() || String(plan?.plan_id || routeResponse?.plan?.plan_id || "");
+    if (!targetPlanId) {
+      setNotice("需要 plan_id。");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      if (action === "cancel") {
+        await api.planAction(targetPlanId, "cancel");
+        setPlan(await api.getPlan(targetPlanId));
+        return;
+      }
+      const payload = buildPlanExecutionPayload();
+      const response =
+        action === "confirm-and-execute"
+          ? await api.confirmAndExecutePlan(targetPlanId, payload)
+          : action === "resume"
+            ? await api.resumePlan(targetPlanId, payload)
+            : await api.executePlan(targetPlanId, payload);
+      setPlan(response.plan);
+      if (response.results[0]) {
+        const first = response.results[0];
+        setInvokeResponse({
+          run_id: String(first.run_id || ""),
+          agent_id: String(first.agent_id || ""),
+          status: String(first.status || ""),
+          message: String(first.message || ""),
+          output: (first.output as JsonRecord | null) || null,
+          artifact_refs: Array.isArray(first.artifact_refs) ? (first.artifact_refs as JsonRecord[]) : [],
+          usage: {},
+          error: (first.error as JsonRecord | null) || null,
+        });
+      }
+    } catch (error) {
+      setNotice(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submitEvent() {
     try {
       const payload = parseJsonRecord(eventJson, "事件 JSON");
@@ -536,6 +599,7 @@ function App() {
             setEventJson={setEventJson}
             eventResponse={eventResponse}
             onRefreshPlan={refreshPlan}
+            onPlanAction={runPlanAction}
             onSubmitEvent={submitEvent}
           />
         </aside>
@@ -991,6 +1055,16 @@ function ResultPanel({
       {routeResponse?.context?.evidence ? (
         <JsonBlock title="命中证据" value={routeResponse.context.evidence} />
       ) : null}
+      {routeResponse?.execution_policy ? (
+        <JsonBlock
+          title="执行策略"
+          value={{
+            execution_policy: routeResponse.execution_policy,
+            next_action: routeResponse.next_action || null,
+          }}
+          defaultOpen={false}
+        />
+      ) : null}
       {routeResponse?.invocation ? <JsonBlock title="调用预览" value={routeResponse.invocation} /> : null}
       {uiHandoff ? <JsonBlock title="界面跳转" value={uiHandoff} /> : null}
       {invokeResponse ? <JsonBlock title="调用结果" value={invokeResponse} /> : null}
@@ -1050,6 +1124,7 @@ function PlanPanel({
   setEventJson,
   eventResponse,
   onRefreshPlan,
+  onPlanAction,
   onSubmitEvent,
 }: {
   plan: JsonRecord | null;
@@ -1059,9 +1134,11 @@ function PlanPanel({
   setEventJson: (value: string) => void;
   eventResponse: JsonRecord | null;
   onRefreshPlan: () => void;
+  onPlanAction: (action: "confirm-and-execute" | "execute" | "resume" | "cancel") => void;
   onSubmitEvent: () => void;
 }) {
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  const nextAction = plan?.next_action && typeof plan.next_action === "object" ? (plan.next_action as JsonRecord) : null;
   return (
     <section className="panel plan-panel">
       <PanelTitle icon={<ClipboardList size={18} />} title="计划与事件" />
@@ -1077,12 +1154,35 @@ function PlanPanel({
             <strong>{String(plan.plan_id || "plan")}</strong>
             <span>{String(plan.status || "-")}</span>
           </div>
+          <div className="decision-meta">
+            <span>策略：{String(plan.execution_policy || "-")}</span>
+            <span>下一步：{String(nextAction?.type || "-")}</span>
+          </div>
           {steps.map((step, index) => (
             <div className="plan-step" key={`${String((step as JsonRecord).step_id || index)}`}>
               <span>{String((step as JsonRecord).status || "pending")}</span>
               <strong>{String((step as JsonRecord).description || (step as JsonRecord).step_id || index)}</strong>
             </div>
           ))}
+          {nextAction ? <JsonBlock title="下一步动作" value={nextAction} defaultOpen={false} /> : null}
+          <div className="plan-actions">
+            <button className="secondary-button" type="button" onClick={() => onPlanAction("confirm-and-execute")}>
+              <CheckCircle2 size={16} />
+              确认并执行
+            </button>
+            <button className="secondary-button" type="button" onClick={() => onPlanAction("execute")}>
+              <Play size={16} />
+              继续执行
+            </button>
+            <button className="secondary-button" type="button" onClick={() => onPlanAction("resume")}>
+              <RefreshCcw size={16} />
+              恢复
+            </button>
+            <button className="secondary-button" type="button" onClick={() => onPlanAction("cancel")}>
+              <XCircle size={16} />
+              取消
+            </button>
+          </div>
         </div>
       ) : (
         <EmptyState icon={<GitBranch size={20} />} label="暂无计划" />

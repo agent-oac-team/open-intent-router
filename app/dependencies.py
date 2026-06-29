@@ -26,6 +26,7 @@ from app.services.context_service import ContextService
 from app.services.event_service import EventService
 from app.plugins.evidence import build_evidence_provider
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
@@ -112,3 +113,11 @@ def get_event_service() -> EventService:
 def get_plan_service() -> PlanService:
     repositories = get_repository_bundle()
     return PlanService(repositories["plans"])
+
+
+def get_plan_executor() -> PlanExecutor:
+    return PlanExecutor(
+        plan_service=get_plan_service(),
+        registry=get_registry_service(),
+        invocation_service=get_invocation_service(),
+    )

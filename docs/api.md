@@ -33,6 +33,16 @@
 
 如果目标 Agent 只能由前端或宿主系统处理，例如 `ui_handoff`，接口会返回路由交接信息，而不会执行外部调用。
 
+### `POST /api/v1/route-and-execute`
+
+先执行路由，再根据执行策略处理结果：
+
+- 单 Agent 请求：复用现有 invocation 路径。
+- 多意图请求且 `execution_policy=auto_execute`：创建 Plan 后由后端 PlanExecutor 推进可执行步骤。
+- 多意图请求且 `execution_policy=require_confirmation`：返回 Plan 和 `next_action.type=confirm_plan`，不立即执行。
+
+多意图的主契约是 `plan` 字段。`decision.action=show_plan` 仅保留兼容语义，客户端不应只依赖该 action 判断是否展示计划。
+
 ## 显式调用
 
 ### `POST /api/v1/invoke`
@@ -97,15 +107,33 @@ Run 用于记录一次 Agent 调用的生命周期，包括调用输入、调用
 
 ## Plan
 
-计划接口用于表达需要用户确认或分步执行的 Agent 操作。
+计划接口用于表达需要用户确认或分步执行的 Agent 操作。后端提供轻量同步 PlanExecutor，用于执行可后端调用的步骤；遇到 UI Handoff、缺少输入或外部 Agent Runtime 时，会返回 `next_action` 并暂停。
 
 - `GET /api/v1/plans/{plan_id}`
 - `POST /api/v1/plans/{plan_id}/actions`
+- `POST /api/v1/plans/{plan_id}/execute`
+- `POST /api/v1/plans/{plan_id}/confirm-and-execute`
+- `POST /api/v1/plans/{plan_id}/resume`
 
 当前支持的 Plan Action：
 
 - `confirm`：确认继续执行。
 - `cancel`：取消计划。
+
+执行策略：
+
+- `return_plan_only`：只返回计划。
+- `require_confirmation`：确认后执行。
+- `auto_execute`：路由后自动执行可执行步骤。
+- `host_managed`：由宿主应用推进。
+
+`next_action` 常见类型：
+
+- `confirm_plan`：等待用户确认。
+- `open_ui`：需要宿主应用打开页面。
+- `collect_input`：需要补充参数。
+- `wait_for_agent_event`：等待外部 Agent 或宿主系统上报事件。
+- `none`：无后续动作。
 
 ## Session
 

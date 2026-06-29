@@ -99,6 +99,7 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev
 
 - `POST /api/v1/route`
 - `POST /api/v1/route-and-invoke`
+- `POST /api/v1/route-and-execute`
 - `POST /api/v1/invoke`
 
 Agent 查询：
@@ -114,6 +115,9 @@ Agent 查询：
 - `GET /api/v1/runs/{run_id}`
 - `GET /api/v1/plans/{plan_id}`
 - `POST /api/v1/plans/{plan_id}/actions`
+- `POST /api/v1/plans/{plan_id}/execute`
+- `POST /api/v1/plans/{plan_id}/confirm-and-execute`
+- `POST /api/v1/plans/{plan_id}/resume`
 - `GET /api/v1/sessions/{session_id}/messages`
 
 管理接口需要传入 `X-Admin-Token` 或 `Authorization: Bearer <token>`：
@@ -146,6 +150,23 @@ Agent 查询：
 ```
 
 在默认 Mock 配置下，路由器会基于本地 `config/agents.example.yaml` 中的 Agent 定义返回路由决策。使用 `route-and-invoke` 时，如果目标 Agent 支持后端调用，会继续返回调用结果。
+
+## Plan 与多意图
+
+多意图的主契约是响应中的 `plan`，而不是某个 UI 专用动作。旧版 `decision.action=show_plan` 仍然兼容，但新接入方应优先判断响应中是否存在 `plan`：
+
+- 有 `plan`：可以展示或执行多步骤任务。
+- 有 `execution_policy`：后端或 Host App 根据策略决定是否自动执行、等待确认或交给宿主系统。
+- 有 `next_action`：说明需要用户或 Host App 执行下一步，例如确认计划、打开页面或补充输入。
+
+当前执行策略：
+
+- `return_plan_only`：只返回计划，不执行。
+- `require_confirmation`：需要确认后执行。
+- `auto_execute`：后端自动执行可调用步骤。
+- `host_managed`：Host App 自行推进。
+
+`invoke` 仍是单 Agent 调用能力；多步骤执行由 PlanExecutor 通过 `/plans/{plan_id}/execute`、`/plans/{plan_id}/confirm-and-execute` 和 `/route-and-execute` 复用底层 invoker 完成。
 
 ## Prompt 配置
 

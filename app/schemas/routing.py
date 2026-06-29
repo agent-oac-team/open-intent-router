@@ -7,6 +7,7 @@ from app.schemas.common import (
     ArtifactRef,
     ContextRelation,
     ErrorDetail,
+    ExecutionPolicy,
     JsonDict,
     MessageSource,
     RouteAction,
@@ -15,7 +16,7 @@ from app.schemas.common import (
     UserContext,
     normalize_artifact_refs,
 )
-from app.schemas.plans import Plan
+from app.schemas.plans import NextAction, Plan
 
 
 class InputPayload(StrictBaseModel):
@@ -101,6 +102,8 @@ class RouteResponse(StrictBaseModel):
     session_id: str
     decision: RouteDecision
     context: RouteContext
+    execution_policy: ExecutionPolicy | None = None
+    next_action: NextAction | None = None
     plan: Plan | None = None
     invocation: InvocationPreview | None = None
     error: ErrorDetail | None = None
@@ -121,8 +124,6 @@ class RouteResponse(StrictBaseModel):
     def validate_route_response(self) -> "RouteResponse":
         if self.decision.action == "show_plan" and self.plan is None:
             raise ValueError("plan is required when decision.action=show_plan")
-        if self.decision.action != "show_plan" and self.plan is not None:
-            raise ValueError("plan must be null unless decision.action=show_plan")
         if self.decision.action in {"open_agent", "continue_agent"}:
             if self.decision.target_agent_id not in self.context.candidate_agent_ids:
                 raise ValueError("target_agent_id must be in candidate_agent_ids")
@@ -136,3 +137,9 @@ class LLMRouteInput(StrictBaseModel):
     request: RouteRequest
     candidates: list[CandidateAgent]
     context: RouteContext
+
+
+class RouteAndExecuteResponse(StrictBaseModel):
+    route: RouteResponse
+    results: list[JsonDict] = Field(default_factory=list)
+    next_action: NextAction | None = None

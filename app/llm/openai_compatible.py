@@ -89,7 +89,7 @@ def _normalize_route_response(parsed: object, payload: LLMRouteInput) -> object:
         }
 
     decision = normalized.get("decision")
-    if isinstance(decision, dict) and decision.get("action") == "show_plan":
+    if isinstance(decision, dict) and (decision.get("action") == "show_plan" or _has_plan_steps(normalized.get("plan"))):
         normalized["plan"] = _normalize_plan(normalized.get("plan"), payload)
         if not _has_plan_steps(normalized["plan"]):
             fallback_plan = build_ordered_plan_from_text(
@@ -100,6 +100,17 @@ def _normalize_route_response(parsed: object, payload: LLMRouteInput) -> object:
             if fallback_plan is not None:
                 normalized["plan"] = fallback_plan.model_dump(mode="json")
         decision["target_agent_id"] = None
+        policy = normalized.get("execution_policy") or _plan_policy(normalized["plan"])
+        if policy:
+            normalized["execution_policy"] = policy
+            if isinstance(normalized["plan"], dict):
+                normalized["plan"]["execution_policy"] = normalized["plan"].get("execution_policy") or policy
+        if not normalized.get("next_action") and policy in {"require_confirmation", "host_managed"}:
+            normalized["next_action"] = {
+                "type": "confirm_plan" if policy == "require_confirmation" else "wait_for_agent_event",
+                "message": "请确认是否执行该计划。" if policy == "require_confirmation" else "该计划由宿主应用继续执行。",
+                "plan_id": normalized["plan"].get("plan_id") if isinstance(normalized["plan"], dict) else None,
+            }
 
     return normalized
 
@@ -135,3 +146,10 @@ def _normalize_plan(plan: object, payload: LLMRouteInput) -> object:
 
 def _has_plan_steps(plan: object) -> bool:
     return isinstance(plan, dict) and isinstance(plan.get("steps"), list) and len(plan["steps"]) > 0
+
+
+def _plan_policy(plan: object) -> str | None:
+    if isinstance(plan, dict):
+        value = plan.get("execution_policy")
+        return str(value) if value else None
+    return None

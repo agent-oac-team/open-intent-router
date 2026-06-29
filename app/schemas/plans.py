@@ -1,6 +1,15 @@
 from pydantic import Field, model_validator
 
-from app.schemas.common import ArtifactRef, PlanStatus, PlanStepStatus, StrictBaseModel
+from app.schemas.common import (
+    ArtifactRef,
+    ExecutionPolicy,
+    JsonDict,
+    NextActionType,
+    PlanStatus,
+    PlanStepStatus,
+    StrictBaseModel,
+    UserContext,
+)
 
 
 class PlanStep(StrictBaseModel):
@@ -12,11 +21,24 @@ class PlanStep(StrictBaseModel):
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
 
 
+class NextAction(StrictBaseModel):
+    type: NextActionType = "none"
+    message: str = ""
+    agent_id: str | None = None
+    plan_id: str | None = None
+    step_id: str | None = None
+    route: str | None = None
+    params: JsonDict = Field(default_factory=dict)
+    metadata: JsonDict = Field(default_factory=dict)
+
+
 class Plan(StrictBaseModel):
     plan_id: str = Field(min_length=1)
     session_id: str | None = None
     status: PlanStatus = "pending"
     current_step_id: str | None = None
+    execution_policy: ExecutionPolicy | None = None
+    next_action: NextAction | None = None
     steps: list[PlanStep] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -46,6 +68,20 @@ class PlanActionResponse(StrictBaseModel):
     plan_id: str
     status: PlanStatus
     current_step_id: str | None = None
+    next_action: NextAction | None = None
+
+
+class PlanExecutionRequest(StrictBaseModel):
+    user: UserContext | None = None
+    input: JsonDict = Field(default_factory=dict)
+    context: JsonDict = Field(default_factory=dict)
+    max_steps: int = Field(default=10, ge=1, le=50)
+
+
+class PlanExecutionResponse(StrictBaseModel):
+    plan: Plan
+    results: list[JsonDict] = Field(default_factory=list)
+    next_action: NextAction | None = None
 
 
 def _validate_no_cycles(graph: dict[str, set[str]]) -> None:

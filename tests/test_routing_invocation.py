@@ -47,7 +47,11 @@ async def test_mock_router_creates_and_persists_multi_agent_plan(
 
     assert response.decision.action == "show_plan"
     assert response.context.relation == "multi_task"
+    assert response.execution_policy == "require_confirmation"
+    assert response.next_action
+    assert response.next_action.type == "confirm_plan"
     assert response.plan
+    assert response.plan.execution_policy == "require_confirmation"
     assert [step.agent_id for step in response.plan.steps] == ["summarizer", "task_creator"]
     assert response.plan.steps[1].depends_on == [response.plan.steps[0].step_id]
     assert await repositories["plans"].get(response.plan.plan_id)

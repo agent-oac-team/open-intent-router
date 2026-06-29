@@ -9,6 +9,12 @@ RegistryBackend = Literal["database", "file", "hybrid"]
 StorageBackend = Literal["memory", "database"]
 RouteMode = Literal["route_only", "route_and_invoke"]
 LLMProvider = Literal["mock", "openai_compatible"]
+PlanExecutionPolicy = Literal[
+    "return_plan_only",
+    "require_confirmation",
+    "auto_execute",
+    "host_managed",
+]
 
 
 class Settings(BaseSettings):
@@ -36,6 +42,8 @@ class Settings(BaseSettings):
     router_prompt_file: str | None = "./config/prompts/router.zh.yaml"
 
     route_mode: RouteMode = "route_and_invoke"
+    default_plan_execution_policy: PlanExecutionPolicy = "require_confirmation"
+    allow_local_auto_execute_plans: bool = False
     admin_api_token: str | None = Field(default=None)
 
     router_max_host_history_messages: int = 20

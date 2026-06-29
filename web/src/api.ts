@@ -2,6 +2,8 @@ import type {
   AgentDefinition,
   AgentListResponse,
   JsonRecord,
+  PlanExecutionResponse,
+  RouteAndExecuteResponse,
   RouteAndInvokeResponse,
   RouteRequest,
   RouteResponse,
@@ -84,7 +86,32 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  routeAndExecute: (payload: RouteRequest) =>
+    request<RouteAndExecuteResponse>("/api/v1/route-and-execute", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getPlan: (planId: string) => request<JsonRecord>(`/api/v1/plans/${encodeURIComponent(planId)}`),
+  planAction: (planId: string, action: "confirm" | "cancel") =>
+    request<JsonRecord>(`/api/v1/plans/${encodeURIComponent(planId)}/actions`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
+  executePlan: (planId: string, payload: JsonRecord) =>
+    request<PlanExecutionResponse>(`/api/v1/plans/${encodeURIComponent(planId)}/execute`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  confirmAndExecutePlan: (planId: string, payload: JsonRecord) =>
+    request<PlanExecutionResponse>(`/api/v1/plans/${encodeURIComponent(planId)}/confirm-and-execute`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  resumePlan: (planId: string, payload: JsonRecord) =>
+    request<PlanExecutionResponse>(`/api/v1/plans/${encodeURIComponent(planId)}/resume`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   postAgentEvent: (event: JsonRecord) =>
     request<JsonRecord>("/api/v1/events/agent", {
       method: "POST",

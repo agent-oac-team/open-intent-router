@@ -733,6 +733,12 @@ pre {
   color: var(--accent-2);
 }
 
+.plan-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }

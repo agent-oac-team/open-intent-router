@@ -211,11 +211,16 @@ class DatabasePlanRepository:
     async def save(self, plan: Plan) -> Plan:
         async with self.session_factory() as session:
             row = await session.get(PlanModel, plan.plan_id)
+            metadata = {
+                "execution_policy": plan.execution_policy,
+                "next_action": plan.next_action.model_dump(mode="json") if plan.next_action else None,
+            }
             values = {
                 "plan_id": plan.plan_id,
                 "session_id": plan.session_id or "",
                 "status": plan.status,
                 "current_step_id": plan.current_step_id,
+                "original_query": dumps(metadata),
             }
             if row is None:
                 row = PlanModel(**values)
@@ -255,11 +260,14 @@ class DatabasePlanRepository:
                 .scalars()
                 .all()
             )
+            metadata = loads(row.original_query, {})
             return Plan(
                 plan_id=row.plan_id,
                 session_id=row.session_id,
                 status=row.status,
                 current_step_id=row.current_step_id,
+                execution_policy=metadata.get("execution_policy"),
+                next_action=metadata.get("next_action"),
                 steps=[
                     PlanStep(
                         step_id=step.step_id,
@@ -426,26 +434,39 @@ def _run_from_row(row: AgentRunModel) -> AgentRun:
 
 
 def _result_values(result: AgentResult) -> dict:
+    output = result.output or {}
+    if result.plan_id or result.step_id:
+        output = {
+            **output,
+            "_execution": {
+                "plan_id": result.plan_id,
+                "step_id": result.step_id,
+            },
+        }
     return {
         "result_id": result.result_id or f"result_{uuid4().hex}",
         "run_id": result.run_id,
         "session_id": result.session_id,
         "agent_id": result.agent_id,
         "status": result.status,
-        "output_text": dumps(result.output),
+        "output_text": dumps(output),
         "artifact_refs_text": dumps(result.artifact_refs),
         "error_text": dumps(result.error),
     }
 
 
 def _result_from_row(row: AgentResultModel) -> AgentResult:
+    output = loads(row.output_text, None)
+    execution = output.get("_execution", {}) if isinstance(output, dict) else {}
     return AgentResult(
         result_id=row.result_id,
         run_id=row.run_id,
         session_id=row.session_id,
         agent_id=row.agent_id,
+        plan_id=execution.get("plan_id"),
+        step_id=execution.get("step_id"),
         status=row.status,
-        output=loads(row.output_text, None),
+        output=output,
         artifact_refs=loads(row.artifact_refs_text, []),
         error=loads(row.error_text, None),
         created_at=row.created_at,

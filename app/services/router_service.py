@@ -17,6 +17,7 @@ from app.schemas.routing import (
     RouteResponse,
 )
 from app.services.context_service import ContextService
+from app.services.invocation_service import build_invocation_input, missing_required_inputs
 from app.services.plan_builder import build_ordered_plan_from_text
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
@@ -89,6 +90,7 @@ class RouterService:
             LLMRouteInput(request=request, candidates=candidates, context=base_context)
         )
         output = self._ensure_plan_for_multi_task(output, request, candidates)
+        output = await self._apply_plan_policy(output)
         output = output.model_copy(update={"request_id": request_id})
         output = await self._post_validate(output, request)
         response = await self._clarify_or_attach_invocation(output, request)
@@ -246,7 +248,15 @@ class RouterService:
                     candidate_agent_ids=response.context.candidate_agent_ids,
                     prompt_summary=request.input.text[:500],
                     evidence=response.context.evidence,
-                    parsed_output=response.model_dump(),
+                    parsed_output={
+                        **response.model_dump(),
+                        "execution_policy": response.execution_policy,
+                        "next_action": (
+                            response.next_action.model_dump(mode="json")
+                            if response.next_action
+                            else None
+                        ),
+                    },
                     validation_status="ok",
                 )
             )
@@ -282,9 +292,63 @@ class RouterService:
             }
         )
 
+    async def _apply_plan_policy(self, output: RouteResponse) -> RouteResponse:
+        if output.plan is None:
+            return output
+        policy = (
+            output.execution_policy
+            or output.plan.execution_policy
+            or await self._metadata_policy_for_plan(output.plan)
+        )
+        policy = policy or self.settings.default_plan_execution_policy
+        if self.settings.app_env != "local" and policy == "auto_execute":
+            policy = "require_confirmation"
+        if (
+            self.settings.app_env == "local"
+            and policy == "auto_execute"
+            and not self.settings.allow_local_auto_execute_plans
+        ):
+            policy = "require_confirmation"
+
+        next_action = output.next_action or output.plan.next_action
+        if next_action is None:
+            from app.schemas.plans import NextAction
+
+            if policy == "require_confirmation":
+                next_action = NextAction(
+                    type="confirm_plan",
+                    message="请确认是否执行该计划。",
+                    plan_id=output.plan.plan_id,
+                )
+            elif policy == "host_managed":
+                next_action = NextAction(
+                    type="wait_for_agent_event",
+                    message="该计划由宿主应用继续执行。",
+                    plan_id=output.plan.plan_id,
+                )
+
+        plan = output.plan.model_copy(
+            update={"execution_policy": policy, "next_action": next_action}
+        )
+        return output.model_copy(
+            update={"execution_policy": policy, "next_action": next_action, "plan": plan}
+        )
+
+    async def _metadata_policy_for_plan(self, plan) -> str | None:
+        for step in plan.steps:
+            definition = await self.registry.get_definition(step.agent_id)
+            if not definition:
+                continue
+            execution = definition.metadata.get("execution")
+            if isinstance(execution, dict) and execution.get("policy"):
+                return str(execution["policy"])
+            if definition.metadata.get("execution_policy"):
+                return str(definition.metadata["execution_policy"])
+        return None
+
 
 def _missing_required_inputs(agent: AgentDefinition, invocation_input: dict) -> list[str]:
-    return [item for item in agent.input_schema.required if not invocation_input.get(item)]
+    return missing_required_inputs(agent, invocation_input)
 
 
 def _build_invocation_input(
@@ -292,13 +356,7 @@ def _build_invocation_input(
     output: RouteResponse,
     request: RouteRequest,
 ) -> dict:
-    values: dict = {}
-    if "text" in agent.input_schema.required:
-        values["text"] = request.input.text
-    for key in agent.input_schema.properties:
-        if key not in values and key in {"query", "title"}:
-            values[key] = request.input.text
-    return values
+    return build_invocation_input(agent, request.input.text)
 
 
 def _llm_client(settings: Settings) -> LLMClient:

@@ -25,6 +25,8 @@ class AgentResult(StrictBaseModel):
     run_id: str
     session_id: str
     agent_id: str
+    plan_id: str | None = None
+    step_id: str | None = None
     status: str
     output: JsonDict | None = None
     artifact_refs: list[JsonDict] = Field(default_factory=list)

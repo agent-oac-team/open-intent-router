@@ -46,6 +46,7 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev -- --port 5175
 - 在对话框中发送 route-only 或 route-and-invoke 请求。
 - 配置 `session_id`、`source`、用户角色、用户组、租户、当前 Agent 和前端上下文。
 - 展示 RouteResponse、InvocationResult、Evidence、UI Handoff、Plan 和 Event Response。
+- 当响应包含 Plan 时，展示执行策略、下一步动作，并提供确认并执行、继续执行、恢复和取消按钮。
 
 ## Agent / Intent 配置
 
@@ -90,6 +91,20 @@ ROUTER_LLM_PROVIDER=openai_compatible
 ```
 
 UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改后端 `.env`。如果修改 `.env`，需要重启后端服务。
+
+## Plan 测试
+
+多意图识别以后，UI 不再只依赖 `decision.action=show_plan` 判断是否展示计划；只要后端响应包含 `plan`，右侧计划面板就会显示。
+
+计划面板支持：
+
+- 刷新 Plan 状态。
+- 确认并执行：调用 `/api/v1/plans/{plan_id}/confirm-and-execute`。
+- 继续执行：调用 `/api/v1/plans/{plan_id}/execute`。
+- 恢复：调用 `/api/v1/plans/{plan_id}/resume`，适合补充输入后继续。
+- 取消：调用 `/api/v1/plans/{plan_id}/actions`。
+
+如果后端返回 `next_action=open_ui`，说明需要宿主应用打开页面；如果返回 `next_action=collect_input`，说明需要补充必要参数。
 
 ## DeepSeek 配置
 

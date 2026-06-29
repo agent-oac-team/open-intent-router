@@ -47,6 +47,19 @@ AgentRunStatus = Literal[
     "clarify",
     "invalid_output",
 ]
+ExecutionPolicy = Literal[
+    "return_plan_only",
+    "require_confirmation",
+    "auto_execute",
+    "host_managed",
+]
+NextActionType = Literal[
+    "confirm_plan",
+    "open_ui",
+    "collect_input",
+    "wait_for_agent_event",
+    "none",
+]
 AgentEventType = Literal[
     "agent_started",
     "agent_progress",
