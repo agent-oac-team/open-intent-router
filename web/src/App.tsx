@@ -91,15 +91,15 @@ const blankAgent = (): AgentDefinition => ({
 
 type ExecutionMode = "route" | "route-and-invoke";
 type LlmModeChoice = "mock" | "openai_compatible";
-type ConversationTurn = {
+type ChatMessage = {
   id: string;
-  text: string;
+  role: "user" | "assistant" | "system";
+  content: string;
   status: "pending" | "completed" | "failed";
-  route?: RouteResponse | null;
-  result?: RouteAndInvokeResponse["result"] | null;
-  error?: string;
   createdAt: string;
+  requestId?: string;
 };
+type StatusTab = "route" | "plan" | "context" | "memory" | "evidence" | "debug";
 
 type FormState = {
   agent_id: string;
@@ -158,7 +158,7 @@ function App() {
   const [eventJson, setEventJson] = useState(defaultEventJson());
   const [routeResponse, setRouteResponse] = useState<RouteResponse | null>(null);
   const [invokeResponse, setInvokeResponse] = useState<RouteAndInvokeResponse["result"] | null>(null);
-  const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [plan, setPlan] = useState<JsonRecord | null>(null);
   const [eventResponse, setEventResponse] = useState<JsonRecord | null>(null);
   const [busy, setBusy] = useState(false);
@@ -354,10 +354,20 @@ function App() {
       setNotice("agent_chat 需要填写当前 Agent ID。");
       return;
     }
-    const turnId = `turn_${Date.now()}`;
-    setTurns((current) => [
+    const timestamp = Date.now();
+    const userMessageId = `msg_user_${timestamp}`;
+    const assistantMessageId = `msg_assistant_${timestamp}`;
+    const createdAt = new Date().toISOString();
+    setChatMessages((current) => [
       ...current,
-      { id: turnId, text, status: "pending", route: null, result: null, createdAt: new Date().toISOString() },
+      { id: userMessageId, role: "user", content: text, status: "completed", createdAt },
+      {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "正在判断意图...",
+        status: "pending",
+        createdAt,
+      },
     ]);
     setMessage("");
     setBusy(true);
@@ -368,9 +378,16 @@ function App() {
         setRouteResponse(result);
         setInvokeResponse(null);
         if (result.plan && typeof result.plan === "object") setPlan(result.plan as JsonRecord);
-        setTurns((current) =>
-          current.map((turn) =>
-            turn.id === turnId ? { ...turn, status: "completed", route: result, result: null } : turn,
+        setChatMessages((current) =>
+          current.map((item) =>
+            item.id === assistantMessageId
+              ? {
+                  ...item,
+                  content: assistantTextFromRoute(result),
+                  status: "completed",
+                  requestId: result.request_id,
+                }
+              : item,
           ),
         );
       } else {
@@ -378,19 +395,31 @@ function App() {
         setRouteResponse(result.route);
         setInvokeResponse(result.result || null);
         if (result.route.plan && typeof result.route.plan === "object") setPlan(result.route.plan as JsonRecord);
-        setTurns((current) =>
-          current.map((turn) =>
-            turn.id === turnId
-              ? { ...turn, status: "completed", route: result.route, result: result.result || null }
-              : turn,
+        setChatMessages((current) =>
+          current.map((item) =>
+            item.id === assistantMessageId
+              ? {
+                  ...item,
+                  content: assistantTextFromRoute(result.route),
+                  status: "completed",
+                  requestId: result.route.request_id,
+                }
+              : item,
           ),
         );
       }
     } catch (error) {
-      const message = formatError(error);
-      setNotice(message);
-      setTurns((current) =>
-        current.map((turn) => (turn.id === turnId ? { ...turn, status: "failed", error: message } : turn)),
+      setNotice(formatError(error));
+      setChatMessages((current) =>
+        current.map((item) =>
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                content: "请求失败，请查看页面提示或右侧调试信息。",
+                status: "failed",
+              }
+            : item,
+        ),
       );
     } finally {
       setBusy(false);
@@ -401,7 +430,7 @@ function App() {
     const nextSessionId = `demo_${Date.now()}`;
     setSessionId(nextSessionId);
     setMessage("");
-    setTurns([]);
+    setChatMessages([]);
     setRouteResponse(null);
     setInvokeResponse(null);
     setPlan(null);
@@ -585,13 +614,14 @@ function App() {
             busy={busy}
             onSubmit={sendMessage}
             onNewConversation={startNewConversation}
-            turns={turns}
+            messages={chatMessages}
           />
         </section>
 
         <aside className="right-rail">
-          <ResultPanel routeResponse={routeResponse} invokeResponse={invokeResponse} />
-          <PlanPanel
+          <StatusInspector
+            routeResponse={routeResponse}
+            invokeResponse={invokeResponse}
             plan={plan}
             planId={planId}
             setPlanId={setPlanId}
@@ -944,7 +974,7 @@ function ConversationPanel(props: {
   busy: boolean;
   onSubmit: (event: FormEvent) => void;
   onNewConversation: () => void;
-  turns: ConversationTurn[];
+  messages: ChatMessage[];
 }) {
   return (
     <section className="panel conversation-panel">
@@ -977,8 +1007,8 @@ function ConversationPanel(props: {
           </div>
           <TextField label="会话 ID" value={props.sessionId} onChange={props.setSessionId} />
         </div>
-        <ConversationTimeline turns={props.turns} />
-        <TextAreaField label="用户消息" value={props.message} onChange={props.setMessage} rows={5} />
+        <ChatTranscript messages={props.messages} />
+        <TextAreaField label="用户消息" value={props.message} onChange={props.setMessage} rows={4} />
         <details className="advanced-options">
           <summary>高级上下文</summary>
           <div className="form-grid three">
@@ -1027,96 +1057,33 @@ function ConversationPanel(props: {
   );
 }
 
-function ResultPanel({
-  routeResponse,
-  invokeResponse,
-}: {
-  routeResponse: RouteResponse | null;
-  invokeResponse: RouteAndInvokeResponse["result"] | null;
-}) {
-  const decision = routeResponse?.decision;
-  const uiHandoff = invokeResponse?.output?.route ? invokeResponse.output : null;
-  return (
-    <section className="panel result-panel">
-      <PanelTitle icon={<Eye size={18} />} title="路由结果" />
-      {decision ? (
-        <div className="decision-card">
-          <span className="decision-action">{decision.action}</span>
-          <strong>{decision.target_agent_id || "无目标 Agent"}</strong>
-          <p>{decision.message || decision.reason || "路由完成"}</p>
-          <div className="decision-meta">
-            <span>状态：{decision.status}</span>
-            <span>置信度：{typeof decision.confidence === "number" ? decision.confidence.toFixed(2) : "-"}</span>
-          </div>
-        </div>
-      ) : (
-        <EmptyState icon={<CircleDot size={20} />} label="等待路由响应" />
-      )}
-      {routeResponse?.context?.evidence ? (
-        <JsonBlock title="命中证据" value={routeResponse.context.evidence} />
-      ) : null}
-      {routeResponse?.execution_policy ? (
-        <JsonBlock
-          title="执行策略"
-          value={{
-            execution_policy: routeResponse.execution_policy,
-            next_action: routeResponse.next_action || null,
-          }}
-          defaultOpen={false}
-        />
-      ) : null}
-      {routeResponse?.invocation ? <JsonBlock title="调用预览" value={routeResponse.invocation} /> : null}
-      {uiHandoff ? <JsonBlock title="界面跳转" value={uiHandoff} /> : null}
-      {invokeResponse ? <JsonBlock title="调用结果" value={invokeResponse} /> : null}
-      {routeResponse ? <JsonBlock title="完整路由响应" value={routeResponse} defaultOpen={false} /> : null}
-    </section>
-  );
-}
-
-function ConversationTimeline({ turns }: { turns: ConversationTurn[] }) {
-  if (!turns.length) {
-    return <EmptyState icon={<MessageSquareText size={20} />} label="开始一轮对话测试" />;
+function ChatTranscript({ messages }: { messages: ChatMessage[] }) {
+  if (!messages.length) {
+    return <EmptyState icon={<MessageSquareText size={20} />} label="开始对话测试" />;
   }
   return (
-    <div className="conversation-timeline">
-      {turns.map((turn, index) => {
-        const decision = turn.route?.decision;
-        return (
-          <article className={`turn-card ${turn.status}`} key={turn.id}>
-            <div className="turn-head">
-              <span>第 {index + 1} 轮</span>
-              <strong>{turnStatusLabel(turn.status)}</strong>
+    <div className="chat-transcript" aria-label="聊天记录">
+      {messages.map((item) => (
+        <article className={`chat-message ${item.role} ${item.status}`} key={item.id}>
+          <div className="chat-avatar" aria-hidden="true">
+            {item.role === "user" ? "U" : item.role === "assistant" ? "AI" : "S"}
+          </div>
+          <div className="chat-bubble">
+            <div className="chat-meta">
+              <span>{item.role === "user" ? "用户" : item.role === "assistant" ? "中控" : "系统"}</span>
+              <strong>{chatStatusLabel(item.status)}</strong>
             </div>
-            <p className="turn-user">{turn.text}</p>
-            {decision ? (
-              <div className="turn-route">
-                <span>{decision.action}</span>
-                <strong>{decision.target_agent_id || "无目标 Agent"}</strong>
-                <small>{decision.message || decision.reason || "已完成路由"}</small>
-              </div>
-            ) : null}
-            {turn.result ? (
-              <div className="turn-route muted-route">
-                <span>调用</span>
-                <strong>{turn.result.status}</strong>
-                <small>{turn.result.message || turn.result.run_id}</small>
-              </div>
-            ) : null}
-            {turn.error ? <p className="turn-error">{turn.error}</p> : null}
-          </article>
-        );
-      })}
+            <p>{item.content}</p>
+          </div>
+        </article>
+      ))}
     </div>
   );
 }
 
-function turnStatusLabel(status: ConversationTurn["status"]): string {
-  if (status === "pending") return "处理中";
-  if (status === "completed") return "完成";
-  return "失败";
-}
-
-function PlanPanel({
+function StatusInspector({
+  routeResponse,
+  invokeResponse,
   plan,
   planId,
   setPlanId,
@@ -1127,6 +1094,8 @@ function PlanPanel({
   onPlanAction,
   onSubmitEvent,
 }: {
+  routeResponse: RouteResponse | null;
+  invokeResponse: RouteAndInvokeResponse["result"] | null;
   plan: JsonRecord | null;
   planId: string;
   setPlanId: (value: string) => void;
@@ -1137,11 +1106,136 @@ function PlanPanel({
   onPlanAction: (action: "confirm-and-execute" | "execute" | "resume" | "cancel") => void;
   onSubmitEvent: () => void;
 }) {
+  const [activeTab, setActiveTab] = useState<StatusTab>("route");
+  const tabs: Array<{ id: StatusTab; label: string; icon: React.ReactNode }> = [
+    { id: "route", label: "Route", icon: <Route size={15} /> },
+    { id: "plan", label: "Plan", icon: <ClipboardList size={15} /> },
+    { id: "context", label: "Context", icon: <Braces size={15} /> },
+    { id: "memory", label: "Memory", icon: <Database size={15} /> },
+    { id: "evidence", label: "Evidence", icon: <Eye size={15} /> },
+    { id: "debug", label: "Debug", icon: <FileJson size={15} /> },
+  ];
+
+  return (
+    <section className="panel status-inspector">
+      <PanelTitle icon={<Eye size={18} />} title="状态面板" />
+      <div className="status-tabs" role="tablist" aria-label="中控状态">
+        {tabs.map((tab) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={activeTab === tab.id ? "active" : ""}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div className="status-tab-panel" role="tabpanel">
+        {activeTab === "route" ? (
+          <RouteTab routeResponse={routeResponse} invokeResponse={invokeResponse} />
+        ) : null}
+        {activeTab === "plan" ? (
+          <PlanTab
+            plan={plan}
+            planId={planId}
+            setPlanId={setPlanId}
+            onRefreshPlan={onRefreshPlan}
+            onPlanAction={onPlanAction}
+          />
+        ) : null}
+        {activeTab === "context" ? <ContextTab routeResponse={routeResponse} /> : null}
+        {activeTab === "memory" ? <MemoryTab routeResponse={routeResponse} /> : null}
+        {activeTab === "evidence" ? <EvidenceTab routeResponse={routeResponse} /> : null}
+        {activeTab === "debug" ? (
+          <DebugTab
+            routeResponse={routeResponse}
+            invokeResponse={invokeResponse}
+            eventJson={eventJson}
+            setEventJson={setEventJson}
+            eventResponse={eventResponse}
+            onSubmitEvent={onSubmitEvent}
+          />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function RouteTab({
+  routeResponse,
+  invokeResponse,
+}: {
+  routeResponse: RouteResponse | null;
+  invokeResponse: RouteAndInvokeResponse["result"] | null;
+}) {
+  const decision = routeResponse?.decision;
+  const candidates = arrayContextValue(routeResponse, "candidate_agent_ids");
+  if (!decision) {
+    return <EmptyState icon={<CircleDot size={20} />} label="等待路由响应" />;
+  }
+  return (
+    <div className="status-section">
+      <div className="decision-card">
+        <span className="decision-action">{decision.action}</span>
+        <strong>{decision.target_agent_id || "无目标 Agent"}</strong>
+        <p>{decision.message || decision.reason || "路由完成"}</p>
+        <div className="decision-meta">
+          <span>状态：{decision.status}</span>
+          <span>置信度：{typeof decision.confidence === "number" ? decision.confidence.toFixed(2) : "-"}</span>
+        </div>
+      </div>
+      <dl className="detail-list">
+        <div>
+          <dt>原因</dt>
+          <dd>{decision.reason || "-"}</dd>
+        </div>
+        <div>
+          <dt>消息</dt>
+          <dd>{decision.message || "-"}</dd>
+        </div>
+        <div>
+          <dt>候选 Agent</dt>
+          <dd>{candidates.length ? candidates.map(String).join(", ") : "-"}</dd>
+        </div>
+      </dl>
+      {routeResponse?.invocation ? <JsonBlock title="调用预览" value={routeResponse.invocation} defaultOpen={false} /> : null}
+      {invokeResponse ? (
+        <JsonBlock
+          title="调用摘要"
+          value={{
+            run_id: invokeResponse.run_id,
+            agent_id: invokeResponse.agent_id,
+            status: invokeResponse.status,
+            message: invokeResponse.message,
+          }}
+          defaultOpen={false}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function PlanTab({
+  plan,
+  planId,
+  setPlanId,
+  onRefreshPlan,
+  onPlanAction,
+}: {
+  plan: JsonRecord | null;
+  planId: string;
+  setPlanId: (value: string) => void;
+  onRefreshPlan: () => void;
+  onPlanAction: (action: "confirm-and-execute" | "execute" | "resume" | "cancel") => void;
+}) {
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
   const nextAction = plan?.next_action && typeof plan.next_action === "object" ? (plan.next_action as JsonRecord) : null;
   return (
-    <section className="panel plan-panel">
-      <PanelTitle icon={<ClipboardList size={18} />} title="计划与事件" />
+    <div className="status-section">
       <div className="inline-controls">
         <input value={planId} onChange={(event) => setPlanId(event.target.value)} placeholder="plan_id" />
         <button className="icon-button small" type="button" onClick={onRefreshPlan} aria-label="刷新 Plan">
@@ -1187,14 +1281,112 @@ function PlanPanel({
       ) : (
         <EmptyState icon={<GitBranch size={20} />} label="暂无计划" />
       )}
+    </div>
+  );
+}
+
+function EvidenceTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
+  const evidence = arrayContextValue(routeResponse, "evidence");
+  if (!evidence.length) {
+    return <EmptyState icon={<Eye size={20} />} label="暂无 Evidence 数据" />;
+  }
+  return (
+    <div className="status-section">
+      <JsonBlock title="Evidence" value={evidence} />
+    </div>
+  );
+}
+
+function ContextTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
+  const contextPack = contextValue(routeResponse, "context_pack") || metadataValue(routeResponse, "context_pack");
+  if (!contextPack) {
+    return <EmptyState icon={<Braces size={20} />} label="暂无 Context Pack 数据" />;
+  }
+  return (
+    <div className="status-section">
+      <JsonBlock title="Context Pack" value={contextPack} />
+    </div>
+  );
+}
+
+function MemoryTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
+  const memory = contextValue(routeResponse, "memory") || metadataValue(routeResponse, "memory");
+  if (!memory) {
+    return <EmptyState icon={<Database size={20} />} label="暂无 Memory 数据" />;
+  }
+  return (
+    <div className="status-section">
+      <JsonBlock title="Memory" value={memory} />
+    </div>
+  );
+}
+
+function DebugTab({
+  routeResponse,
+  invokeResponse,
+  eventJson,
+  setEventJson,
+  eventResponse,
+  onSubmitEvent,
+}: {
+  routeResponse: RouteResponse | null;
+  invokeResponse: RouteAndInvokeResponse["result"] | null;
+  eventJson: string;
+  setEventJson: (value: string) => void;
+  eventResponse: JsonRecord | null;
+  onSubmitEvent: () => void;
+}) {
+  const uiHandoff = invokeResponse?.output?.route ? invokeResponse.output : null;
+  return (
+    <div className="status-section">
+      {uiHandoff ? <JsonBlock title="界面跳转" value={uiHandoff} defaultOpen={false} /> : null}
+      {invokeResponse ? <JsonBlock title="调用结果" value={invokeResponse} defaultOpen={false} /> : null}
+      {routeResponse ? <JsonBlock title="完整路由响应" value={routeResponse} defaultOpen={false} /> : null}
       <TextAreaField label="Agent 事件 JSON" value={eventJson} onChange={setEventJson} rows={8} />
       <button className="secondary-button" type="button" onClick={onSubmitEvent}>
         <Activity size={16} />
         提交事件
       </button>
-      {eventResponse ? <JsonBlock title="事件响应" value={eventResponse} /> : null}
-    </section>
+      {eventResponse ? <JsonBlock title="事件响应" value={eventResponse} defaultOpen={false} /> : null}
+      {!routeResponse && !invokeResponse && !eventResponse ? (
+        <EmptyState icon={<FileJson size={20} />} label="暂无调试数据" />
+      ) : null}
+    </div>
   );
+}
+
+function assistantTextFromRoute(route: RouteResponse): string {
+  const futureRoute = route as RouteResponse & { assistant_message?: string | null };
+  const assistantMessage = futureRoute.assistant_message?.trim();
+  if (assistantMessage) return assistantMessage;
+  const decisionMessage = route.decision.message?.trim();
+  if (decisionMessage) return decisionMessage;
+  const reason = route.decision.reason?.trim();
+  if (reason) return reason;
+  if (route.decision.action === "silent") return "已收到。";
+  return "路由完成。";
+}
+
+function chatStatusLabel(status: ChatMessage["status"]): string {
+  if (status === "pending") return "处理中";
+  if (status === "failed") return "失败";
+  return "已完成";
+}
+
+function contextValue(routeResponse: RouteResponse | null, key: string): unknown {
+  if (!routeResponse?.context) return null;
+  return routeResponse.context[key] ?? null;
+}
+
+function metadataValue(routeResponse: RouteResponse | null, key: string): unknown {
+  const metadata = contextValue(routeResponse, "metadata");
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  return (metadata as JsonRecord)[key] ?? null;
+}
+
+function arrayContextValue(routeResponse: RouteResponse | null, key: string): unknown[] {
+  const value = contextValue(routeResponse, key);
+  return Array.isArray(value) ? value : [];
 }
 
 function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {

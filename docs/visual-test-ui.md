@@ -45,7 +45,8 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev -- --port 5175
 - 通过 Agent 的 `description`、`capabilities`、`trigger`、`required_inputs` 配置意图识别元数据。
 - 在对话框中发送 route-only 或 route-and-invoke 请求。
 - 配置 `session_id`、`source`、用户角色、用户组、租户、当前 Agent 和前端上下文。
-- 展示 RouteResponse、InvocationResult、Evidence、UI Handoff、Plan 和 Event Response。
+- 中间区域以正常聊天窗口展示用户消息和中控返回给用户的回答。
+- 右侧状态面板通过 Route、Plan、Context、Memory、Evidence、Debug 标签展示 RouteResponse、InvocationResult、Evidence、UI Handoff、Plan 和 Event Response。
 - 当响应包含 Plan 时，展示执行策略、下一步动作，并提供确认并执行、继续执行、恢复和取消按钮。
 
 ## Agent / Intent 配置
@@ -96,7 +97,7 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 
 多意图识别以后，UI 不再只依赖 `decision.action=show_plan` 判断是否展示计划；只要后端响应包含 `plan`，右侧计划面板就会显示。
 
-计划面板支持：
+计划状态位于右侧状态面板的 Plan 标签中，支持：
 
 - 刷新 Plan 状态。
 - 确认并执行：调用 `/api/v1/plans/{plan_id}/confirm-and-execute`。
@@ -105,6 +106,22 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 - 取消：调用 `/api/v1/plans/{plan_id}/actions`。
 
 如果后端返回 `next_action=open_ui`，说明需要宿主应用打开页面；如果返回 `next_action=collect_input`，说明需要补充必要参数。
+
+## 聊天窗口与状态面板
+
+M1 阶段的测试台采用“中间聊天、右侧状态”的布局：
+
+- 中间聊天窗口只展示用户气泡和中控回答气泡，不再显示“第 N 轮”的调试卡片。
+- route-only 和 route-and-invoke 仍然在聊天区上方切换。
+- 高级上下文仍在聊天区下方折叠配置，用于测试 `source`、`current_agent`、`frontend_context`、`plan_id` 和 `step_id`。
+- 右侧 Route 标签展示 `decision.action`、目标 Agent、状态、置信度、原因、消息、候选 Agent 和调用预览。
+- 右侧 Plan 标签展示计划状态、执行策略、下一步动作、步骤列表和计划操作按钮。
+- 右侧 Evidence 标签展示当前响应中的证据命中。
+- 右侧 Debug 标签保留完整 JSON、InvocationResult、UI Handoff 和 Agent Event JSON 提交。
+
+当前后端还没有顶层 `assistant_message` 字段。M1 聊天气泡使用 `decision.message` 作为中控回答来源；如果为空，前端会兼容回退到 `decision.reason` 或通用完成文案。后续 M3 增加 `assistant_message` 后，聊天窗口再迁移为优先消费 `assistant_message`。
+
+Context 和 Memory 标签是为后续 Context Pack 与 Memory 模块预留的状态入口；在当前响应没有相关数据时显示空态，不代表路由错误。
 
 ## DeepSeek 配置
 

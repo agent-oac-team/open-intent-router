@@ -56,7 +56,7 @@ npm run dev
 - `app/services/plan_executor.py`：Plan 步骤执行、依赖推进、结果回填、暂停恢复和 `next_action` 协作。
 - `app/services/registry_service.py`：Agent Registry 加载、合并和候选过滤。
 - `app/llm`：Mock 与 OpenAI-compatible LLM Client。
-- `app/invokers`：Agent 调用器实现，例如 `mock`、`http`、`local_function`、`ui_handoff`。
+- `app/invokers`：Agent 调用器实现。
 - `app/plugins/evidence.py`：可选 Evidence Provider，只提供证据、候选收窄或固定问命中。
 - `config/prompts/router.zh.yaml`：默认中文路由 Prompt 模板。
 - `web`：本地可视化测试 UI，不是核心 Host App 实现。
@@ -90,6 +90,7 @@ npm run dev
 - 实现 OpenSpec 任务时，先读取对应 change 的全部上下文文件，再逐项实现。
 - 完成任务后及时勾选 `tasks.md`。
 - 归档前必须运行相关测试和 `openspec validate <change-name> --strict`。
+- 所有文档使用中文。
 
 ## 测试要求
 

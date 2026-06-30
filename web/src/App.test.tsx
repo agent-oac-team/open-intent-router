@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -184,6 +184,10 @@ describe("意图路由测试台", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
 
+    const transcript = screen.getByLabelText("聊天记录");
+    expect(within(transcript).getByText("summarize this text")).toBeInTheDocument();
+    expect(await within(transcript).findByText("Routing to Summarizer.")).toBeInTheDocument();
+    expect(screen.queryByText("第 1 轮")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("open_agent").length).toBeGreaterThan(0));
     expect(screen.getAllByText("summarizer").length).toBeGreaterThan(0);
   });
@@ -206,9 +210,22 @@ describe("意图路由测试台", () => {
     await userEvent.click(screen.getByRole("button", { name: "只路由" }));
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
 
+    await userEvent.click(screen.getByRole("tab", { name: /Plan/i }));
     expect(await screen.findByText("plan_1")).toBeInTheDocument();
     expect(screen.getByText(/策略：require_confirmation/)).toBeInTheDocument();
     expect(screen.getByText(/下一步：confirm_plan/)).toBeInTheDocument();
+  });
+
+  it("右侧状态面板用 Debug 标签承载调用结果和原始响应", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+
+    await userEvent.click(await screen.findByRole("tab", { name: /Debug/i }));
+    expect(screen.getByText("调用结果")).toBeInTheDocument();
+    expect(screen.getByText("完整路由响应")).toBeInTheDocument();
+    expect(screen.queryByText("调用")).not.toBeInTheDocument();
   });
 });
 
