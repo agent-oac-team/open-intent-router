@@ -14,7 +14,7 @@ class ErrorPayload:
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"code": self.code, "message": self.message}
         if self.details:
-            payload["details"] = self.details
+            payload["details"] = _json_safe(self.details)
         return payload
 
 
@@ -68,3 +68,13 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=exc.status_code,
             content={"error": ErrorPayload(exc.code, exc.message, exc.details).to_dict()},
         )
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_safe(item) for item in value]
+    return str(value)

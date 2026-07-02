@@ -84,3 +84,30 @@ fixed_questions:
         user=UserContext(id="u1"),
     )
     assert result.route_override["target_agent_id"] == "handoff_dashboard"
+
+
+async def test_file_fixed_question_provider_denies_unavailable_strong_override(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "fixed.yaml"
+    path.write_text(
+        """
+fixed_questions:
+  - question: open dashboard
+    strength: strong
+    route_override:
+      action: open_agent
+      target_agent_id: handoff_dashboard
+      message: ok
+""",
+        encoding="utf-8",
+    )
+    result = await FileFixedQuestionEvidenceProvider(str(path)).match(
+        question="open dashboard",
+        candidate_agent_ids=["summarizer"],
+        user=UserContext(id="u1"),
+    )
+    assert result.route_override is None
+    assert result.route_override_denied["target_agent_id"] == "handoff_dashboard"
+    assert result.route_override_denied["reason"] == "permission_denied"
+    assert result.evidence[0]["route_override_denied"] is True

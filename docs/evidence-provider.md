@@ -9,7 +9,7 @@ Evidence Provider 是可选插件，运行在 LLM 路由之前，用于向路由
 Evidence Provider 可以返回：
 
 - `intent_hint`：弱意图提示，帮助 LLM 理解用户可能想做什么。
-- `candidate_agent_ids`：候选 Agent 收窄提示。
+- `candidate_agent_ids`：弱候选提示，仅用于上下文和调试；当前版本不用于裁剪 LLM 候选集。
 - `route_override`：强固定问题路由，例如固定问法直接映射到某个 Agent。
 - `evidence`：可安全记录的证据片段和元数据，用于上下文、调试和审计。
 
@@ -24,13 +24,16 @@ Evidence Provider 可以返回：
 
 ```yaml
 fixed_questions:
-  - question: open the dashboard
+  - question: 帮我打开客户画像页面
     match_type: exact
     strength: strong
+    intent_hint: open_customer_profile_help
+    candidate_agent_ids:
+      - system_usage_guide
     route_override:
       action: open_agent
-      target_agent_id: handoff_dashboard
-      message: Opening the dashboard.
+      target_agent_id: system_usage_guide
+      message: 已定位到系统使用指引，将由宿主系统打开客户画像相关页面。
 ```
 
 ## 固定问题命中规则
@@ -42,7 +45,9 @@ fixed_questions:
 - 需要稳定映射到特定 Agent 的标准问题。
 - 从旧系统知识库迁移来的固定问与意图映射。
 
-强路由覆盖必须在 Registry 可用性过滤之后执行。也就是说，即使固定问题命中了某个 Agent，如果该 Agent 对当前用户不可用，路由器也应忽略或拒绝该覆盖结果。
+强路由覆盖必须在 Registry 可用性过滤之后执行。也就是说，即使固定问题命中了某个 Agent，如果该 Agent 对当前用户不可用，路由器也必须拒绝该覆盖结果，返回无权限提示，并且不进入 LLM 兜底判断。
+
+当前路由顺序为：权限过滤 > 固定问强命中 > 标签/语义观察信号 > LLM 判断。标签/语义信号不会覆盖固定问强命中，也不会裁剪传给 LLM 的候选 Agent。
 
 ## 与知识库检索的关系
 
@@ -52,7 +57,7 @@ fixed_questions:
 
 - 知识库检索插件返回证据片段、来源、分数和候选意图。
 - 路由器将检索结果作为 LLM 路由上下文。
-- 如果检索结果来自固定问映射，可返回强 `route_override`。
+- 如果检索结果来自固定问映射，可返回强 `route_override`；强命中目标无权限时应保留 denied 信号，供路由器返回无权限提示。
 - 知识库文件管理、向量索引、召回策略等能力留在插件内部。
 
 这样可以让核心项目保持通用，同时保留“固定问命中到固定意图”的扩展能力。

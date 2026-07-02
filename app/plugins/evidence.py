@@ -13,6 +13,7 @@ class EvidenceResult:
     intent_hint: str | None = None
     candidate_agent_ids: list[str] = field(default_factory=list)
     route_override: dict[str, Any] | None = None
+    route_override_denied: dict[str, Any] | None = None
     evidence: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -60,26 +61,51 @@ class FileFixedQuestionEvidenceProvider:
             match_type = item.get("match_type", "exact")
             if not _matches(normalized, configured, match_type):
                 continue
-            mapped_ids = [str(agent_id) for agent_id in item.get("candidate_agent_ids", [])]
+            configured_ids = [str(agent_id) for agent_id in item.get("candidate_agent_ids", [])]
+            mapped_ids = list(configured_ids)
             route_override = item.get("route_override")
-            if route_override and route_override.get("target_agent_id"):
-                mapped_ids.append(str(route_override["target_agent_id"]))
+            target_agent_id = None
+            if isinstance(route_override, dict) and route_override.get("target_agent_id"):
+                target_agent_id = str(route_override["target_agent_id"])
+                mapped_ids.append(target_agent_id)
             mapped_ids = [agent_id for agent_id in mapped_ids if agent_id in candidate_agent_ids]
-            if route_override and route_override.get("target_agent_id") not in candidate_agent_ids:
-                route_override = None
             strength = item.get("strength", "weak")
+            route_override_denied = None
+            if (
+                strength == "strong"
+                and isinstance(route_override, dict)
+                and target_agent_id
+                and target_agent_id not in candidate_agent_ids
+            ):
+                route_override_denied = {
+                    **route_override,
+                    "target_agent_id": target_agent_id,
+                    "reason": "permission_denied",
+                }
+                route_override = None
+            elif not (
+                strength == "strong"
+                and isinstance(route_override, dict)
+                and target_agent_id
+                and target_agent_id in candidate_agent_ids
+            ):
+                route_override = None
             evidence = [
                 {
                     "type": "fixed_question",
                     "question": item.get("question"),
                     "strength": strength,
                     "matched_agent_ids": mapped_ids,
+                    "configured_agent_ids": configured_ids,
+                    "route_override_target_agent_id": target_agent_id,
+                    "route_override_denied": route_override_denied is not None,
                 }
             ]
             return EvidenceResult(
                 intent_hint=item.get("intent_hint"),
                 candidate_agent_ids=mapped_ids,
                 route_override=route_override if strength == "strong" else None,
+                route_override_denied=route_override_denied,
                 evidence=evidence,
             )
         return EvidenceResult()

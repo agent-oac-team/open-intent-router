@@ -1,3 +1,5 @@
+import re
+from dataclasses import dataclass
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -16,6 +18,7 @@ from app.schemas.routing import (
     RouteRequest,
     RouteResponse,
 )
+from app.schemas.plans import NextAction
 from app.services.context_service import ContextService
 from app.services.invocation_service import build_invocation_input, missing_required_inputs
 from app.services.plan_builder import build_ordered_plan_from_text
@@ -48,29 +51,36 @@ class RouterService:
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         request_id = request.request_id or f"req_{uuid4().hex}"
-        candidates = await self.registry.candidates_for_user(request.user)
-        candidate_ids = [agent.agent_id for agent in candidates]
+        available_agents = await self._available_agent_definitions(request)
+        available_agent_ids = [agent.agent_id for agent in available_agents]
+        tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
+        candidate_ids = available_agent_ids
+        candidates = [agent.to_candidate() for agent in available_agents]
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
         evidence_result = await self._evidence(request, candidate_ids)
-        if evidence_result.route_override:
-            return await self._route_from_evidence_override(
+        if evidence_result.route_override_denied:
+            return await self._route_from_denied_evidence_override(
                 request,
                 request_id,
                 candidate_ids,
                 evidence_result,
+                tag_filter,
+                available_agent_ids,
             )
-        base_context = self.context_service.build_route_context(
-            request,
-            candidate_agent_ids=candidate_ids,
-            host_history=host_history,
-            agent_history=agent_history,
-            recent_results=recent_results,
-            evidence=evidence_result.evidence,
-            intent_hint=evidence_result.intent_hint,
-        )
-        if not candidates:
+        if not available_agents:
+            base_context = self.context_service.build_route_context(
+                request,
+                candidate_agent_ids=[],
+                host_history=host_history,
+                agent_history=agent_history,
+                recent_results=recent_results,
+                evidence=evidence_result.evidence,
+                intent_hint=evidence_result.intent_hint,
+            )
+            base_context = _with_evidence_metadata(base_context, evidence_result)
+            base_context = _with_filter_metadata(base_context, tag_filter, available_agent_ids)
             response = RouteResponse(
                 request_id=request_id,
                 session_id=request.session_id,
@@ -83,19 +93,52 @@ class RouterService:
                 ),
                 context=base_context,
             )
+            response = self._finalize_assistant_message(response)
             await self._after_route(request, response)
             return response
+
+        if evidence_result.route_override:
+            return await self._route_from_evidence_override(
+                request,
+                request_id,
+                candidate_ids,
+                evidence_result,
+                tag_filter,
+                available_agent_ids,
+            )
+        base_context = self.context_service.build_route_context(
+            request,
+            candidate_agent_ids=candidate_ids,
+            host_history=host_history,
+            agent_history=agent_history,
+            recent_results=recent_results,
+            evidence=evidence_result.evidence,
+            intent_hint=evidence_result.intent_hint,
+        )
+        base_context = _with_evidence_metadata(base_context, evidence_result)
+        base_context = _with_filter_metadata(base_context, tag_filter, available_agent_ids)
 
         output = await self.llm_client.route(
             LLMRouteInput(request=request, candidates=candidates, context=base_context)
         )
+        output = self._normalize_candidate_context(output, base_context, candidate_ids)
         output = self._ensure_plan_for_multi_task(output, request, candidates)
+        output = self._collapse_single_step_plan(output, request)
         output = await self._apply_plan_policy(output)
         output = output.model_copy(update={"request_id": request_id})
         output = await self._post_validate(output, request)
+        output = self._clarify_on_low_confidence(output)
         response = await self._clarify_or_attach_invocation(output, request)
+        response = self._finalize_assistant_message(response)
         await self._after_route(request, response)
         return response
+
+    async def _available_agent_definitions(self, request: RouteRequest) -> list[AgentDefinition]:
+        return [
+            agent
+            for agent in await self.registry.list_definitions(enabled_only=True)
+            if agent.is_available_to(request.user)
+        ]
 
     async def _post_validate(self, output: RouteResponse, request: RouteRequest) -> RouteResponse:
         candidate_ids = set(output.context.candidate_agent_ids)
@@ -109,6 +152,58 @@ class RouterService:
             return RouteResponse.model_validate(output.model_dump())
         except ValidationError as exc:
             raise RoutingError("Router output validation failed", details={"errors": exc.errors()}) from exc
+
+    def _normalize_candidate_context(
+        self,
+        output: RouteResponse,
+        base_context: RouteContext,
+        candidate_agent_ids: list[str],
+    ) -> RouteResponse:
+        metadata = {**base_context.metadata, **output.context.metadata}
+        context = output.context.model_copy(
+            update={
+                "candidate_agent_ids": candidate_agent_ids,
+                "evidence": base_context.evidence,
+                "intent_hint": output.context.intent_hint or base_context.intent_hint,
+                "metadata": metadata,
+            }
+        )
+        return output.model_copy(update={"context": context})
+
+    def _clarify_on_low_confidence(self, output: RouteResponse) -> RouteResponse:
+        threshold = self.settings.router_low_confidence_threshold
+        confidence = output.decision.confidence
+        if threshold <= 0 or confidence is None or confidence >= threshold:
+            return output
+        if output.decision.action in {"clarify", "unsupported", "silent", "exit_agent"}:
+            return output
+
+        reason = "Route confidence is below the clarification threshold."
+        metadata = {
+            **output.context.metadata,
+            "low_confidence": {
+                "confidence": confidence,
+                "threshold": threshold,
+                "reason": reason,
+            },
+        }
+        context = output.context.model_copy(update={"metadata": metadata})
+        return output.model_copy(
+            update={
+                "decision": RouteDecision(
+                    status="clarify",
+                    action="clarify",
+                    confidence=confidence,
+                    reason=reason,
+                    message="我还不确定该交给哪个 Agent 处理，请补充一下目标或关键信息。",
+                ),
+                "context": context,
+                "execution_policy": None,
+                "next_action": None,
+                "plan": None,
+                "invocation": None,
+            }
+        )
 
     async def _clarify_or_attach_invocation(
         self,
@@ -124,6 +219,14 @@ class RouterService:
         invocation_input = _build_invocation_input(agent, output, request)
         missing = _missing_required_inputs(agent, invocation_input)
         if missing:
+            message = f"请补充以下信息后再继续：{', '.join(missing)}。"
+            metadata = {
+                **output.context.metadata,
+                "missing_required_inputs": {
+                    "agent_id": agent.agent_id,
+                    "fields": missing,
+                },
+            }
             return output.model_copy(
                 update={
                     "decision": RouteDecision(
@@ -131,7 +234,15 @@ class RouterService:
                         action="clarify",
                         confidence=output.decision.confidence,
                         reason=f"Missing required inputs: {', '.join(missing)}",
-                        message=f"Please provide: {', '.join(missing)}.",
+                        message=message,
+                    ),
+                    "context": output.context.model_copy(update={"metadata": metadata}),
+                    "next_action": NextAction(
+                        type="collect_input",
+                        message=message,
+                        agent_id=agent.agent_id,
+                        params={"missing_inputs": missing},
+                        metadata={"missing_inputs": missing, "target_agent_id": agent.agent_id},
                     ),
                     "invocation": None,
                 }
@@ -143,6 +254,20 @@ class RouterService:
                     agent_id=agent.agent_id,
                     input=invocation_input,
                 )
+            }
+        )
+
+    def _finalize_assistant_message(self, response: RouteResponse) -> RouteResponse:
+        assistant_message = _clean_user_text(response.assistant_message)
+        if not assistant_message:
+            assistant_message = _assistant_message_from_route(response)
+        decision = response.decision
+        if not _clean_user_text(decision.message) and assistant_message:
+            decision = decision.model_copy(update={"message": assistant_message})
+        return response.model_copy(
+            update={
+                "assistant_message": assistant_message,
+                "decision": decision,
             }
         )
 
@@ -193,11 +318,26 @@ class RouterService:
         request_id: str,
         candidate_agent_ids: list[str],
         evidence_result,
+        tag_filter: "TagFilterResult",
+        available_agent_ids: list[str],
     ) -> RouteResponse:
         override = evidence_result.route_override or {}
         target_agent_id = override.get("target_agent_id")
         if target_agent_id and target_agent_id not in candidate_agent_ids:
-            raise RoutingError("Evidence route_override target is not available to the user")
+            evidence_result.route_override_denied = {
+                **override,
+                "target_agent_id": target_agent_id,
+                "reason": "permission_denied",
+            }
+            evidence_result.route_override = None
+            return await self._route_from_denied_evidence_override(
+                request,
+                request_id,
+                candidate_agent_ids,
+                evidence_result,
+                tag_filter,
+                available_agent_ids,
+            )
         response = RouteResponse(
             request_id=request_id,
             session_id=request.session_id,
@@ -217,7 +357,65 @@ class RouterService:
                 evidence=evidence_result.evidence,
             ),
         )
+        response = response.model_copy(
+            update={"context": _with_evidence_metadata(response.context, evidence_result)}
+        )
+        response = response.model_copy(
+            update={
+                "context": _with_filter_metadata(
+                    response.context,
+                    tag_filter,
+                    available_agent_ids,
+                )
+            }
+        )
         response = await self._clarify_or_attach_invocation(response, request)
+        response = self._finalize_assistant_message(response)
+        await self._after_route(request, response)
+        return response
+
+    async def _route_from_denied_evidence_override(
+        self,
+        request: RouteRequest,
+        request_id: str,
+        candidate_agent_ids: list[str],
+        evidence_result,
+        tag_filter: "TagFilterResult",
+        available_agent_ids: list[str],
+    ) -> RouteResponse:
+        denied = evidence_result.route_override_denied or {}
+        target_agent_id = denied.get("target_agent_id")
+        message = "你当前无权限使用该能力，请联系管理员开通权限。"
+        context = RouteContext(
+            relation="unsupported",
+            current_agent_id=request.current_agent.agent_id if request.current_agent else None,
+            candidate_agent_ids=candidate_agent_ids,
+            intent_hint=evidence_result.intent_hint,
+            evidence=evidence_result.evidence,
+            metadata={
+                "permission_denied": True,
+                "route_override_denied": {
+                    "target_agent_id": target_agent_id,
+                    "reason": denied.get("reason", "permission_denied"),
+                },
+            },
+        )
+        context = _with_evidence_metadata(context, evidence_result)
+        context = _with_filter_metadata(context, tag_filter, available_agent_ids)
+        response = RouteResponse(
+            request_id=request_id,
+            session_id=request.session_id,
+            assistant_message=message,
+            decision=RouteDecision(
+                status="unsupported",
+                action="unsupported",
+                confidence=1.0,
+                reason="Matched fixed-question route override but target Agent is unavailable.",
+                message=message,
+            ),
+            context=context,
+        )
+        response = self._finalize_assistant_message(response)
         await self._after_route(request, response)
         return response
 
@@ -276,11 +474,14 @@ class RouterService:
         )
         if plan is None:
             return output
+        action = output.decision.action
+        if action in {"open_agent", "continue_agent"}:
+            action = "reply"
         return output.model_copy(
             update={
                 "decision": RouteDecision(
                     status=output.decision.status,
-                    action="show_plan",
+                    action=action,
                     target_agent_id=None,
                     confidence=output.decision.confidence,
                     reason=output.decision.reason or "Detected an ordered multi-agent task.",
@@ -288,6 +489,38 @@ class RouterService:
                 ),
                 "context": output.context.model_copy(update={"relation": "multi_task"}),
                 "plan": plan,
+                "invocation": None,
+            }
+        )
+
+    def _collapse_single_step_plan(
+        self,
+        output: RouteResponse,
+        request: RouteRequest,
+    ) -> RouteResponse:
+        if output.plan is None or len(output.plan.steps) != 1:
+            return output
+        step = output.plan.steps[0]
+        if step.agent_id not in output.context.candidate_agent_ids:
+            return output
+
+        current_agent_id = request.current_agent.agent_id if request.current_agent else None
+        action = "continue_agent" if current_agent_id == step.agent_id else "open_agent"
+        relation = "continue_current" if current_agent_id == step.agent_id else "new_task"
+        return output.model_copy(
+            update={
+                "decision": RouteDecision(
+                    status=output.decision.status,
+                    action=action,
+                    target_agent_id=step.agent_id,
+                    confidence=output.decision.confidence,
+                    reason=output.decision.reason or "Collapsed single-step plan.",
+                    message=f"Routing to {step.agent_id}.",
+                ),
+                "context": output.context.model_copy(update={"relation": relation}),
+                "execution_policy": None,
+                "next_action": None,
+                "plan": None,
                 "invocation": None,
             }
         )
@@ -347,6 +580,148 @@ class RouterService:
         return None
 
 
+@dataclass
+class TagFilterResult:
+    agents: list[AgentDefinition]
+    status: str
+    matched_agent_ids: list[str]
+    matches: dict[str, list[str]]
+
+
+def _filter_agents_by_tags(text: str, agents: list[AgentDefinition]) -> TagFilterResult:
+    if not agents:
+        return TagFilterResult(
+            agents=[],
+            status="no_available_agents",
+            matched_agent_ids=[],
+            matches={},
+        )
+
+    normalized_text = _normalize_text(text)
+    matches: dict[str, list[str]] = {}
+    for agent in agents:
+        matched_terms = [
+            term for term in _agent_filter_terms(agent) if _matches_filter_term(normalized_text, term)
+        ]
+        if matched_terms:
+            matches[agent.agent_id] = sorted(set(matched_terms), key=str.lower)
+
+    if not matches:
+        return TagFilterResult(
+            agents=agents,
+            status="no_match_no_filter",
+            matched_agent_ids=[],
+            matches={},
+        )
+
+    matched_ids = set(matches)
+    matched_agent_ids = [agent.agent_id for agent in agents if agent.agent_id in matched_ids]
+    return TagFilterResult(
+        agents=agents,
+        status="matched_but_not_applied",
+        matched_agent_ids=matched_agent_ids,
+        matches=matches,
+    )
+
+
+def _agent_filter_terms(agent: AgentDefinition) -> list[str]:
+    terms: list[str] = []
+    terms.extend(agent.tags)
+    terms.extend(agent.capabilities)
+    terms.extend(agent.trigger.keywords)
+    terms.extend(agent.trigger.positive_examples)
+    terms.extend(_metadata_terms(agent.metadata.get("intent_tags")))
+    terms.extend(_metadata_terms(agent.metadata.get("routing_tags")))
+    return [_normalize_text(term) for term in terms if _normalize_text(term)]
+
+
+def _metadata_terms(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list | tuple | set):
+        return [str(item) for item in value if item is not None]
+    return []
+
+
+def _matches_filter_term(normalized_text: str, normalized_term: str) -> bool:
+    if not normalized_text or not normalized_term:
+        return False
+    if normalized_term in normalized_text:
+        return True
+    term_tokens = _tokens(normalized_term)
+    if not term_tokens:
+        return False
+    return any(_contains_token(normalized_text, token) for token in term_tokens)
+
+
+def _with_filter_metadata(
+    context: RouteContext,
+    tag_filter: TagFilterResult,
+    available_agent_ids: list[str],
+) -> RouteContext:
+    effective_candidate_ids = [agent.agent_id for agent in tag_filter.agents]
+    metadata = {
+        **context.metadata,
+        "available_agent_ids": available_agent_ids,
+        "filtered_candidate_agent_ids": effective_candidate_ids,
+        "tag_filter": tag_filter.status,
+        "tag_filter_applied": False,
+        "tag_filter_matched_agent_ids": tag_filter.matched_agent_ids,
+    }
+    if tag_filter.status == "matched_but_not_applied":
+        metadata["tag_filter_matches"] = tag_filter.matches
+        metadata["tag_filter_reason"] = "matched_but_not_applied"
+    elif tag_filter.status == "no_match_no_filter":
+        metadata["tag_filter_reason"] = "no_match_no_filter"
+    return context.model_copy(update={"metadata": metadata})
+
+
+def _with_evidence_metadata(context: RouteContext, evidence_result) -> RouteContext:
+    metadata = {**context.metadata}
+    if evidence_result.candidate_agent_ids:
+        metadata["evidence_candidate_agent_ids"] = evidence_result.candidate_agent_ids
+    if evidence_result.errors:
+        metadata["evidence_errors"] = evidence_result.errors
+    if evidence_result.route_override_denied:
+        denied = evidence_result.route_override_denied
+        metadata["route_override_denied"] = {
+            "target_agent_id": denied.get("target_agent_id"),
+            "reason": denied.get("reason", "permission_denied"),
+        }
+    return context.model_copy(update={"metadata": metadata})
+
+
+def _assistant_message_from_route(response: RouteResponse) -> str:
+    decision_message = _clean_user_text(response.decision.message)
+    if decision_message:
+        return decision_message
+    if response.decision.action == "clarify":
+        return "请补充必要信息后再继续。"
+    if response.plan is not None:
+        return "已生成多步骤执行计划，请在计划面板中确认下一步。"
+    if response.decision.action == "open_agent":
+        target = response.decision.target_agent_id or "目标 Agent"
+        return f"已为你路由到 {target}。"
+    if response.decision.action == "continue_agent":
+        target = response.decision.target_agent_id or "当前 Agent"
+        return f"继续由 {target} 处理。"
+    if response.decision.action == "exit_agent":
+        return "已退出当前 Agent。"
+    if response.decision.action == "unsupported":
+        return "当前没有可用 Agent 可以处理这个请求。"
+    if response.decision.action == "reply":
+        return "已收到。"
+    if response.decision.action == "silent":
+        return ""
+    return "路由完成。"
+
+
+def _clean_user_text(value: object) -> str:
+    return str(value).strip() if isinstance(value, str) else ""
+
+
 def _missing_required_inputs(agent: AgentDefinition, invocation_input: dict) -> list[str]:
     return missing_required_inputs(agent, invocation_input)
 
@@ -357,6 +732,24 @@ def _build_invocation_input(
     request: RouteRequest,
 ) -> dict:
     return build_invocation_input(agent, request.input.text)
+
+
+def _normalize_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value).strip().lower().replace("_", " "))
+
+
+def _tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in re.split(r"[^0-9a-zA-Z\u4e00-\u9fff]+", text)
+        if len(token) >= 2
+    ]
+
+
+def _contains_token(normalized_text: str, token: str) -> bool:
+    if re.fullmatch(r"[0-9a-zA-Z]+", token):
+        return re.search(rf"\b{re.escape(token)}\b", normalized_text) is not None
+    return token in normalized_text
 
 
 def _llm_client(settings: Settings) -> LLMClient:

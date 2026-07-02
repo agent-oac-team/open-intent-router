@@ -39,18 +39,18 @@ import type {
 } from "./types";
 
 const blankAgent = (): AgentDefinition => ({
-  agent_id: "new_agent",
-  name: "New Agent",
-  description: "Describe what this Agent can do.",
+  agent_id: "demo_agent",
+  name: "演示 Agent",
+  description: "描述这个 Agent 能处理的用户意图和可调用能力。",
   version: "0.1.0",
   enabled: true,
   type: "mock",
-  capabilities: ["demo"],
-  domain: "test",
-  tags: ["local"],
+  capabilities: ["演示能力"],
+  domain: "ziya_demo",
+  tags: ["demo"],
   trigger: {
-    keywords: ["demo"],
-    positive_examples: ["run demo"],
+    keywords: ["演示"],
+    positive_examples: ["运行一个演示请求"],
     negative_examples: [],
   },
   access_policy: {
@@ -76,7 +76,7 @@ const blankAgent = (): AgentDefinition => ({
   },
   invocation: {
     type: "mock",
-    config: { response: { ok: true } },
+    config: { response: { ok: true, message: "演示调用完成" } },
     provider_config: {},
   },
   ui_handoff: {
@@ -91,6 +91,12 @@ const blankAgent = (): AgentDefinition => ({
 
 type ExecutionMode = "route" | "route-and-invoke";
 type LlmModeChoice = "mock" | "openai_compatible";
+type DemoPrompt = {
+  title: string;
+  scenario: string;
+  text: string;
+  mode: ExecutionMode;
+};
 type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -100,6 +106,39 @@ type ChatMessage = {
   requestId?: string;
 };
 type StatusTab = "route" | "plan" | "context" | "memory" | "evidence" | "debug";
+
+const demoPrompts: DemoPrompt[] = [
+  {
+    title: "话术生成",
+    scenario: "单意图",
+    text: "帮我生成一段客户邀约话术，语气专业一点。",
+    mode: "route-and-invoke",
+  },
+  {
+    title: "访前准备",
+    scenario: "单意图",
+    text: "明天要拜访一位关注稳健理财的客户，帮我做一下访前准备。",
+    mode: "route-and-invoke",
+  },
+  {
+    title: "系统指引",
+    scenario: "Evidence 强命中",
+    text: "帮我打开客户画像页面",
+    mode: "route-and-invoke",
+  },
+  {
+    title: "多步骤计划",
+    scenario: "多意图",
+    text: "先做访前准备，再生成一段客户沟通话术。",
+    mode: "route",
+  },
+  {
+    title: "理财知识",
+    scenario: "知识问答",
+    text: "理财产品风险等级怎么理解",
+    mode: "route-and-invoke",
+  },
+];
 
 type FormState = {
   agent_id: string;
@@ -139,7 +178,7 @@ function App() {
   const [agentEditorOpen, setAgentEditorOpen] = useState(false);
   const [form, setForm] = useState<FormState>(agentToForm(blankAgent()));
   const [adminToken, setAdminToken] = useState("");
-  const [message, setMessage] = useState("summarize this text");
+  const [message, setMessage] = useState(demoPrompts[0].text);
   const [sessionId, setSessionId] = useState("demo_session");
   const [source, setSource] = useState<RouteRequest["source"]>("host_chat");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("route-and-invoke");
@@ -163,6 +202,11 @@ function App() {
   const [eventResponse, setEventResponse] = useState<JsonRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+
+  function selectDemoPrompt(prompt: DemoPrompt) {
+    setMessage(prompt.text);
+    setExecutionMode(prompt.mode);
+  }
 
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.agent_id === selectedAgentId) || null,
@@ -614,6 +658,7 @@ function App() {
             busy={busy}
             onSubmit={sendMessage}
             onNewConversation={startNewConversation}
+            onSelectDemoPrompt={selectDemoPrompt}
             messages={chatMessages}
           />
         </section>
@@ -974,6 +1019,7 @@ function ConversationPanel(props: {
   busy: boolean;
   onSubmit: (event: FormEvent) => void;
   onNewConversation: () => void;
+  onSelectDemoPrompt: (prompt: DemoPrompt) => void;
   messages: ChatMessage[];
 }) {
   return (
@@ -1007,6 +1053,7 @@ function ConversationPanel(props: {
           </div>
           <TextField label="会话 ID" value={props.sessionId} onChange={props.setSessionId} />
         </div>
+        <DemoPromptShelf onSelect={props.onSelectDemoPrompt} />
         <ChatTranscript messages={props.messages} />
         <TextAreaField label="用户消息" value={props.message} onChange={props.setMessage} rows={4} />
         <details className="advanced-options">
@@ -1057,9 +1104,34 @@ function ConversationPanel(props: {
   );
 }
 
+function DemoPromptShelf({ onSelect }: { onSelect: (prompt: DemoPrompt) => void }) {
+  return (
+    <section className="demo-prompt-shelf" aria-label="演示问题">
+      <div className="demo-prompt-head">
+        <strong>固定演示问题</strong>
+        <span>点击填入，不自动发送</span>
+      </div>
+      <div className="demo-prompt-grid">
+        {demoPrompts.map((prompt) => (
+          <button
+            type="button"
+            className="demo-prompt-card"
+            key={prompt.title}
+            onClick={() => onSelect(prompt)}
+          >
+            <span>{prompt.scenario}</span>
+            <strong>{prompt.title}</strong>
+            <small>{prompt.text}</small>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ChatTranscript({ messages }: { messages: ChatMessage[] }) {
   if (!messages.length) {
-    return <EmptyState icon={<MessageSquareText size={20} />} label="开始对话测试" />;
+    return <EmptyState icon={<MessageSquareText size={20} />} label="选择演示问题或直接输入用户请求" />;
   }
   return (
     <div className="chat-transcript" aria-label="聊天记录">
@@ -1356,13 +1428,10 @@ function DebugTab({
 }
 
 function assistantTextFromRoute(route: RouteResponse): string {
-  const futureRoute = route as RouteResponse & { assistant_message?: string | null };
-  const assistantMessage = futureRoute.assistant_message?.trim();
+  const assistantMessage = route.assistant_message?.trim();
   if (assistantMessage) return assistantMessage;
   const decisionMessage = route.decision.message?.trim();
   if (decisionMessage) return decisionMessage;
-  const reason = route.decision.reason?.trim();
-  if (reason) return reason;
   if (route.decision.action === "silent") return "已收到。";
   return "路由完成。";
 }
@@ -1634,10 +1703,10 @@ function defaultEventJson(): string {
     {
       event_id: "event_demo_001",
       session_id: "demo_session",
-      agent_id: "summarizer",
+      agent_id: "script_writer",
       event_type: "agent_result",
       status: "completed",
-      payload: { note: "done" },
+      payload: { note: "话术生成演示事件已完成" },
     },
     null,
     2,

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     router_max_agent_history_messages: int = 12
     router_max_recent_events: int = 10
     router_max_recent_results: int = 5
+    router_low_confidence_threshold: float = 0.2
 
     agent_http_timeout_seconds: float = 30.0
 

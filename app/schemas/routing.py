@@ -100,6 +100,7 @@ class InvocationPreview(StrictBaseModel):
 class RouteResponse(StrictBaseModel):
     request_id: str
     session_id: str
+    assistant_message: str | None = None
     decision: RouteDecision
     context: RouteContext
     execution_policy: ExecutionPolicy | None = None

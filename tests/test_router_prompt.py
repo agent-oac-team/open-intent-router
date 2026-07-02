@@ -1,6 +1,10 @@
 from datetime import datetime, timezone
 
-from app.prompts.router_prompt import DEFAULT_SYSTEM_PROMPT, RouterPromptTemplate
+from app.prompts.router_prompt import (
+    DEFAULT_SYSTEM_PROMPT,
+    RouterPromptTemplate,
+    route_response_schema_hint,
+)
 from app.schemas.agents import CandidateAgent
 from app.schemas.common import UserContext
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteRequest
@@ -44,6 +48,7 @@ user_template: |
     assert "自定义用户模板" in messages[1]["content"]
     assert '"candidate_agents"' in messages[1]["content"]
     assert '"response_schema_hint"' in messages[1]["content"]
+    assert '"routing_rules"' in messages[1]["content"]
 
 
 def test_router_prompt_serializes_datetime_in_request() -> None:
@@ -65,3 +70,10 @@ def test_router_prompt_serializes_datetime_in_request() -> None:
     messages = RouterPromptTemplate().messages(payload)
 
     assert "2026-01-01T00:00:00Z" in messages[1]["content"]
+
+
+def test_response_schema_hint_excludes_prompt_only_rules() -> None:
+    schema_hint = route_response_schema_hint(["summarizer"])
+
+    assert "rules" not in schema_hint
+    assert "assistant_message" in schema_hint

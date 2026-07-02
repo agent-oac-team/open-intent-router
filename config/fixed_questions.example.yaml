@@ -1,15 +1,23 @@
 fixed_questions:
-  - question: summarize this text
-    match_type: exact
-    strength: weak
-    intent_hint: summarize_text
-    candidate_agent_ids:
-      - summarizer
-
-  - question: open the dashboard
+  - question: 帮我打开客户画像页面
     match_type: exact
     strength: strong
+    intent_hint: open_customer_profile_help
     route_override:
       action: open_agent
-      target_agent_id: handoff_dashboard
-      message: Opening the dashboard.
+      target_agent_id: system_usage_guide
+      message: 已定位到系统使用指引，将由宿主系统打开客户画像相关页面。
+
+  - question: 理财产品风险等级怎么理解
+    match_type: exact
+    strength: weak
+    intent_hint: wealth_risk_level_explanation
+    candidate_agent_ids:
+      - wealth_knowledge
+
+  - question: 帮我生成一段客户邀约话术
+    match_type: exact
+    strength: weak
+    intent_hint: customer_invitation_script
+    candidate_agent_ids:
+      - script_writer

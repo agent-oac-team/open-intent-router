@@ -64,6 +64,15 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev -- --port 5175
 
 当 Registry 是 `file` 模式时，UI 会提示只读。需要完整 CRUD 时，请使用 database 或 hybrid 模式。
 
+当前 `config/agents.example.yaml` 提供四个用于内部演示的 Agent：
+
+- `script_writer`：话术生成。
+- `visit_preparation`：访前准备。
+- `system_usage_guide`：系统使用指引，使用 `ui_handoff` 演示宿主页面跳转。
+- `wealth_knowledge`：理财知识。
+
+这些配置用于演示中控接入形态，不代表生产子牙 Agent 清单。
+
 Admin 写操作策略：
 
 - `APP_ENV=local` 且没有配置 `ADMIN_API_TOKEN` 时，只允许本机 loopback 访问执行写操作，例如 `127.0.0.1`。
@@ -109,19 +118,28 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 
 ## 聊天窗口与状态面板
 
-M1 阶段的测试台采用“中间聊天、右侧状态”的布局：
+测试台采用“中间聊天、右侧状态”的布局：
 
 - 中间聊天窗口只展示用户气泡和中控回答气泡，不再显示“第 N 轮”的调试卡片。
 - route-only 和 route-and-invoke 仍然在聊天区上方切换。
+- 聊天区提供 5 条固定演示问题按钮，点击后只填入输入框并切换推荐执行模式，不会自动发送。
 - 高级上下文仍在聊天区下方折叠配置，用于测试 `source`、`current_agent`、`frontend_context`、`plan_id` 和 `step_id`。
 - 右侧 Route 标签展示 `decision.action`、目标 Agent、状态、置信度、原因、消息、候选 Agent 和调用预览。
 - 右侧 Plan 标签展示计划状态、执行策略、下一步动作、步骤列表和计划操作按钮。
 - 右侧 Evidence 标签展示当前响应中的证据命中。
 - 右侧 Debug 标签保留完整 JSON、InvocationResult、UI Handoff 和 Agent Event JSON 提交。
 
-当前后端还没有顶层 `assistant_message` 字段。M1 聊天气泡使用 `decision.message` 作为中控回答来源；如果为空，前端会兼容回退到 `decision.reason` 或通用完成文案。后续 M3 增加 `assistant_message` 后，聊天窗口再迁移为优先消费 `assistant_message`。
+M3 起后端返回顶层 `assistant_message` 字段。聊天窗口优先消费 `assistant_message`，缺失时才兼容回退到 `decision.message`；`decision.reason` 仍保留在 Route / Debug 状态区，不再作为普通聊天气泡来源。`next_action.message` 属于 Plan / Host 协作状态，`AgentInvocationResult.message` 属于调用结果摘要，二者都由右侧状态面板展示。
 
 Context 和 Memory 标签是为后续 Context Pack 与 Memory 模块预留的状态入口；在当前响应没有相关数据时显示空态，不代表路由错误。
+
+推荐演示顺序：
+
+1. 话术生成：展示单意图路由和 mock 调用。
+2. 访前准备：展示另一个单意图能力。
+3. 系统指引：展示固定问题 Evidence 强命中和 `ui_handoff`。
+4. 多步骤计划：展示 `plan`、`execution_policy` 和 Plan 面板。
+5. 理财知识：展示知识问答类 Agent，并说明后续可替换为子牙知识库 Evidence Provider。
 
 ## DeepSeek 配置
 

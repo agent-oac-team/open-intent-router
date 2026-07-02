@@ -11,7 +11,7 @@
 - 为宿主应用返回稳定、可审计的路由决策结构。
 - 提供基础 `route-and-invoke` 能力，支持路由后直接调用目标 Agent。
 - 使用数据库注册表作为主数据源，并支持 YAML / JSON 本地文件兜底。
-- 通过可选 Evidence Provider 支持固定问法命中、意图提示和候选 Agent 收窄。
+- 通过可选 Evidence Provider 支持固定问法强路由、无权限拒绝、意图提示和证据上下文。
 
 ## 不适合解决的问题
 
@@ -144,7 +144,7 @@ Agent 查询：
   },
   "input": {
     "type": "text",
-    "text": "summarize this text"
+    "text": "帮我生成一段客户邀约话术，语气专业一点。"
   }
 }
 ```
@@ -220,6 +220,7 @@ ROUTER_LLM_API_KEY=replace-with-real-key
 - 可视化测试 UI：[docs/visual-test-ui.md](/Users/lijingtong/project/open_intent_router/docs/visual-test-ui.md)
 - Evidence Provider：[docs/evidence-provider.md](/Users/lijingtong/project/open_intent_router/docs/evidence-provider.md)
 - OAC 迁移说明：[docs/oac-migration.md](/Users/lijingtong/project/open_intent_router/docs/oac-migration.md)
+- 中控系统交付说明：[docs/中控系统交付说明.md](/Users/lijingtong/project/open_intent_router/docs/中控系统交付说明.md)
 
 ## 设计原则
 

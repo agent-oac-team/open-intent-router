@@ -131,6 +131,7 @@ export type RouteRequest = {
 export type RouteResponse = {
   request_id: string;
   session_id: string;
+  assistant_message?: string | null;
   decision: {
     status: string;
     action: string;

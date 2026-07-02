@@ -15,11 +15,27 @@
 
 典型返回内容包括：
 
+- 顶层 `assistant_message`，即普通聊天窗口应展示给用户的主文案。
 - 候选 Agent 列表。
 - 最终选中的 `target_agent_id`。
-- 路由动作，例如 `invoke_agent`、`ui_handoff` 或 `clarify`。
+- 路由动作，例如 `reply`、`clarify`、`open_agent`、`continue_agent`、`exit_agent`、`show_plan`、`unsupported` 或 `silent`。
 - 置信度、理由、缺失输入、Evidence 命中信息。
 - 路由日志 ID，便于后续审计。
+
+消息字段职责：
+
+- `assistant_message`：聊天窗口主来源，后端会在路由归一化阶段校验和补齐。
+- `decision.message`：路由阶段兼容文案，旧客户端可回退使用。
+- `decision.reason`：路由解释和调试原因，不作为聊天主文案。
+- `next_action.message`：Plan 或宿主协作状态提示，例如确认计划、补充输入或等待事件。
+- `AgentInvocationResult.message`：Agent 调用摘要，只属于调用结果。
+
+路由前筛选顺序固定为：权限过滤 > 强确定性规则 > 语义/标签筛选 > LLM 判断。
+
+- 权限过滤是硬边界。候选 Agent 会先按 enabled、角色、用户组、租户和属性过滤；后续 Evidence、固定问、标签或 LLM 都不能扩大到用户不可访问的 Agent。
+- 固定问强命中是强路由。当 Evidence Provider 返回可用 Agent 的强 `route_override` 时，本轮直接返回路由结果，不再调用 LLM。
+- 固定问强命中但目标 Agent 对当前用户不可用时，返回 `status=unsupported`、`action=unsupported` 和无权限提示，并在 `context.metadata.permission_denied=true` 中记录原因。
+- 标签/语义筛选在当前版本只作为召回观察信号，不裁剪候选集。命中信息会写入 `context.metadata.tag_filter`、`tag_filter_matched_agent_ids` 和 `tag_filter_matches`；传给 Evidence Provider 和 LLM 的候选集仍是权限过滤后的全部可用 Agent。
 
 ### `POST /api/v1/route-and-invoke`
 

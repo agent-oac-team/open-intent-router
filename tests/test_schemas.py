@@ -1,6 +1,7 @@
 import pytest
+from typing import get_args
 
-from app.schemas.common import normalize_artifact_refs
+from app.schemas.common import RouteAction, normalize_artifact_refs
 from app.schemas.plans import Plan
 from app.schemas.routing import RouteDecision, RouteRequest, RouteResponse
 
@@ -31,6 +32,39 @@ def test_route_response_rejects_target_outside_candidates() -> None:
             decision=RouteDecision(action="open_agent", target_agent_id="missing"),
             context={"relation": "new_task", "candidate_agent_ids": ["summarizer"]},
         )
+
+
+def test_route_action_set_covers_m3_contract() -> None:
+    assert set(get_args(RouteAction)) == {
+        "reply",
+        "clarify",
+        "open_agent",
+        "continue_agent",
+        "exit_agent",
+        "show_plan",
+        "unsupported",
+        "silent",
+    }
+    RouteDecision(action="reply")
+    RouteDecision(action="clarify")
+    RouteDecision(action="open_agent", target_agent_id="summarizer")
+    RouteDecision(action="continue_agent", target_agent_id="summarizer")
+    RouteDecision(action="exit_agent")
+    RouteDecision(action="show_plan")
+    RouteDecision(action="unsupported")
+    RouteDecision(action="silent")
+
+
+def test_route_response_accepts_assistant_message() -> None:
+    response = RouteResponse(
+        request_id="r1",
+        session_id="s1",
+        assistant_message="已路由。",
+        decision=RouteDecision(action="reply", message="兼容文案"),
+        context={"relation": "new_task", "candidate_agent_ids": []},
+    )
+
+    assert response.assistant_message == "已路由。"
 
 
 def test_plan_rejects_dependency_cycles() -> None:

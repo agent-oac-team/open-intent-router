@@ -19,9 +19,10 @@ class MockLLMClient:
             return RouteResponse(
                 request_id=payload.request.request_id or f"req_{uuid4().hex}",
                 session_id=payload.request.session_id,
+                assistant_message="已生成多步骤执行计划，请确认后继续。",
                 decision=RouteDecision(
                     status="ok",
-                    action="show_plan",
+                    action="reply",
                     target_agent_id=None,
                     confidence=0.6,
                     reason="Mock router detected an ordered multi-agent task.",
@@ -72,6 +73,7 @@ class MockLLMClient:
         return RouteResponse(
             request_id=payload.request.request_id or f"req_{uuid4().hex}",
             session_id=payload.request.session_id,
+            assistant_message=decision.message,
             decision=decision,
             context=RouteContext(
                 relation="new_task",

@@ -5,18 +5,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 const mockAgent = {
-  agent_id: "summarizer",
-  name: "Summarizer",
-  description: "Summarize text",
+  agent_id: "script_writer",
+  name: "话术生成",
+  description: "根据沟通目标生成客户沟通话术。",
   version: "1.0.0",
   enabled: true,
   type: "mock",
-  capabilities: ["summarize"],
-  domain: "productivity",
-  tags: ["text"],
+  capabilities: ["话术生成"],
+  domain: "ziya_demo",
+  tags: ["话术"],
   trigger: {
-    keywords: ["summarize"],
-    positive_examples: ["summarize this text"],
+    keywords: ["话术"],
+    positive_examples: ["帮我生成一段客户邀约话术"],
     negative_examples: [],
   },
   access_policy: {
@@ -38,11 +38,11 @@ const mockAgent = {
   output_schema: {
     type: "object",
     required: [],
-    properties: { summary: { type: "string" } },
+    properties: { draft: { type: "string" } },
   },
   invocation: {
     type: "mock",
-    config: { response: { summary: "ok" } },
+    config: { response: { draft: "ok" } },
     provider_config: {},
   },
   ui_handoff: {
@@ -94,30 +94,31 @@ describe("意图路由测试台", () => {
             route: {
               request_id: "req_1",
               session_id: body.session_id,
+              assistant_message: "我会交给话术生成处理。",
               decision: {
                 status: "ok",
                 action: "open_agent",
-                target_agent_id: "summarizer",
+                target_agent_id: "script_writer",
                 confidence: 0.7,
                 reason: "test",
-                message: "Routing to Summarizer.",
+                message: "Routing to 话术生成.",
               },
               context: {
-                candidate_agent_ids: ["summarizer"],
+                candidate_agent_ids: ["script_writer"],
                 evidence: [],
               },
               invocation: {
                 mode: "deferred",
-                agent_id: "summarizer",
+                agent_id: "script_writer",
                 input: { text: body.input.text },
               },
             },
             result: {
               run_id: "run_1",
-              agent_id: "summarizer",
+              agent_id: "script_writer",
               status: "completed",
               message: "ok",
-              output: { summary: "ok" },
+              output: { draft: "ok" },
               artifact_refs: [],
               usage: {},
             },
@@ -128,6 +129,7 @@ describe("意图路由测试台", () => {
           return json({
             request_id: "req_plan",
             session_id: body.session_id,
+            assistant_message: "已生成计划，请在右侧确认。",
             decision: {
               status: "ok",
               action: "reply",
@@ -138,7 +140,7 @@ describe("意图路由测试台", () => {
             },
             context: {
               relation: "multi_task",
-              candidate_agent_ids: ["summarizer"],
+              candidate_agent_ids: ["script_writer"],
               evidence: [],
             },
             execution_policy: "require_confirmation",
@@ -161,8 +163,8 @@ describe("意图路由测试台", () => {
               steps: [
                 {
                   step_id: "step_1",
-                  agent_id: "summarizer",
-                  description: "总结文本",
+                  agent_id: "script_writer",
+                  description: "生成话术",
                   status: "pending",
                   depends_on: [],
                   artifact_refs: [],
@@ -181,15 +183,18 @@ describe("意图路由测试台", () => {
 
     expect(await screen.findByText("意图路由测试台")).toBeInTheDocument();
     expect(await screen.findByText("mock-router")).toBeInTheDocument();
+    const demoPrompts = screen.getByLabelText("演示问题");
+    expect(within(demoPrompts).getByRole("button", { name: /话术生成/i })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
 
     const transcript = screen.getByLabelText("聊天记录");
-    expect(within(transcript).getByText("summarize this text")).toBeInTheDocument();
-    expect(await within(transcript).findByText("Routing to Summarizer.")).toBeInTheDocument();
+    expect(within(transcript).getByText("帮我生成一段客户邀约话术，语气专业一点。")).toBeInTheDocument();
+    expect(await within(transcript).findByText("我会交给话术生成处理。")).toBeInTheDocument();
+    expect(within(transcript).queryByText("Routing to 话术生成.")).not.toBeInTheDocument();
     expect(screen.queryByText("第 1 轮")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("open_agent").length).toBeGreaterThan(0));
-    expect(screen.getAllByText("summarizer").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("script_writer").length).toBeGreaterThan(0);
   });
 
   it("agent_chat 缺少当前 Agent 时阻止提交", async () => {
@@ -209,6 +214,10 @@ describe("意图路由测试台", () => {
     await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "只路由" }));
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+
+    const transcript = screen.getByLabelText("聊天记录");
+    expect(await within(transcript).findByText("已生成计划，请在右侧确认。")).toBeInTheDocument();
+    expect(within(transcript).queryByText("请确认是否执行该计划。")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("tab", { name: /Plan/i }));
     expect(await screen.findByText("plan_1")).toBeInTheDocument();

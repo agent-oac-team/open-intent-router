@@ -50,6 +50,7 @@ class RouterPromptTemplate:
             "response_schema_hint": route_response_schema_hint(
                 [agent.agent_id for agent in payload.candidates]
             ),
+            "routing_rules": route_response_rules(),
         }
         payload_json = json.dumps(prompt_payload, ensure_ascii=False)
         return [
@@ -65,6 +66,7 @@ def route_response_schema_hint(candidate_agent_ids: list[str]) -> dict:
     return {
         "request_id": "string",
         "session_id": "string",
+        "assistant_message": "string|null; primary user-visible chat text",
         "decision": {
             "status": "ok|clarify|unsupported|error",
             "action": "reply|clarify|open_agent|continue_agent|exit_agent|show_plan|unsupported|silent",
@@ -112,12 +114,30 @@ def route_response_schema_hint(candidate_agent_ids: list[str]) -> dict:
             ],
         },
         "invocation": None,
-        "rules": [
-            "Single-agent requests should use open_agent or continue_agent and plan must be null.",
-            "Multi-intent or ordered requests such as 'first summarize, then create a task' must set context.relation=multi_task, target_agent_id=null, invocation=null, and include plan.steps.",
-            "For multi-intent requests, plan presence is the primary contract. action=show_plan is accepted for compatibility but is not required.",
-            "If execution_policy=require_confirmation, include next_action.type=confirm_plan.",
-            "Every plan step agent_id must be selected from candidate_agent_ids.",
-            "Use dependency edges in depends_on when a later step needs the previous step output.",
-        ],
     }
+
+
+def route_response_rules() -> list[str]:
+    return [
+        "Single-agent requests should use open_agent or continue_agent and plan must be null.",
+        "assistant_message is the primary chat text. Keep it concise and user-visible.",
+        "decision.message is compatibility route-stage text; decision.reason is for debug or route explanation.",
+        "next_action.message belongs to plan or host collaboration status and must not be appended to assistant_message.",
+        (
+            "Do not create a plan for a single intent such as 'summarize this text'; "
+            "route it to the matching single Agent instead."
+        ),
+        "For normal single-agent routing, execution_policy and next_action must be null.",
+        (
+            "Multi-intent or ordered requests such as 'first summarize, then create a task' "
+            "must set context.relation=multi_task, target_agent_id=null, invocation=null, "
+            "and include plan.steps."
+        ),
+        (
+            "For multi-intent requests, plan presence is the primary contract. "
+            "action=show_plan is accepted for compatibility but is not required."
+        ),
+        "If execution_policy=require_confirmation, include next_action.type=confirm_plan.",
+        "Every plan step agent_id must be selected from candidate_agent_ids.",
+        "Use dependency edges in depends_on when a later step needs the previous step output.",
+    ]
