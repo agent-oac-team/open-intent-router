@@ -6,10 +6,12 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import RoutingError
+from app.core.redaction import redact_value
 from app.llm.client import LLMClient
 from app.llm.mock import MockLLMClient
 from app.llm.openai_compatible import OpenAICompatibleLLMClient
 from app.schemas.agents import AgentDefinition
+from app.schemas.common import JsonDict
 from app.schemas.routing import (
     InvocationPreview,
     LLMRouteInput,
@@ -59,6 +61,7 @@ class RouterService:
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
+        active_plan = await self._active_plan(request)
         evidence_result = await self._evidence(request, candidate_ids)
         if evidence_result.route_override_denied:
             return await self._route_from_denied_evidence_override(
@@ -68,15 +71,21 @@ class RouterService:
                 evidence_result,
                 tag_filter,
                 available_agent_ids,
+                host_history=host_history,
+                agent_history=agent_history,
+                recent_results=recent_results,
+                active_plan=active_plan,
             )
         if not available_agents:
             base_context = self.context_service.build_route_context(
                 request,
                 candidate_agent_ids=[],
+                request_id=request_id,
                 host_history=host_history,
                 agent_history=agent_history,
                 recent_results=recent_results,
                 evidence=evidence_result.evidence,
+                active_plan=active_plan,
                 intent_hint=evidence_result.intent_hint,
             )
             base_context = _with_evidence_metadata(base_context, evidence_result)
@@ -105,14 +114,20 @@ class RouterService:
                 evidence_result,
                 tag_filter,
                 available_agent_ids,
+                host_history=host_history,
+                agent_history=agent_history,
+                recent_results=recent_results,
+                active_plan=active_plan,
             )
         base_context = self.context_service.build_route_context(
             request,
             candidate_agent_ids=candidate_ids,
+            request_id=request_id,
             host_history=host_history,
             agent_history=agent_history,
             recent_results=recent_results,
             evidence=evidence_result.evidence,
+            active_plan=active_plan,
             intent_hint=evidence_result.intent_hint,
         )
         base_context = _with_evidence_metadata(base_context, evidence_result)
@@ -301,6 +316,11 @@ class RouterService:
             )
         ]
 
+    async def _active_plan(self, request: RouteRequest):
+        if not self.plan_service or not request.plan_id:
+            return None
+        return await self.plan_service.get_plan(request.plan_id)
+
     async def _evidence(self, request: RouteRequest, candidate_agent_ids: list[str]):
         if not self.evidence_provider:
             from app.plugins.evidence import EvidenceResult
@@ -320,6 +340,11 @@ class RouterService:
         evidence_result,
         tag_filter: "TagFilterResult",
         available_agent_ids: list[str],
+        *,
+        host_history: list[JsonDict] | None = None,
+        agent_history: list[JsonDict] | None = None,
+        recent_results: list[JsonDict] | None = None,
+        active_plan=None,
     ) -> RouteResponse:
         override = evidence_result.route_override or {}
         target_agent_id = override.get("target_agent_id")
@@ -337,7 +362,22 @@ class RouterService:
                 evidence_result,
                 tag_filter,
                 available_agent_ids,
+                host_history=host_history,
+                agent_history=agent_history,
+                recent_results=recent_results,
+                active_plan=active_plan,
             )
+        base_context = self.context_service.build_route_context(
+            request,
+            candidate_agent_ids=candidate_agent_ids,
+            request_id=request_id,
+            host_history=host_history,
+            agent_history=agent_history,
+            recent_results=recent_results,
+            evidence=evidence_result.evidence,
+            active_plan=active_plan,
+            intent_hint=evidence_result.intent_hint,
+        )
         response = RouteResponse(
             request_id=request_id,
             session_id=request.session_id,
@@ -349,17 +389,9 @@ class RouterService:
                 reason="Matched fixed-question route override.",
                 message=override.get("message", "Matched a fixed question."),
             ),
-            context=RouteContext(
-                relation="new_task",
-                current_agent_id=request.current_agent.agent_id if request.current_agent else None,
-                candidate_agent_ids=candidate_agent_ids,
-                intent_hint=evidence_result.intent_hint,
-                evidence=evidence_result.evidence,
-            ),
+            context=base_context,
         )
-        response = response.model_copy(
-            update={"context": _with_evidence_metadata(response.context, evidence_result)}
-        )
+        response = response.model_copy(update={"context": _with_evidence_metadata(response.context, evidence_result)})
         response = response.model_copy(
             update={
                 "context": _with_filter_metadata(
@@ -382,23 +414,38 @@ class RouterService:
         evidence_result,
         tag_filter: "TagFilterResult",
         available_agent_ids: list[str],
+        *,
+        host_history: list[JsonDict] | None = None,
+        agent_history: list[JsonDict] | None = None,
+        recent_results: list[JsonDict] | None = None,
+        active_plan=None,
     ) -> RouteResponse:
         denied = evidence_result.route_override_denied or {}
         target_agent_id = denied.get("target_agent_id")
         message = "你当前无权限使用该能力，请联系管理员开通权限。"
-        context = RouteContext(
-            relation="unsupported",
-            current_agent_id=request.current_agent.agent_id if request.current_agent else None,
+        context = self.context_service.build_route_context(
+            request,
             candidate_agent_ids=candidate_agent_ids,
-            intent_hint=evidence_result.intent_hint,
+            request_id=request_id,
+            host_history=host_history,
+            agent_history=agent_history,
+            recent_results=recent_results,
             evidence=evidence_result.evidence,
-            metadata={
-                "permission_denied": True,
-                "route_override_denied": {
-                    "target_agent_id": target_agent_id,
-                    "reason": denied.get("reason", "permission_denied"),
+            active_plan=active_plan,
+            intent_hint=evidence_result.intent_hint,
+        )
+        context = context.model_copy(
+            update={
+                "relation": "unsupported",
+                "metadata": {
+                    **context.metadata,
+                    "permission_denied": True,
+                    "route_override_denied": {
+                        "target_agent_id": target_agent_id,
+                        "reason": denied.get("reason", "permission_denied"),
+                    },
                 },
-            },
+            }
         )
         context = _with_evidence_metadata(context, evidence_result)
         context = _with_filter_metadata(context, tag_filter, available_agent_ids)
@@ -438,6 +485,9 @@ class RouterService:
         if self.route_log_repository:
             from app.schemas.logs import RouteLog
 
+            context_pack_summary = self.context_service.context_pack_log_summary(
+                response.context.metadata.get("context_pack")
+            )
             await self.route_log_repository.add(
                 RouteLog(
                     request_id=response.request_id,
@@ -447,7 +497,8 @@ class RouterService:
                     prompt_summary=request.input.text[:500],
                     evidence=response.context.evidence,
                     parsed_output={
-                        **response.model_dump(),
+                        **_route_log_response(response, context_pack_summary),
+                        "context_pack_usage": context_pack_summary,
                         "execution_policy": response.execution_policy,
                         "next_action": (
                             response.next_action.model_dump(mode="json")
@@ -691,6 +742,27 @@ def _with_evidence_metadata(context: RouteContext, evidence_result) -> RouteCont
             "reason": denied.get("reason", "permission_denied"),
         }
     return context.model_copy(update={"metadata": metadata})
+
+
+def _route_log_response(
+    response: RouteResponse,
+    context_pack_summary: JsonDict | None,
+) -> JsonDict:
+    payload = response.model_dump(mode="json")
+    context = payload.get("context")
+    if isinstance(context, dict):
+        metadata = context.get("metadata")
+        if isinstance(metadata, dict):
+            metadata = {**metadata}
+            for key in ["host_history", "agent_history", "recent_results", "recent_events"]:
+                value = metadata.pop(key, None)
+                if isinstance(value, list):
+                    metadata[f"{key}_count"] = len(value)
+            metadata.pop("active_plan", None)
+            if "context_pack" in metadata:
+                metadata["context_pack"] = context_pack_summary
+            context["metadata"] = redact_value(metadata)
+    return redact_value(payload)
 
 
 def _assistant_message_from_route(response: RouteResponse) -> str:

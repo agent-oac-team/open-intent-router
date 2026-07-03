@@ -30,6 +30,8 @@ import { api, isApiError } from "./api";
 import type {
   AgentDefinition,
   AgentListResponse,
+  ContextPackDebug,
+  ContextSelectionDebug,
   JsonRecord,
   RouteAndInvokeResponse,
   RouteRequest,
@@ -1370,13 +1372,71 @@ function EvidenceTab({ routeResponse }: { routeResponse: RouteResponse | null })
 }
 
 function ContextTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
-  const contextPack = contextValue(routeResponse, "context_pack") || metadataValue(routeResponse, "context_pack");
+  const contextPack = contextPackFromRoute(routeResponse);
   if (!contextPack) {
     return <EmptyState icon={<Braces size={20} />} label="暂无 Context Pack 数据" />;
   }
+  const usage = contextPack.usage;
+  const budgetPercent = usage.budget_tokens > 0 ? Math.min(100, Math.round((usage.used_tokens / usage.budget_tokens) * 100)) : 0;
+  const groups = groupContextSelection(contextPack.selection || []);
   return (
     <div className="status-section">
-      <JsonBlock title="Context Pack" value={contextPack} />
+      <div className="context-pack-summary">
+        <Metric label="预算使用" value={`${usage.used_tokens}/${usage.budget_tokens} tokens`} />
+        <Metric label="使用率" value={`${budgetPercent}%`} />
+        <Metric label="已选项目" value={String(usage.included_count)} />
+        <Metric label="丢弃项目" value={String(usage.dropped_count)} />
+      </div>
+      <dl className="detail-list">
+        <div>
+          <dt>Pack</dt>
+          <dd>{contextPack.pack_id}</dd>
+        </div>
+        <div>
+          <dt>估算来源</dt>
+          <dd>{usage.usage_source}</dd>
+        </div>
+        <div>
+          <dt>裁剪</dt>
+          <dd>
+            {usage.truncated_count || usage.summary_placeholder_count
+              ? `truncated=${usage.truncated_count}, summary=${usage.summary_placeholder_count}`
+              : "-"}
+          </dd>
+        </div>
+        <div>
+          <dt>丢弃原因</dt>
+          <dd>{formatReasonMap(usage.drop_reasons)}</dd>
+        </div>
+      </dl>
+      <div className="context-group-list">
+        {groups.map((group) => (
+          <section className="context-group" key={group.source}>
+            <div className="context-group-head">
+              <strong>{group.source}</strong>
+              <span>
+                {group.included}/{group.items.length} included
+              </span>
+            </div>
+            {group.items.map((item) => (
+              <article className={`context-item-row ${item.included ? "included" : "dropped"}`} key={item.item_id}>
+                <div>
+                  <strong>{item.item_id}</strong>
+                  <span>{item.role || item.scope}</span>
+                </div>
+                <div className="context-item-meta">
+                  <span>{item.token_estimate} tok</span>
+                  <span>{item.status}</span>
+                  {item.drop_reason ? <span>{item.drop_reason}</span> : null}
+                  {item.truncated ? <span>truncated</span> : null}
+                  {item.agent_id ? <span>{item.agent_id}</span> : null}
+                </div>
+              </article>
+            ))}
+          </section>
+        ))}
+      </div>
+      <JsonBlock title="Context Pack JSON" value={contextPack} defaultOpen={false} />
     </div>
   );
 }
@@ -1451,6 +1511,35 @@ function metadataValue(routeResponse: RouteResponse | null, key: string): unknow
   const metadata = contextValue(routeResponse, "metadata");
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
   return (metadata as JsonRecord)[key] ?? null;
+}
+
+function contextPackFromRoute(routeResponse: RouteResponse | null): ContextPackDebug | null {
+  const value = contextValue(routeResponse, "context_pack") || metadataValue(routeResponse, "context_pack");
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ContextPackDebug>;
+  if (!candidate.usage || !candidate.budget || !Array.isArray(candidate.selection)) return null;
+  return candidate as ContextPackDebug;
+}
+
+function groupContextSelection(selection: ContextSelectionDebug[]) {
+  const bySource = new Map<string, ContextSelectionDebug[]>();
+  for (const item of selection) {
+    const current = bySource.get(item.source) || [];
+    current.push(item);
+    bySource.set(item.source, current);
+  }
+  return Array.from(bySource.entries()).map(([source, items]) => ({
+    source,
+    items,
+    included: items.filter((item) => item.included).length,
+  }));
+}
+
+function formatReasonMap(value: Record<string, number> | undefined): string {
+  if (!value || !Object.keys(value).length) return "-";
+  return Object.entries(value)
+    .map(([reason, count]) => `${reason}: ${count}`)
+    .join(", ");
 }
 
 function arrayContextValue(routeResponse: RouteResponse | null, key: string): unknown[] {

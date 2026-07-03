@@ -5,6 +5,7 @@ from app.prompts.router_prompt import (
     RouterPromptTemplate,
     route_response_schema_hint,
 )
+from app.services.context_service import ContextService
 from app.schemas.agents import CandidateAgent
 from app.schemas.common import UserContext
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteRequest
@@ -72,8 +73,47 @@ def test_router_prompt_serializes_datetime_in_request() -> None:
     assert "2026-01-01T00:00:00Z" in messages[1]["content"]
 
 
+def test_router_prompt_includes_context_pack_debug_data() -> None:
+    request = RouteRequest.model_validate(
+        {
+            "session_id": "s1",
+            "user": {"id": "u1", "roles": ["operator"]},
+            "input": {"text": "summarize this text"},
+        }
+    )
+    context = ContextService(settings=_settings()).build_route_context(
+        request,
+        request_id="req_1",
+        candidate_agent_ids=["summarizer"],
+        evidence=[{"id": "ev1", "content": "routing evidence"}],
+    )
+    payload = LLMRouteInput(
+        request=request,
+        candidates=[
+            CandidateAgent(
+                agent_id="summarizer",
+                name="Summarizer",
+                description="Summarize text",
+            )
+        ],
+        context=context,
+    )
+
+    messages = RouterPromptTemplate().messages(payload)
+
+    assert '"context_pack"' in messages[1]["content"]
+    assert '"current_input"' in messages[1]["content"]
+    assert '"routing evidence"' in messages[1]["content"]
+
+
 def test_response_schema_hint_excludes_prompt_only_rules() -> None:
     schema_hint = route_response_schema_hint(["summarizer"])
 
     assert "rules" not in schema_hint
     assert "assistant_message" in schema_hint
+
+
+def _settings():
+    from app.core.config import Settings
+
+    return Settings(storage_backend="memory", registry_backend="database")

@@ -187,6 +187,29 @@ Prompt 模板支持两个字段：
 
 如果配置文件不存在，系统会回退到 [app/prompts/router_prompt.py](/Users/lijingtong/project/open_intent_router/app/prompts/router_prompt.py) 中的默认 Prompt。
 
+## Context Pack 预算配置
+
+M4 的默认上下文预算写在 `Settings` 里，但会被 `.env` 同名环境变量覆盖。修改后需要重启后端进程。
+
+```dotenv
+CONTEXT_DEFAULT_TOKEN_BUDGET=2000
+CONTEXT_MAX_TOKEN_BUDGET=8000
+CONTEXT_DEFAULT_SOURCE_BUDGETS=evidence:600,agent_history:500,host_history:400
+CONTEXT_CHARS_PER_TOKEN=4
+CONTEXT_PER_ITEM_TOKEN_LIMIT=512
+CONTEXT_PER_ITEM_CHAR_LIMIT=2000
+CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE=true
+CONTEXT_ALLOW_SUMMARY_PLACEHOLDER=true
+```
+
+- `CONTEXT_DEFAULT_TOKEN_BUDGET`：没有请求级覆盖时的总 token 预算。
+- `CONTEXT_MAX_TOKEN_BUDGET`：请求级覆盖允许使用的上限。
+- `CONTEXT_DEFAULT_SOURCE_BUDGETS`：可选来源预算，格式为 `source:tokens`，逗号分隔。
+- `CONTEXT_CHARS_PER_TOKEN`：字符数到 token 估算的换算比例。
+- `CONTEXT_PER_ITEM_TOKEN_LIMIT` / `CONTEXT_PER_ITEM_CHAR_LIMIT`：单个 Context Item 的裁剪上限。
+- `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE`：是否允许请求或 `frontend_context` 覆盖预算。
+- `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER`：截断时是否标记 summary placeholder；M4 不调用额外 LLM 做摘要。
+
 ## DeepSeek 配置
 
 DeepSeek 通过 OpenAI-compatible Provider 接入，不需要 DeepSeek 专用硬编码依赖。可复制示例：

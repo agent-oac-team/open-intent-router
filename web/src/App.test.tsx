@@ -55,6 +55,89 @@ const mockAgent = {
   source: "database",
 };
 
+const mockContextPack = {
+  pack_id: "ctx_1",
+  request_id: "req_1",
+  session_id: "demo_session",
+  budget: {
+    max_tokens: 80,
+    source_budgets: {},
+    per_item_token_limit: 12,
+    per_item_char_limit: 120,
+    chars_per_token: 4,
+    allow_summary_placeholder: true,
+  },
+  usage: {
+    budget_tokens: 80,
+    used_tokens: 24,
+    usage_source: "estimated",
+    included_count: 2,
+    dropped_count: 1,
+    truncated_count: 1,
+    summary_placeholder_count: 1,
+    source_distribution: { current_input: 1, agent_history: 1 },
+    drop_reasons: { total_budget_exceeded: 1 },
+  },
+  selection: [
+    {
+      item_id: "current_input",
+      source: "current_input",
+      scope: "request",
+      role: "user",
+      priority: 100,
+      relevance: 1,
+      token_estimate: 4,
+      char_count: 16,
+      included: true,
+      status: "included",
+      drop_reason: null,
+      truncated: false,
+      summary_placeholder: false,
+      agent_id: null,
+      agent_session_id: null,
+      metadata: {},
+    },
+    {
+      item_id: "agent_history:msg_1",
+      source: "agent_history",
+      scope: "agent",
+      role: "agent",
+      priority: 48,
+      relevance: 0.6,
+      token_estimate: 20,
+      char_count: 80,
+      included: true,
+      status: "summary_placeholder",
+      drop_reason: "per_item_char_limit",
+      truncated: true,
+      summary_placeholder: true,
+      agent_id: "script_writer",
+      agent_session_id: "child_session",
+      metadata: {},
+    },
+    {
+      item_id: "host_history:msg_2",
+      source: "host_history",
+      scope: "session",
+      role: "assistant",
+      priority: 40,
+      relevance: 0.5,
+      token_estimate: 90,
+      char_count: 360,
+      included: false,
+      status: "dropped",
+      drop_reason: "total_budget_exceeded",
+      truncated: false,
+      summary_placeholder: false,
+      agent_id: null,
+      agent_session_id: null,
+      metadata: {},
+    },
+  ],
+  metadata: { version: "m4" },
+  created_at: "2026-07-02T00:00:00Z",
+};
+
 describe("意图路由测试台", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -106,6 +189,7 @@ describe("意图路由测试台", () => {
               context: {
                 candidate_agent_ids: ["script_writer"],
                 evidence: [],
+                metadata: { context_pack: mockContextPack },
               },
               invocation: {
                 mode: "deferred",
@@ -142,6 +226,7 @@ describe("意图路由测试台", () => {
               relation: "multi_task",
               candidate_agent_ids: ["script_writer"],
               evidence: [],
+              metadata: { context_pack: mockContextPack },
             },
             execution_policy: "require_confirmation",
             next_action: {
@@ -235,6 +320,20 @@ describe("意图路由测试台", () => {
     expect(screen.getByText("调用结果")).toBeInTheDocument();
     expect(screen.getByText("完整路由响应")).toBeInTheDocument();
     expect(screen.queryByText("调用")).not.toBeInTheDocument();
+  });
+
+  it("Context 标签展示预算、来源分组和裁剪原因", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(await screen.findByRole("tab", { name: /Context/i }));
+
+    expect(await screen.findByText("24/80 tokens")).toBeInTheDocument();
+    expect(screen.getByText("agent_history")).toBeInTheDocument();
+    expect(screen.getByText("host_history")).toBeInTheDocument();
+    expect(screen.getByText("total_budget_exceeded: 1")).toBeInTheDocument();
+    expect(screen.getByText("summary_placeholder")).toBeInTheDocument();
   });
 });
 

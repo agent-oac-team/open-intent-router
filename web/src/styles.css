@@ -903,6 +903,85 @@ textarea:focus {
   font-size: 12px;
 }
 
+.context-pack-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.context-group-list,
+.context-group {
+  display: grid;
+  gap: 8px;
+}
+
+.context-group {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.context-group-head,
+.context-item-row,
+.context-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-group-head,
+.context-item-row {
+  justify-content: space-between;
+}
+
+.context-group-head span {
+  color: var(--accent-2);
+  font-size: 12px;
+}
+
+.context-item-row {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(104, 215, 194, 0.2);
+  border-radius: 8px;
+  background: rgba(104, 215, 194, 0.045);
+}
+
+.context-item-row.dropped {
+  border-color: rgba(255, 116, 110, 0.32);
+  background: rgba(255, 116, 110, 0.055);
+}
+
+.context-item-row div:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.context-item-row strong,
+.context-item-row span {
+  overflow-wrap: anywhere;
+}
+
+.context-item-row span,
+.context-item-meta span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.context-item-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.context-item-meta span {
+  width: fit-content;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
 .json-block {
   margin-top: 10px;
   border: 1px solid var(--line);
@@ -1031,6 +1110,16 @@ pre {
 
   .status-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .context-pack-summary,
+  .context-item-row {
+    grid-template-columns: 1fr;
+  }
+
+  .context-item-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .modal-backdrop {

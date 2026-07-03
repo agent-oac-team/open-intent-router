@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from app.schemas.common import MessageSource
-from app.schemas.sessions import ChatMessage
+from app.schemas.sessions import AppendChatMessageRequest, ChatMessage
 
 
 class ChatHistoryService:
@@ -12,6 +12,28 @@ class ChatHistoryService:
 
     async def record(self, message: ChatMessage) -> ChatMessage:
         return await self.repository.add(message)
+
+    async def append_message(
+        self,
+        *,
+        session_id: str,
+        payload: AppendChatMessageRequest,
+    ) -> ChatMessage:
+        return await self.record(
+            ChatMessage(
+                message_id=f"msg_{uuid4().hex}",
+                session_id=session_id,
+                user_id=payload.user_id,
+                source=payload.source,
+                role=payload.role,
+                content=payload.content,
+                agent_id=payload.agent_id,
+                agent_session_id=payload.agent_session_id,
+                request_id=payload.request_id,
+                event_id=payload.event_id,
+                metadata=payload.metadata,
+            )
+        )
 
     async def record_user_input(
         self,

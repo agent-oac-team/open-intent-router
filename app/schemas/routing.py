@@ -16,6 +16,7 @@ from app.schemas.common import (
     UserContext,
     normalize_artifact_refs,
 )
+from app.schemas.context import ContextBudget
 from app.schemas.plans import NextAction, Plan
 
 
@@ -41,6 +42,7 @@ class RouteRequest(StrictBaseModel):
     event_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
+    context_budget: ContextBudget | None = None
     frontend_context: JsonDict = Field(default_factory=dict)
 
     @model_validator(mode="after")

@@ -37,6 +37,28 @@
 - 固定问强命中但目标 Agent 对当前用户不可用时，返回 `status=unsupported`、`action=unsupported` 和无权限提示，并在 `context.metadata.permission_denied=true` 中记录原因。
 - 标签/语义筛选在当前版本只作为召回观察信号，不裁剪候选集。命中信息会写入 `context.metadata.tag_filter`、`tag_filter_matched_agent_ids` 和 `tag_filter_matches`；传给 Evidence Provider 和 LLM 的候选集仍是权限过滤后的全部可用 Agent。
 
+M4 起，路由流程会在调用 LLM 前构建 Context Pack，并通过 `RouteContext.metadata.context_pack` 暴露调试数据。该字段包含：
+
+- `budget`：本轮上下文 token 预算、可选来源预算、单项限制和字符/token 换算比例。
+- `usage`：已用 token、估算来源、保留/丢弃/截断数量、来源分布和丢弃原因。
+- `selection`：每个候选 Context Item 的 `item_id`、`source`、`scope`、`role`、优先级、估算 token、是否入选、裁剪/丢弃原因和 Agent 会话标识。
+- `items`：用于本地调试的有界内容预览，不应作为长期持久化事实源。
+
+兼容期内，`RouteContext.metadata` 仍保留 `host_history`、`agent_history`、`recent_results` 等旧字段，Prompt 和测试台优先读取 `metadata.context_pack`。Route Log 只持久化 Context Pack usage/selection 摘要，不复制无界长历史原文。
+
+Context Pack 默认预算可通过 `.env` 配置，修改后需要重启后端：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CONTEXT_DEFAULT_TOKEN_BUDGET` | `2000` | 默认总 token 预算 |
+| `CONTEXT_MAX_TOKEN_BUDGET` | `8000` | 请求级预算覆盖的最大安全上限 |
+| `CONTEXT_DEFAULT_SOURCE_BUDGETS` | 空 | 来源预算，格式如 `evidence:600,agent_history:500` |
+| `CONTEXT_CHARS_PER_TOKEN` | `4` | 字符数换算 token 的估算比例 |
+| `CONTEXT_PER_ITEM_TOKEN_LIMIT` | `512` | 单个 Context Item 的 token 上限 |
+| `CONTEXT_PER_ITEM_CHAR_LIMIT` | `2000` | 单个 Context Item 的字符上限 |
+| `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE` | `true` | 是否允许请求或 `frontend_context` 覆盖预算 |
+| `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER` | `true` | 截断时是否记录摘要占位标记 |
+
 ### `POST /api/v1/route-and-invoke`
 
 先执行路由，再在目标 Agent 可调用且输入满足要求时执行调用。
@@ -154,5 +176,23 @@ Run 用于记录一次 Agent 调用的生命周期，包括调用输入、调用
 ## Session
 
 - `GET /api/v1/sessions/{session_id}/messages`
+- `POST /api/v1/sessions/{session_id}/messages`
 
 Session 用于保存用户与路由器之间的消息上下文。MVP 只提供轻量会话消息能力，不实现复杂会话状态机。
+
+`POST /api/v1/sessions/{session_id}/messages` 用于宿主应用写入 `/route` 之外产生的可见聊天消息，例如子 Agent 回复。请求字段保持通用：
+
+```json
+{
+  "source": "agent_chat",
+  "role": "agent",
+  "content": "子 Agent 返回给用户的消息",
+  "agent_id": "summarizer",
+  "agent_session_id": "child_session_1",
+  "request_id": "req_1",
+  "event_id": "event_1",
+  "metadata": {}
+}
+```
+
+当 `source=agent_chat` 时必须提供 `agent_id`；`agent_session_id` 可选，用于宿主侧区分同一 Agent 的子会话。后续同一 session 且 `current_agent.agent_id` 相同的路由请求会把这些消息作为 Agent history Context Item 参与预算选择。

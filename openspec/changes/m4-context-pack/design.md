@@ -12,6 +12,7 @@
 
 - 定义 Context Pack、Context Item、Context Budget 和 Context Usage schema。
 - 将当前输入、当前 Agent、Plan、历史消息、最近结果、事件、Evidence 和未来 Memory 统一表示为 Context Item。
+- 提供宿主可调用的会话消息写入 API，让子 Agent 回复可以写成 `ChatMessage` 并进入后续 Agent history / Context Pack。
 - 按优先级、相关性、时效性、权限和预算选择入模型上下文。
 - 默认使用 token 预算，支持字符上限与 token 预算换算。
 - 在 LLM Provider 或 API 返回 token usage 时优先使用真实 token；未返回时使用近似估算。
@@ -116,6 +117,19 @@ Route Log 应记录 Context Pack 使用摘要、预算、保留/丢弃数量、�
 
 替代方案是一次性删除旧 metadata 上下文。该方案会破坏已有 Mock、Prompt 和外部 LLM 输出测试。
 
+### Decision 7: ChatMessage 是聊天事实源，Agent Event 是执行状态源
+
+聊天类子 Agent 的完整对话历史应以 `ChatMessage` 保存，而不是把每轮回复塞进 `Agent Event`。M4 增加宿主可调用的会话消息写入接口，建议形态为 `POST /api/v1/sessions/{session_id}/messages`。宿主系统在收到子 Agent 回复后，写入一条 `source=agent_chat`、`role=agent` 或 `role=assistant`、带 `agent_id` 和可选 `agent_session_id` 的消息。Router 已自动记录每轮进入 `/route` 的用户输入；M4 需要让宿主写入的 Agent 回复与这些用户输入一起成为 Agent history，并由 Context Pack 统一选择和裁剪后进入提示词。
+
+Agent Event 仍保留为执行状态和结果摘要通道，用于 `agent_started`、`agent_progress`、`agent_result`、`agent_error`、`agent_clarify`、`agent_cancelled` 等事件。Event 可以在有 Plan 时推进 Plan Step，也可以在无 Plan 时作为后续 Context Pack 的事件类材料，但不作为完整聊天 transcript 的唯一来源。
+
+该决策让两类数据的职责保持清晰：
+
+- `ChatMessage`：用户与宿主 / 子 Agent 的可见对话事实。
+- `Agent Event`：子 Agent 执行进度、结果、失败、阻塞、摘要和审计线索。
+
+替代方案是用 Agent Event 承载每轮子 Agent 回复。该方案会把用户可见消息和执行状态混在一起，后续预算裁剪、回放、审计和 Prompt 构造都会变复杂，不适合作为生产接入契约。
+
 ## Risks / Trade-offs
 
 - [Risk] 近似 token 估算不够准确。 -> Mitigation: 配置保守换算比例，Provider 返回 usage 时优先记录真实值，并在日志中标记估算来源。
@@ -127,13 +141,14 @@ Route Log 应记录 Context Pack 使用摘要、预算、保留/丢弃数量、�
 ## Migration Plan
 
 1. 新增 Context Pack 相关 schema 和配置项。
-2. 扩展 `ContextService`，把当前请求、Agent 状态、历史消息、结果、事件、Evidence 和 Plan 状态转换为 Context Item。
-3. 实现预算估算、排序、裁剪和单项截断。
-4. 将 Context Pack 接入 Router，并让 LLM 输入使用 Context Pack 摘要或选中项。
-5. 将 Context Usage 摘要写入 Route Log 和 Debug metadata。
-6. 更新前端 Context tab，展示预算、来源分布、保留项和裁剪原因。
-7. 更新 API / 测试台文档。
-8. 添加后端和前端测试，运行验证和 OpenSpec 校验。
+2. 新增宿主会话消息写入 API，将子 Agent 回复、宿主托管消息和必要的用户侧消息保存为 `ChatMessage`。
+3. 扩展 `ContextService`，把当前请求、Agent 状态、历史消息、结果、事件、Evidence 和 Plan 状态转换为 Context Item。
+4. 实现预算估算、排序、裁剪和单项截断。
+5. 将 Context Pack 接入 Router，并让 LLM 输入使用 Context Pack 摘要或选中项。
+6. 将 Context Usage 摘要写入 Route Log 和 Debug metadata。
+7. 更新前端 Context tab，展示预算、来源分布、保留项和裁剪原因。
+8. 更新 API / 测试台文档。
+9. 添加后端和前端测试，运行验证和 OpenSpec 校验。
 
 Rollback 策略：保留旧 `RouteContext.metadata` 上下文生成路径；如 Context Pack 产生异常，可以通过配置或小范围回滚让 LLM 继续读取旧 metadata，同时保留 schema 作为未启用字段。
 

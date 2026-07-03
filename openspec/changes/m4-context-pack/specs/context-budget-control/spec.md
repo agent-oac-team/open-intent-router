@@ -37,6 +37,10 @@ The system SHALL select Context Items according to priority, relevance, recency,
 - **WHEN** candidate Context Items exceed the available budget
 - **THEN** lower-priority or lower-relevance items are excluded before critical current-state items
 
+#### Scenario: Agent chat transcript exceeds budget
+- **WHEN** router-recorded user inputs and host-written child Agent replies in Agent history exceed the available history budget
+- **THEN** older or lower-priority transcript items are trimmed or dropped before current input, current Agent state, active Plan state, or explicit task-critical results
+
 #### Scenario: Permission boundary
 - **WHEN** a Context Item belongs to a subject or source unavailable to the current user
 - **THEN** the item MUST NOT be included in the Context Pack

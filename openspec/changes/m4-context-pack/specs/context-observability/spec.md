@@ -18,6 +18,10 @@ The route response or debug metadata SHALL expose enough Context Pack informatio
 - **WHEN** a Context Item is included in the model-bound context
 - **THEN** Debug data can show its source, priority, token estimate, and selected status
 
+#### Scenario: Host-written chat message visible
+- **WHEN** a host-written child Agent reply is selected or dropped as a history Context Item
+- **THEN** Debug data can show its source, role, agent identifier, selected status, token estimate, and drop reason without requiring unbounded raw message text in persistent logs
+
 #### Scenario: Dropped item visible
 - **WHEN** a Context Item is dropped
 - **THEN** Debug data can show its source, priority, token estimate, and drop reason

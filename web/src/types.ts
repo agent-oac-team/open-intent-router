@@ -125,7 +125,61 @@ export type RouteRequest = {
   event_id?: string | null;
   plan_id?: string | null;
   step_id?: string | null;
+  context_budget?: ContextBudgetDebug | null;
   frontend_context: JsonRecord;
+};
+
+export type ContextBudgetDebug = {
+  max_tokens: number;
+  source_budgets: Record<string, number>;
+  per_item_token_limit?: number | null;
+  per_item_char_limit?: number | null;
+  chars_per_token: number;
+  allow_summary_placeholder: boolean;
+};
+
+export type ContextUsageDebug = {
+  budget_tokens: number;
+  used_tokens: number;
+  usage_source: string;
+  included_count: number;
+  dropped_count: number;
+  truncated_count: number;
+  summary_placeholder_count: number;
+  source_distribution: Record<string, number>;
+  drop_reasons: Record<string, number>;
+};
+
+export type ContextSelectionDebug = {
+  item_id: string;
+  source: string;
+  scope: string;
+  role?: string | null;
+  priority: number;
+  relevance: number;
+  token_estimate: number;
+  char_count: number;
+  included: boolean;
+  status: "included" | "dropped" | "truncated" | "summary_placeholder" | string;
+  drop_reason?: string | null;
+  truncated: boolean;
+  summary_placeholder: boolean;
+  agent_id?: string | null;
+  agent_session_id?: string | null;
+  created_at?: string | null;
+  metadata: JsonRecord;
+};
+
+export type ContextPackDebug = {
+  pack_id: string;
+  request_id: string;
+  session_id: string;
+  budget: ContextBudgetDebug;
+  usage: ContextUsageDebug;
+  selection: ContextSelectionDebug[];
+  items?: JsonRecord[];
+  metadata?: JsonRecord;
+  created_at?: string | null;
 };
 
 export type RouteResponse = {

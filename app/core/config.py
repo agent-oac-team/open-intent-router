@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     router_max_recent_events: int = 10
     router_max_recent_results: int = 5
     router_low_confidence_threshold: float = 0.2
+    context_default_token_budget: int = 2000
+    context_max_token_budget: int = 8000
+    context_default_source_budgets: str = ""
+    context_chars_per_token: float = 4.0
+    context_per_item_token_limit: int = 512
+    context_per_item_char_limit: int = 2000
+    context_allow_request_budget_override: bool = True
+    context_allow_summary_placeholder: bool = True
 
     agent_http_timeout_seconds: float = 30.0
 

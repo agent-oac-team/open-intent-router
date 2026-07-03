@@ -22,6 +22,10 @@ The system SHALL convert each context source into Context Items with common meta
 - **WHEN** host or Agent chat history is added to the Context Pack
 - **THEN** each included message is represented as a Context Item rather than an unstructured metadata blob
 
+#### Scenario: Agent reply history item
+- **WHEN** a host-written child Agent reply is added to Agent chat history
+- **THEN** it is represented as a history Context Item with its role, source, agent identifier, agent session identifier, content, timestamps, and metadata subject to the same budget rules as other history items
+
 #### Scenario: Result item
 - **WHEN** recent Agent results are added to the Context Pack
 - **THEN** each result is represented as a Context Item with source and artifact references when available
@@ -44,6 +48,25 @@ The Context Pack SHALL include critical current-state items required for correct
 #### Scenario: Current Plan preserved
 - **WHEN** the request or route flow references an active plan
 - **THEN** the Context Pack includes relevant plan state and uncompleted step information before lower-priority history
+
+### Requirement: Host can append session chat messages
+The system SHALL provide a generic API for the host application to append user-visible chat messages that are produced outside the `/route` call.
+
+#### Scenario: Host appends child Agent reply
+- **WHEN** the host receives a child Agent response and posts it to `POST /api/v1/sessions/{session_id}/messages` with `source=agent_chat`, `role=agent` or `role=assistant`, `content`, `agent_id`, and optional `agent_session_id`
+- **THEN** the backend stores it as a `ChatMessage` associated with the session and Agent context
+
+#### Scenario: Agent chat history includes host-written replies
+- **WHEN** a later route request includes `source=agent_chat` and the same `current_agent.agent_id`
+- **THEN** the Context Pack can include both router-recorded user inputs and host-written child Agent replies from that Agent history
+
+#### Scenario: Agent Event is not the transcript source
+- **WHEN** an Agent Event is recorded without a Plan
+- **THEN** it may be considered as an event Context Item or diagnostic input, but it MUST NOT be the only mechanism required to preserve the user-visible child Agent chat transcript
+
+#### Scenario: Message API remains generic
+- **WHEN** the host appends a session message
+- **THEN** the request uses generic message fields such as `source`, `role`, `content`, `agent_id`, `agent_session_id`, `request_id`, `event_id`, and `metadata`, and MUST NOT require host-specific business fields
 
 ### Requirement: LLM route input uses Context Pack
 The LLM route input SHALL expose the Context Pack or a derived Context Pack summary to the prompt builder.

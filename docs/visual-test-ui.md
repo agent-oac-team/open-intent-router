@@ -126,12 +126,13 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 - 高级上下文仍在聊天区下方折叠配置，用于测试 `source`、`current_agent`、`frontend_context`、`plan_id` 和 `step_id`。
 - 右侧 Route 标签展示 `decision.action`、目标 Agent、状态、置信度、原因、消息、候选 Agent 和调用预览。
 - 右侧 Plan 标签展示计划状态、执行策略、下一步动作、步骤列表和计划操作按钮。
+- 右侧 Context 标签在响应包含 `context.metadata.context_pack` 时展示预算使用、保留/丢弃数量、裁剪统计、来源分组和每个 Context Item 的丢弃或截断原因。
 - 右侧 Evidence 标签展示当前响应中的证据命中。
 - 右侧 Debug 标签保留完整 JSON、InvocationResult、UI Handoff 和 Agent Event JSON 提交。
 
 M3 起后端返回顶层 `assistant_message` 字段。聊天窗口优先消费 `assistant_message`，缺失时才兼容回退到 `decision.message`；`decision.reason` 仍保留在 Route / Debug 状态区，不再作为普通聊天气泡来源。`next_action.message` 属于 Plan / Host 协作状态，`AgentInvocationResult.message` 属于调用结果摘要，二者都由右侧状态面板展示。
 
-Context 和 Memory 标签是为后续 Context Pack 与 Memory 模块预留的状态入口；在当前响应没有相关数据时显示空态，不代表路由错误。
+Context 标签读取 M4 的 `RouteContext.metadata.context_pack`。当响应没有 Context Pack 数据时显示明确空态，不代表路由错误。Memory 标签仍为后续 Memory 模块预留。
 
 推荐演示顺序：
 

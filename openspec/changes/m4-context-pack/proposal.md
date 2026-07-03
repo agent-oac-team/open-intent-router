@@ -5,6 +5,7 @@
 ## What Changes
 
 - 定义 Context Pack 和 Context Item schema，用统一结构承载用户输入、当前 Agent 状态、Plan、历史消息、最近结果、事件、Evidence 和未来 Memory。
+- 新增宿主可调用的会话消息写入接口，让子 Agent 回复、宿主托管 Agent 消息和必要的用户侧消息可以写成 `ChatMessage`，作为 Agent 聊天历史的事实源。
 - 增加 Context Budget，默认使用 token 作为预算单位，支持模型级默认预算和请求级覆盖；场景级预算仅预留，不作为本 change 的开发要求。
 - 增加字符上限和 token 预算换算能力，用于宿主侧只有字符限制或 Provider 不返回 token usage 的环境。
 - 实现上下文选择、排序和裁剪：当前输入、当前任务状态和安全边界优先保留，低优先级、低相关性或超预算内容被裁剪或压缩。
@@ -30,8 +31,11 @@
 
 - Backend schema:
   - 新增 Context Pack / Context Item / Context Budget / Context Usage 相关模型。
+  - 新增或扩展会话消息写入请求模型，复用 `ChatMessage` 的 `source`、`role`、`agent_id`、`agent_session_id` 等通用字段。
   - `RouteContext.metadata` 可继续保留兼容信息，但路由内部优先使用结构化 Context Pack。
 - Backend services:
+  - `app/api/sessions.py`
+  - `app/services/chat_history_service.py`
   - `app/services/context_service.py`
   - `app/services/router_service.py`
   - `app/llm/client.py`
