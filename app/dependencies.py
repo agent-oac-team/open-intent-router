@@ -1,7 +1,8 @@
 from functools import lru_cache
 
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
 from app.db.session import create_session_factory
+from app.plugins.evidence import build_evidence_provider
 from app.repositories.database import (
     DatabaseAgentDefinitionRepository,
     DatabaseEventRepository,
@@ -24,7 +25,6 @@ from app.repositories.memory import (
 from app.services.chat_history_service import ChatHistoryService
 from app.services.context_service import ContextService
 from app.services.event_service import EventService
-from app.plugins.evidence import build_evidence_provider
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService

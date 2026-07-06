@@ -5,7 +5,6 @@ import yaml
 
 from app.schemas.routing import LLMRouteInput
 
-
 DEFAULT_SYSTEM_PROMPT = (
     "你是一个意图识别与 Agent 路由器。"
     "你必须只返回符合 response_schema_hint 的严格 JSON。"

@@ -19,13 +19,22 @@
 前端测试：
 
 ```bash
+cd web
 npm run test
 ```
 
 前端构建：
 
 ```bash
+cd web
 npm run build
+```
+
+Python 静态检查：
+
+```bash
+.venv/bin/python -m ruff check .
+.venv/bin/python -m ruff format --check .
 ```
 
 OpenSpec 校验：
@@ -89,15 +98,26 @@ npm run dev
 - 需求或架构调整优先使用 `openspec/changes/<change-name>` 记录 proposal、design、spec 和 tasks。
 - 实现 OpenSpec 任务时，先读取对应 change 的全部上下文文件，再逐项实现。
 - 完成任务后及时勾选 `tasks.md`。
-- 归档前必须运行相关测试和 `openspec validate <change-name> --strict`。
+- 修改 `openspec/changes/<change-name>/` 后，必须运行 `openspec validate <change-name> --strict`。
+- 归档前必须运行相关测试、静态检查和 `openspec validate <change-name> --strict`。
 - 所有文档使用中文。
 
 ## 测试要求
 
 - 后端逻辑变更至少运行 `.venv/bin/python -m pytest`。
+- Python 代码或配置变更至少运行 `.venv/bin/python -m ruff check .` 和 `.venv/bin/python -m ruff format --check .`。
 - 前端 UI 或类型变更至少运行 `cd web && npm run test` 和 `cd web && npm run build`。
 - Plan、Router、Invocation、Registry、Admin Security 相关变更需要补充或更新对应测试。
+- CI/CD、依赖或 workflow 变更需要确认 `.github/workflows/ci.yml` 中的 `backend-regression`、`python-static-checks`、`frontend-regression`、`openspec-validation` 仍然能在干净环境运行。
 - 如果无法运行某项测试，最终回复中必须说明原因和风险。
+
+## CI/CD 门禁与巡检
+
+- PR blocking checks 只放稳定、可复现的检查：后端 pytest、ruff lint / format check、前端 npm ci / test / build、OpenSpec changed validation。
+- 自动化巡检分层处理：secret scanning 使用 GitHub 原生能力，依赖漏洞和依赖新鲜度首版作为 scheduled / advisory，不默认阻塞普通 PR。
+- CI 不依赖 `.env`、`.venv`、`web/node_modules`、真实 LLM 凭证、真实外部系统或本地数据库；需要外部服务的集成检查必须单独设计 protected environment。
+- Workflow 文件本身不会阻止合并；仓库管理员必须在 GitHub branch protection 中把稳定 job 配置为 required status checks。
+- 详细操作和分层说明见 `docs/ci-cd-acceptance.md`。
 
 ## 安全与配置
 

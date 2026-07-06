@@ -56,7 +56,11 @@ async def route_and_execute(
         execution = await plan_executor.execute(
             route_response.plan.plan_id,
             user=payload.user,
-            input_values={"text": payload.input.text, "query": payload.input.text, "title": payload.input.text},
+            input_values={
+                "text": payload.input.text,
+                "query": payload.input.text,
+                "title": payload.input.text,
+            },
             context={"route_reason": route_response.decision.reason},
         )
         return RouteAndExecuteResponse(
@@ -64,4 +68,6 @@ async def route_and_execute(
             results=execution.results,
             next_action=execution.next_action,
         )
-    return RouteAndExecuteResponse(route=route_response, results=[], next_action=route_response.next_action)
+    return RouteAndExecuteResponse(
+        route=route_response, results=[], next_action=route_response.next_action
+    )

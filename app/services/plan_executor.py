@@ -9,7 +9,6 @@ from app.services.invocation_service import (
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 
-
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
 
 
@@ -46,11 +45,15 @@ class PlanExecutor:
             if plan.status in TERMINAL_STATUSES and not (
                 plan.status == "blocked" and (input_values or context)
             ):
-                return PlanExecutionResponse(plan=plan, results=results, next_action=plan.next_action)
+                return PlanExecutionResponse(
+                    plan=plan, results=results, next_action=plan.next_action
+                )
             step = _current_or_next_step(plan)
             if step is None:
                 plan = await self.plan_service.save_plan(
-                    plan.model_copy(update={"status": "completed", "current_step_id": None, "next_action": None})
+                    plan.model_copy(
+                        update={"status": "completed", "current_step_id": None, "next_action": None}
+                    )
                 )
                 return PlanExecutionResponse(plan=plan, results=results)
 
@@ -127,7 +130,9 @@ class PlanExecutor:
             next_status = _result_to_step_status(result)
             plan = await self._save_step_status(plan, step, next_status, None)
             if next_status != "completed":
-                return PlanExecutionResponse(plan=plan, results=results, next_action=plan.next_action)
+                return PlanExecutionResponse(
+                    plan=plan, results=results, next_action=plan.next_action
+                )
 
         return PlanExecutionResponse(plan=plan, results=results, next_action=next_action)
 
@@ -158,7 +163,11 @@ class PlanExecutor:
 def _current_or_next_step(plan: Plan) -> PlanStep | None:
     if plan.current_step_id:
         for step in plan.steps:
-            if step.step_id == plan.current_step_id and step.status in {"pending", "running", "blocked"}:
+            if step.step_id == plan.current_step_id and step.status in {
+                "pending",
+                "running",
+                "blocked",
+            }:
                 return step if _dependencies_complete(step, plan.steps) else None
     completed = {step.step_id for step in plan.steps if step.status == "completed"}
     for step in plan.steps:
@@ -182,7 +191,9 @@ def _next_step_id(steps: list[PlanStep]) -> str | None:
     return None
 
 
-def _plan_status(steps: list[PlanStep], current_step_id: str | None, next_action: NextAction | None) -> str:
+def _plan_status(
+    steps: list[PlanStep], current_step_id: str | None, next_action: NextAction | None
+) -> str:
     if any(step.status == "failed" for step in steps):
         return "failed"
     if next_action and next_action.type in {"open_ui", "collect_input", "wait_for_agent_event"}:

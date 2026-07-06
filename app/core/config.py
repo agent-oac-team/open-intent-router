@@ -4,7 +4,6 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 RegistryBackend = Literal["database", "file", "hybrid"]
 StorageBackend = Literal["memory", "database"]
 RouteMode = Literal["route_only", "route_and_invoke"]
@@ -21,10 +20,7 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "INFO"
     cors_allow_origins: str = (
-        "http://127.0.0.1:5173,"
-        "http://127.0.0.1:5174,"
-        "http://localhost:5173,"
-        "http://localhost:5174"
+        "http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost:5173,http://localhost:5174"
     )
 
     database_url: str = "sqlite+aiosqlite:///./data/open-intent-router.db"

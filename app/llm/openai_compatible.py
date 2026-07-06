@@ -12,7 +12,6 @@ from app.schemas.agents import CandidateAgent
 from app.schemas.routing import LLMRouteInput, RouteResponse
 from app.services.plan_builder import build_ordered_plan_from_text
 
-
 PROMPT_ONLY_RESPONSE_KEYS = {"rules", "routing_rules"}
 
 
@@ -49,11 +48,15 @@ class OpenAICompatibleLLMClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.settings.router_llm_timeout_seconds) as client:
+            async with httpx.AsyncClient(
+                timeout=self.settings.router_llm_timeout_seconds
+            ) as client:
                 response = await client.post(url, headers=headers, json=body)
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise LLMError("OpenAI-compatible LLM request failed", details={"error": str(exc)}) from exc
+            raise LLMError(
+                "OpenAI-compatible LLM request failed", details={"error": str(exc)}
+            ) from exc
 
         data = response.json()
         try:
@@ -79,7 +82,9 @@ def _normalize_route_response(parsed: object, payload: LLMRouteInput) -> object:
     normalized = dict(parsed)
     for key in PROMPT_ONLY_RESPONSE_KEYS:
         normalized.pop(key, None)
-    normalized["request_id"] = normalized.get("request_id") or payload.request.request_id or f"req_{uuid4().hex}"
+    normalized["request_id"] = (
+        normalized.get("request_id") or payload.request.request_id or f"req_{uuid4().hex}"
+    )
     normalized["session_id"] = normalized.get("session_id") or payload.request.session_id
 
     context = normalized.get("context")
@@ -117,12 +122,20 @@ def _normalize_route_response(parsed: object, payload: LLMRouteInput) -> object:
         if policy:
             normalized["execution_policy"] = policy
             if isinstance(normalized["plan"], dict):
-                normalized["plan"]["execution_policy"] = normalized["plan"].get("execution_policy") or policy
+                normalized["plan"]["execution_policy"] = (
+                    normalized["plan"].get("execution_policy") or policy
+                )
         if not normalized.get("next_action") and policy in {"require_confirmation", "host_managed"}:
             normalized["next_action"] = {
-                "type": "confirm_plan" if policy == "require_confirmation" else "wait_for_agent_event",
-                "message": "请确认是否执行该计划。" if policy == "require_confirmation" else "该计划由宿主应用继续执行。",
-                "plan_id": normalized["plan"].get("plan_id") if isinstance(normalized["plan"], dict) else None,
+                "type": "confirm_plan"
+                if policy == "require_confirmation"
+                else "wait_for_agent_event",
+                "message": "请确认是否执行该计划。"
+                if policy == "require_confirmation"
+                else "该计划由宿主应用继续执行。",
+                "plan_id": normalized["plan"].get("plan_id")
+                if isinstance(normalized["plan"], dict)
+                else None,
             }
 
     if isinstance(decision, dict) and normalized.get("plan") is None:
@@ -146,7 +159,9 @@ def _recover_single_agent_route(
     if agent is None:
         return None
 
-    current_agent_id = payload.request.current_agent.agent_id if payload.request.current_agent else None
+    current_agent_id = (
+        payload.request.current_agent.agent_id if payload.request.current_agent else None
+    )
     action = "continue_agent" if current_agent_id == agent.agent_id else "open_agent"
     relation = "continue_current" if current_agent_id == agent.agent_id else "new_task"
     recovered = dict(normalized)

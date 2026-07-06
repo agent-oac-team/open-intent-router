@@ -176,7 +176,9 @@ async def test_plan_executor_pauses_for_ui_handoff(
     assert response.next_action.route == "/dashboard"
 
 
-async def test_plan_executor_pauses_for_missing_input(settings, registry_service, repositories) -> None:
+async def test_plan_executor_pauses_for_missing_input(
+    settings, registry_service, repositories
+) -> None:
     await repositories["plans"].save(
         Plan.model_validate(
             {
@@ -225,6 +227,45 @@ async def test_plan_executor_resume_with_input(settings, registry_service, repos
 
     assert response.plan.status == "completed"
     assert response.results[0]["agent_id"] == "summarizer"
+
+
+async def test_plan_executor_marks_plan_failed_when_step_output_is_invalid(
+    settings,
+    registry_service,
+    repositories,
+) -> None:
+    await repositories["plans"].save(
+        Plan.model_validate(
+            {
+                "plan_id": "p_invalid_output",
+                "session_id": "s1",
+                "status": "running",
+                "steps": [{"step_id": "s1", "agent_id": "summarizer", "description": "summarize"}],
+            }
+        )
+    )
+    original_agent = registry_service.repository.agents["summarizer"]
+    invalid_agent = registry_service.repository.agents["summarizer"].model_copy(
+        update={
+            "invocation": original_agent.invocation.model_copy(
+                update={"config": {"response": {"summary": 123}}}
+            )
+        }
+    )
+    await repositories["registry"].upsert(invalid_agent)
+    await registry_service.load()
+    executor = _executor(settings, registry_service, repositories)
+
+    response = await executor.execute(
+        "p_invalid_output",
+        user={"id": "u1", "roles": ["operator"]},
+        input_values={"text": "hello"},
+    )
+
+    assert response.plan.status == "failed"
+    assert response.plan.current_step_id == "s1"
+    assert response.results[0]["status"] == "invalid_output"
+    assert response.results[0]["error"]["code"] == "invalid_output"
 
 
 def _executor(settings, registry_service, repositories) -> PlanExecutor:

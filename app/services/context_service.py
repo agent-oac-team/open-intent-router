@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from math import ceil
 from uuid import uuid4
 
@@ -58,9 +58,13 @@ class ContextService:
         if request.frontend_context:
             metadata["frontend_context"] = request.frontend_context
         if host_history:
-            metadata["host_history"] = host_history[: self.settings.router_max_host_history_messages]
+            metadata["host_history"] = host_history[
+                : self.settings.router_max_host_history_messages
+            ]
         if agent_history:
-            metadata["agent_history"] = agent_history[: self.settings.router_max_agent_history_messages]
+            metadata["agent_history"] = agent_history[
+                : self.settings.router_max_agent_history_messages
+            ]
         if recent_results:
             metadata["recent_results"] = recent_results[: self.settings.router_max_recent_results]
         if recent_events:
@@ -126,11 +130,13 @@ class ContextService:
                 "version": "m4",
                 "current_input_item_id": "current_input",
             },
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
     def context_budget_for_request(self, request: RouteRequest) -> ContextBudget:
-        configured_source_budgets = _parse_source_budgets(self.settings.context_default_source_budgets)
+        configured_source_budgets = _parse_source_budgets(
+            self.settings.context_default_source_budgets
+        )
         budget = ContextBudget(
             max_tokens=self.settings.context_default_token_budget,
             source_budgets=configured_source_budgets,
@@ -164,7 +170,8 @@ class ContextService:
             per_item_char_limit=per_item_char_limit,
             chars_per_token=requested.chars_per_token or self.settings.context_chars_per_token,
             allow_summary_placeholder=(
-                requested.allow_summary_placeholder and self.settings.context_allow_summary_placeholder
+                requested.allow_summary_placeholder
+                and self.settings.context_allow_summary_placeholder
             ),
         )
 
@@ -261,9 +268,13 @@ class ContextService:
                 )
             )
 
-        for index, message in enumerate(host_history[-self.settings.router_max_host_history_messages :]):
+        for index, message in enumerate(
+            host_history[-self.settings.router_max_host_history_messages :]
+        ):
             items.append(self._history_item(message, source="host_history", index=index))
-        for index, message in enumerate(agent_history[-self.settings.router_max_agent_history_messages :]):
+        for index, message in enumerate(
+            agent_history[-self.settings.router_max_agent_history_messages :]
+        ):
             items.append(self._history_item(message, source="agent_history", index=index))
         for index, result in enumerate(recent_results[: self.settings.router_max_recent_results]):
             items.append(self._result_item(result, index))
@@ -274,7 +285,9 @@ class ContextService:
 
         return items
 
-    def select_items(self, candidates: list[ContextItem], budget: ContextBudget) -> list[ContextItem]:
+    def select_items(
+        self, candidates: list[ContextItem], budget: ContextBudget
+    ) -> list[ContextItem]:
         prepared = [self._with_estimates(item, budget) for item in candidates]
         ordered = sorted(prepared, key=_item_sort_key)
         used_total = 0
@@ -285,7 +298,9 @@ class ContextService:
             item = self._apply_per_item_limit(item, budget)
             source_budget = budget.source_budgets.get(str(item.source))
             source_used = used_by_source.get(str(item.source), 0)
-            source_over_budget = source_budget is not None and source_used + item.token_estimate > source_budget
+            source_over_budget = (
+                source_budget is not None and source_used + item.token_estimate > source_budget
+            )
             total_over_budget = used_total + item.token_estimate > budget.max_tokens
 
             if item.must_include:
@@ -487,7 +502,9 @@ class ContextService:
                 "agent_session_id": message.get("agent_session_id"),
                 "request_id": message.get("request_id"),
                 "event_id": message.get("event_id"),
-                "metadata": message.get("metadata") if isinstance(message.get("metadata"), dict) else {},
+                "metadata": message.get("metadata")
+                if isinstance(message.get("metadata"), dict)
+                else {},
             },
         )
 
@@ -532,7 +549,9 @@ class ContextService:
         )
 
     def _evidence_item(self, evidence: JsonDict, index: int) -> ContextItem:
-        evidence_id = _string(evidence.get("id") or evidence.get("evidence_id")) or f"evidence:{index}"
+        evidence_id = (
+            _string(evidence.get("id") or evidence.get("evidence_id")) or f"evidence:{index}"
+        )
         score = evidence.get("score") or evidence.get("confidence") or evidence.get("relevance")
         relevance = _bounded_float(score, default=0.65)
         return self._item(
@@ -581,7 +600,9 @@ class ContextService:
                     "content": content,
                     "char_count": char_count,
                     "token_estimate": token_estimate,
-                    "status": "summary_placeholder" if budget.allow_summary_placeholder else "truncated",
+                    "status": "summary_placeholder"
+                    if budget.allow_summary_placeholder
+                    else "truncated",
                     "truncated": True,
                     "summary_placeholder": budget.allow_summary_placeholder,
                     "drop_reason": limit_reason,
@@ -599,7 +620,9 @@ class ContextService:
         payload = item.model_dump(mode="json")
         content = str(payload.get("content") or "")
         payload["content"] = content[:500] + ("..." if len(content) > 500 else "")
-        payload["metadata"] = _bounded_metadata(payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {})
+        payload["metadata"] = _bounded_metadata(
+            payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        )
         return payload
 
 
@@ -639,7 +662,9 @@ def _frontend_budget(frontend_context: JsonDict) -> ContextBudget | None:
     if not isinstance(raw, Mapping):
         raw = frontend_context.get("contextBudget")
     if not isinstance(raw, Mapping):
-        character_limit = frontend_context.get("context_char_limit") or frontend_context.get("contextCharLimit")
+        character_limit = frontend_context.get("context_char_limit") or frontend_context.get(
+            "contextCharLimit"
+        )
         if isinstance(character_limit, int) and character_limit > 0:
             chars_per_token = float(
                 frontend_context.get("chars_per_token")

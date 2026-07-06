@@ -20,7 +20,9 @@ class PlanService:
             raise ValueError("Plan not found")
         updated = plan.model_copy(update={"status": "running"})
         await self.repository.save(updated)
-        return PlanActionResponse(plan_id=plan_id, status="running", current_step_id=updated.current_step_id)
+        return PlanActionResponse(
+            plan_id=plan_id, status="running", current_step_id=updated.current_step_id
+        )
 
     async def cancel(self, plan_id: str) -> PlanActionResponse:
         plan = await self.get_plan(plan_id)
@@ -28,7 +30,9 @@ class PlanService:
             raise ValueError("Plan not found")
         updated = plan.model_copy(update={"status": "cancelled"})
         await self.repository.save(updated)
-        return PlanActionResponse(plan_id=plan_id, status="cancelled", current_step_id=updated.current_step_id)
+        return PlanActionResponse(
+            plan_id=plan_id, status="cancelled", current_step_id=updated.current_step_id
+        )
 
     async def apply_agent_event(self, event: AgentEvent) -> Plan | None:
         if not event.plan_id:

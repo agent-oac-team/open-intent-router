@@ -4,7 +4,6 @@ from uuid import uuid4
 from app.schemas.agents import CandidateAgent
 from app.schemas.plans import Plan, PlanStep
 
-
 ORDERING_MARKERS = (
     "first",
     "then",

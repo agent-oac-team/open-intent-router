@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.dependencies import get_plan_executor, get_plan_service
 from app.schemas.common import UserContext
-from app.schemas.plans import Plan, PlanActionRequest, PlanActionResponse, PlanExecutionRequest, PlanExecutionResponse
+from app.schemas.plans import (
+    Plan,
+    PlanActionRequest,
+    PlanActionResponse,
+    PlanExecutionRequest,
+    PlanExecutionResponse,
+)
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
 

@@ -1,5 +1,11 @@
 from app.schemas.invocation import InvokeRequest
-from app.schemas.routing import LLMRouteInput, RouteContext, RouteDecision, RouteRequest, RouteResponse
+from app.schemas.routing import (
+    LLMRouteInput,
+    RouteContext,
+    RouteDecision,
+    RouteRequest,
+    RouteResponse,
+)
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
 from app.services.plan_service import PlanService
 from app.services.router_service import RouterService
@@ -83,7 +89,9 @@ async def test_mock_router_creates_and_persists_multi_agent_plan(
     assert await repositories["plans"].get(response.plan.plan_id)
 
 
-async def test_router_generates_assistant_message_for_legacy_llm_output(settings, registry_service) -> None:
+async def test_router_generates_assistant_message_for_legacy_llm_output(
+    settings, registry_service
+) -> None:
     service = RouterService(
         settings=settings,
         registry=registry_service,
@@ -170,7 +178,10 @@ async def test_router_falls_back_to_all_available_agents_when_tags_do_not_match(
     assert llm.candidate_agent_ids == ["summarizer", "task_creator"]
     assert response.context.metadata["tag_filter"] == "no_match_no_filter"
     assert response.context.metadata["tag_filter_applied"] is False
-    assert response.context.metadata["filtered_candidate_agent_ids"] == ["summarizer", "task_creator"]
+    assert response.context.metadata["filtered_candidate_agent_ids"] == [
+        "summarizer",
+        "task_creator",
+    ]
 
 
 async def test_router_returns_unsupported_when_no_agents_are_available(
@@ -355,7 +366,10 @@ async def test_router_clarifies_low_confidence(settings, registry_service) -> No
     assert response.decision.action == "clarify"
     assert response.invocation is None
     assert response.context.metadata["low_confidence"]["confidence"] == 0.1
-    assert response.context.metadata["low_confidence"]["threshold"] == settings.router_low_confidence_threshold
+    assert (
+        response.context.metadata["low_confidence"]["threshold"]
+        == settings.router_low_confidence_threshold
+    )
     assert response.assistant_message
 
 
@@ -430,7 +444,9 @@ async def test_router_invokes_when_required_input_is_present(settings, registry_
     assert response.invocation.input["text"] == "summarize this text"
 
 
-async def test_mock_invocation_persists_run_and_result(settings, registry_service, repositories) -> None:
+async def test_mock_invocation_persists_run_and_result(
+    settings, registry_service, repositories
+) -> None:
     service = InvocationService(
         registry=registry_service,
         run_repository=repositories["runs"],
@@ -494,7 +510,9 @@ class LegacyOpenAgentLLM:
                 reason="Matched summarization intent.",
                 message="Routing to Summarizer.",
             ),
-            context=RouteContext(candidate_agent_ids=[agent.agent_id for agent in payload.candidates]),
+            context=RouteContext(
+                candidate_agent_ids=[agent.agent_id for agent in payload.candidates]
+            ),
         )
 
 
@@ -613,7 +631,9 @@ class LowConfidenceLLM:
                 reason="Low confidence match.",
                 message="Routing with low confidence.",
             ),
-            context=RouteContext(candidate_agent_ids=[agent.agent_id for agent in payload.candidates]),
+            context=RouteContext(
+                candidate_agent_ids=[agent.agent_id for agent in payload.candidates]
+            ),
         )
 
 
@@ -633,5 +653,7 @@ class FixedTargetLLM:
                 reason="Fixed target for test.",
                 message=f"Routing to {self.target_agent_id}.",
             ),
-            context=RouteContext(candidate_agent_ids=[agent.agent_id for agent in payload.candidates]),
+            context=RouteContext(
+                candidate_agent_ids=[agent.agent_id for agent in payload.candidates]
+            ),
         )

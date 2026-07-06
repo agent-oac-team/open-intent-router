@@ -18,7 +18,6 @@ from app.schemas.agents import (
 )
 from app.schemas.common import UserContext
 
-
 RegistryStatus = Literal["ok", "degraded", "error"]
 
 
@@ -88,10 +87,16 @@ class AgentRegistryService:
         return deleted
 
     async def list_public(self) -> AgentListResponse:
-        return AgentListResponse(agents=[agent.to_public() for agent in await self.list_definitions()])
+        return AgentListResponse(
+            agents=[agent.to_public() for agent in await self.list_definitions()]
+        )
 
     async def available_for_user(self, user: UserContext) -> AvailableAgentsResponse:
-        agents = [agent for agent in await self.list_definitions(enabled_only=True) if agent.is_available_to(user)]
+        agents = [
+            agent
+            for agent in await self.list_definitions(enabled_only=True)
+            if agent.is_available_to(user)
+        ]
         candidates = [agent.to_candidate() for agent in agents]
         return AvailableAgentsResponse(
             available_agents=[agent.agent_id for agent in agents],

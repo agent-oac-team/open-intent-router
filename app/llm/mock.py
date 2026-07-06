@@ -31,7 +31,9 @@ class MockLLMClient:
                 context=RouteContext(
                     relation="multi_task",
                     current_agent_id=(
-                        payload.request.current_agent.agent_id if payload.request.current_agent else None
+                        payload.request.current_agent.agent_id
+                        if payload.request.current_agent
+                        else None
                     ),
                     candidate_agent_ids=candidate_ids,
                     artifact_refs=[],
@@ -78,7 +80,9 @@ class MockLLMClient:
             context=RouteContext(
                 relation="new_task",
                 current_agent_id=(
-                    payload.request.current_agent.agent_id if payload.request.current_agent else None
+                    payload.request.current_agent.agent_id
+                    if payload.request.current_agent
+                    else None
                 ),
                 candidate_agent_ids=candidate_ids,
                 artifact_refs=[],

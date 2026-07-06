@@ -25,8 +25,7 @@ class EvidenceProvider(Protocol):
         question: str,
         candidate_agent_ids: list[str],
         user: UserContext,
-    ) -> EvidenceResult:
-        ...
+    ) -> EvidenceResult: ...
 
 
 class NoopEvidenceProvider:

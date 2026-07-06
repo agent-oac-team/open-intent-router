@@ -6,7 +6,6 @@ from app.core.errors import InvocationError
 from app.schemas.agents import AgentDefinition
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 
-
 LocalFunction = Callable[[AgentInvocation], dict[str, Any] | Awaitable[dict[str, Any]]]
 
 

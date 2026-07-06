@@ -1,11 +1,15 @@
 from app.core.config import Settings
-from app.schemas.context import ContextBudget
 from app.schemas.logs import AgentResult
-from app.schemas.routing import LLMRouteInput, RouteContext, RouteDecision, RouteRequest, RouteResponse
+from app.schemas.routing import (
+    LLMRouteInput,
+    RouteContext,
+    RouteDecision,
+    RouteRequest,
+    RouteResponse,
+)
 from app.schemas.sessions import AppendChatMessageRequest
 from app.services.chat_history_service import ChatHistoryService
 from app.services.context_service import ContextService, token_estimate_for_text
-from app.services.plan_service import PlanService
 from app.services.router_service import RouterService
 
 
@@ -110,7 +114,9 @@ async def test_context_pack_truncates_per_item_limit_and_converts_character_budg
     assert evidence.summary_placeholder is True
     assert evidence.metadata["truncation_reason"] == "per_item_char_limit"
     assert evidence.drop_reason == "total_budget_exceeded"
-    assert evidence.token_estimate == token_estimate_for_text(evidence.content, budget.chars_per_token)
+    assert evidence.token_estimate == token_estimate_for_text(
+        evidence.content, budget.chars_per_token
+    )
 
 
 async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
@@ -183,6 +189,7 @@ async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
     log_pack = route_log.parsed_output["context_pack_usage"]
     assert log_pack["usage"]["budget_tokens"] == 80
     assert "items" not in log_pack
+    assert all("content" not in item for item in log_pack["selection"])
     assert "child agent reply" not in str(log_pack)
     assert "secret-token" not in str(route_log.parsed_output)
 

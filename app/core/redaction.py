@@ -1,7 +1,6 @@
 from collections.abc import Mapping
 from typing import Any
 
-
 SENSITIVE_KEYS = {
     "api_key",
     "apikey",

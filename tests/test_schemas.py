@@ -1,5 +1,6 @@
-import pytest
 from typing import get_args
+
+import pytest
 
 from app.schemas.common import RouteAction, normalize_artifact_refs
 from app.schemas.plans import Plan

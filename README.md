@@ -240,10 +240,31 @@ ROUTER_LLM_API_KEY=replace-with-real-key
 - 需求分析：[docs/开源意图识别项目需求分析文档.md](/Users/lijingtong/project/open_intent_router/docs/开源意图识别项目需求分析文档.md)
 - Agent 定义：[docs/agent-definition.md](/Users/lijingtong/project/open_intent_router/docs/agent-definition.md)
 - API 概览：[docs/api.md](/Users/lijingtong/project/open_intent_router/docs/api.md)
+- CI/CD 验收：[docs/ci-cd-acceptance.md](/Users/lijingtong/project/open_intent_router/docs/ci-cd-acceptance.md)
 - 可视化测试 UI：[docs/visual-test-ui.md](/Users/lijingtong/project/open_intent_router/docs/visual-test-ui.md)
 - Evidence Provider：[docs/evidence-provider.md](/Users/lijingtong/project/open_intent_router/docs/evidence-provider.md)
 - OAC 迁移说明：[docs/oac-migration.md](/Users/lijingtong/project/open_intent_router/docs/oac-migration.md)
 - 中控系统交付说明：[docs/中控系统交付说明.md](/Users/lijingtong/project/open_intent_router/docs/中控系统交付说明.md)
+
+## CI/CD 验收
+
+仓库已提供基础 CI 门禁和自动化巡检配置：
+
+- `.github/workflows/ci.yml`：PR / push 到 `main`、`master`、`dev` 时运行后端 pytest、Python ruff、前端 Vitest / build 和 OpenSpec changed validation。
+- `.github/workflows/inspection.yml`：每周或手动运行依赖漏洞、依赖新鲜度和后续性能基线入口。
+- `.github/dependabot.yml`：为 Python、前端 npm 和 GitHub Actions 创建依赖更新 PR。
+
+本地提交前建议运行：
+
+```bash
+.venv/bin/python -m pytest
+.venv/bin/python -m ruff check .
+.venv/bin/python -m ruff format --check .
+cd web && npm ci && npm run test && npm run build
+openspec validate <change-name> --strict
+```
+
+Workflow 文件只会产生 GitHub checks；要让它们真正阻止合并，需要在 GitHub repository settings 中把 `backend-regression`、`python-static-checks`、`frontend-regression`、`openspec-validation` 配置为 protected branch 的 required status checks。详细设置见 [docs/ci-cd-acceptance.md](/Users/lijingtong/project/open_intent_router/docs/ci-cd-acceptance.md)。
 
 ## 设计原则
 

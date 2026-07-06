@@ -1,14 +1,14 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.prompts.router_prompt import (
     DEFAULT_SYSTEM_PROMPT,
     RouterPromptTemplate,
     route_response_schema_hint,
 )
-from app.services.context_service import ContextService
 from app.schemas.agents import CandidateAgent
 from app.schemas.common import UserContext
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteRequest
+from app.services.context_service import ContextService
 
 
 def test_router_prompt_uses_default_when_file_missing(registry_service) -> None:
@@ -60,11 +60,13 @@ def test_router_prompt_serializes_datetime_in_request() -> None:
                 "user": {"id": "u1", "roles": ["operator"]},
                 "input": {
                     "text": "summarize this text",
-                    "attachments": [{"created_at": datetime(2026, 1, 1, tzinfo=timezone.utc)}],
+                    "attachments": [{"created_at": datetime(2026, 1, 1, tzinfo=UTC)}],
                 },
             }
         ),
-        candidates=[CandidateAgent(agent_id="summarizer", name="Summarizer", description="Summarize text")],
+        candidates=[
+            CandidateAgent(agent_id="summarizer", name="Summarizer", description="Summarize text")
+        ],
         context=RouteContext(candidate_agent_ids=["summarizer"]),
     )
 

@@ -46,7 +46,9 @@ class HttpAgentInvoker:
                 error=ErrorDetail(
                     code="http_invocation_failed",
                     message=str(exc),
-                    details={"request": redact_value({"method": method, "url": url, "headers": headers})},
+                    details={
+                        "request": redact_value({"method": method, "url": url, "headers": headers})
+                    },
                 ),
             )
 

@@ -5,7 +5,6 @@ from pydantic import Field
 
 from app.schemas.common import JsonDict, ParticipantRole, StrictBaseModel
 
-
 ContextItemSource = Literal[
     "current_input",
     "current_agent",

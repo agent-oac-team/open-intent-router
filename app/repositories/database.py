@@ -1,4 +1,3 @@
-from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import delete, desc, select
@@ -213,7 +212,9 @@ class DatabasePlanRepository:
             row = await session.get(PlanModel, plan.plan_id)
             metadata = {
                 "execution_policy": plan.execution_policy,
-                "next_action": plan.next_action.model_dump(mode="json") if plan.next_action else None,
+                "next_action": plan.next_action.model_dump(mode="json")
+                if plan.next_action
+                else None,
             }
             values = {
                 "plan_id": plan.plan_id,
@@ -228,7 +229,9 @@ class DatabasePlanRepository:
             else:
                 for key, value in values.items():
                     setattr(row, key, value)
-            await session.execute(delete(PlanStepModel).where(PlanStepModel.plan_id == plan.plan_id))
+            await session.execute(
+                delete(PlanStepModel).where(PlanStepModel.plan_id == plan.plan_id)
+            )
             for step in plan.steps:
                 session.add(
                     PlanStepModel(

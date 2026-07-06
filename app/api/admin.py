@@ -8,7 +8,9 @@ from app.services.registry_service import AgentRegistryService
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
-@router.get("/agents", response_model=AgentListResponse, dependencies=[Depends(require_admin_token)])
+@router.get(
+    "/agents", response_model=AgentListResponse, dependencies=[Depends(require_admin_token)]
+)
 async def admin_list_agents(
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> AgentListResponse:

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.errors import RegistryError
 from app.repositories.file_registry import FileRegistrySource
 from app.schemas.common import UserContext
 
@@ -46,7 +47,7 @@ agents:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(RegistryError):
         FileRegistrySource(str(path)).load_sync()
 
 

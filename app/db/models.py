@@ -25,8 +25,12 @@ class AgentDefinitionModel(Base):
     access_policy_text: Mapped[str] = mapped_column(Text, default="{}")
     required_inputs_text: Mapped[str] = mapped_column(Text, default="[]")
     optional_inputs_text: Mapped[str] = mapped_column(Text, default="[]")
-    input_schema_text: Mapped[str] = mapped_column(Text, default='{"type":"object","properties":{}}')
-    output_schema_text: Mapped[str] = mapped_column(Text, default='{"type":"object","properties":{}}')
+    input_schema_text: Mapped[str] = mapped_column(
+        Text, default='{"type":"object","properties":{}}'
+    )
+    output_schema_text: Mapped[str] = mapped_column(
+        Text, default='{"type":"object","properties":{}}'
+    )
     invocation_text: Mapped[str] = mapped_column(Text, default="{}")
     ui_handoff_text: Mapped[str] = mapped_column(Text, default="{}")
     priority: Mapped[int] = mapped_column(Integer, default=0)

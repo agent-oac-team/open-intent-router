@@ -12,6 +12,7 @@ from app.llm.mock import MockLLMClient
 from app.llm.openai_compatible import OpenAICompatibleLLMClient
 from app.schemas.agents import AgentDefinition
 from app.schemas.common import JsonDict
+from app.schemas.plans import NextAction
 from app.schemas.routing import (
     InvocationPreview,
     LLMRouteInput,
@@ -20,7 +21,6 @@ from app.schemas.routing import (
     RouteRequest,
     RouteResponse,
 )
-from app.schemas.plans import NextAction
 from app.services.context_service import ContextService
 from app.services.invocation_service import build_invocation_input, missing_required_inputs
 from app.services.plan_builder import build_ordered_plan_from_text
@@ -166,7 +166,9 @@ class RouterService:
         try:
             return RouteResponse.model_validate(output.model_dump())
         except ValidationError as exc:
-            raise RoutingError("Router output validation failed", details={"errors": exc.errors()}) from exc
+            raise RoutingError(
+                "Router output validation failed", details={"errors": exc.errors()}
+            ) from exc
 
     def _normalize_candidate_context(
         self,
@@ -391,7 +393,9 @@ class RouterService:
             ),
             context=base_context,
         )
-        response = response.model_copy(update={"context": _with_evidence_metadata(response.context, evidence_result)})
+        response = response.model_copy(
+            update={"context": _with_evidence_metadata(response.context, evidence_result)}
+        )
         response = response.model_copy(
             update={
                 "context": _with_filter_metadata(
@@ -652,7 +656,9 @@ def _filter_agents_by_tags(text: str, agents: list[AgentDefinition]) -> TagFilte
     matches: dict[str, list[str]] = {}
     for agent in agents:
         matched_terms = [
-            term for term in _agent_filter_terms(agent) if _matches_filter_term(normalized_text, term)
+            term
+            for term in _agent_filter_terms(agent)
+            if _matches_filter_term(normalized_text, term)
         ]
         if matched_terms:
             matches[agent.agent_id] = sorted(set(matched_terms), key=str.lower)
@@ -811,11 +817,7 @@ def _normalize_text(value: object) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    return [
-        token
-        for token in re.split(r"[^0-9a-zA-Z\u4e00-\u9fff]+", text)
-        if len(token) >= 2
-    ]
+    return [token for token in re.split(r"[^0-9a-zA-Z\u4e00-\u9fff]+", text) if len(token) >= 2]
 
 
 def _contains_token(normalized_text: str, token: str) -> bool:

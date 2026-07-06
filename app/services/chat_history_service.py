@@ -63,7 +63,9 @@ class ChatHistoryService:
         )
 
     async def get_host_history(self, session_id: str) -> list[ChatMessage]:
-        return await self.repository.list_by_session(session_id, source="host_chat", limit=self.host_limit)
+        return await self.repository.list_by_session(
+            session_id, source="host_chat", limit=self.host_limit
+        )
 
     async def get_agent_history(self, session_id: str, agent_id: str) -> list[ChatMessage]:
         return await self.repository.list_by_session(

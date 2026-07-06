@@ -102,7 +102,11 @@ class AgentDefinition(StrictBaseModel):
         ]
         if missing_from_schema:
             self.input_schema.required.extend(missing_from_schema)
-        if self.type == "ui_handoff" and self.ui_handoff.mode != "none" and not self.ui_handoff.route:
+        if (
+            self.type == "ui_handoff"
+            and self.ui_handoff.mode != "none"
+            and not self.ui_handoff.route
+        ):
             raise ValueError("ui_handoff.route is required when ui_handoff.mode is not none")
         return self
 
