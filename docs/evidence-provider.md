@@ -70,6 +70,91 @@ M6 引入 Evidence Provider Scheduler 后，固定问题仍保留特殊地位：
 
 这样可以让核心项目保持通用，同时保留“固定问命中到固定意图”的扩展能力。
 
+## Agent 执行阶段 Knowledge 流程
+
+Evidence Provider 运行在路由前，主要服务于“该路由到谁”的判断；Agent 执行阶段的文档证据则由 `knowledge_context` 承接。用户输入后的整体流程如下：
+
+```mermaid
+flowchart TD
+    U["用户输入"] --> API["POST /route 或 /route-and-invoke"]
+    API --> R["RouterService 选择候选 Agent"]
+    R --> A["AgentContextAssemblyService"]
+    A --> C{"目标 Agent 是否声明 context.knowledge?"}
+
+    C -->|"disabled"| INV0["直接调用 Agent"]
+    C -->|"prefetch"| KSREQ["构造 KnowledgeSearchRequest"]
+    C -->|"controlled_retrieval"| KCTL["按模板生成固定检索 query"]
+    KCTL --> KSREQ
+
+    KSREQ --> SRC["KnowledgeService 读取 source 配置"]
+    SRC --> POL["source policy 过滤 enabled / role / group / tenant / tags"]
+    POL --> DENY["记录 denied_source_ids"]
+    POL -->|"selected_source_ids 非空且 top_k > 0"| VEC["KnowledgeVectorStore.search"]
+
+    VEC --> EMB["阿里 embedding: text-embedding-v4 / 1024"]
+    EMB --> MILVUS["Milvus Lite: oir_knowledge_vectors"]
+    MILVUS --> HIT["返回 chunk_id + score"]
+    HIT --> PG["PostgreSQL: knowledge_chunks canonical 回填正文 / title / uri / metadata"]
+
+    PG --> KC["组装 knowledge_context items / citations / summary"]
+    DENY --> KC
+    KC --> LOG["PostgreSQL: knowledge_retrieval_logs"]
+    KC --> INV["InvocationService 调用目标 Agent"]
+    INV --> OUT["Agent 输出返回给 Host"]
+
+    subgraph Migration["知识向量迁移边界"]
+        OAC["IRS legacy: oac_knowledge_chunks"]
+        OIR["OIR current/future: oir_knowledge_vectors"]
+        NOTE["Milvus 是派生索引；迁移要从 PostgreSQL canonical chunks reindex"]
+        OAC --> NOTE
+        OIR --> NOTE
+    end
+```
+
+关键边界：
+
+- `oac_knowledge_chunks` 是 IRS legacy collection，过渡期保留。
+- `oir_knowledge_vectors` 是 OIR knowledge collection，当前真实 smoke 写入和检索它。
+- Milvus 只作为派生向量索引；正文、引用、权限和迁移事实以 PostgreSQL `knowledge_sources` / `knowledge_chunks` 为准。
+- `knowledge_context` 会进入 Agent invocation input，供目标 Agent 使用。
+
+## Milvus 正文与 Canonical 正文
+
+检索结果不直接信任 Milvus 里的正文，而是用 Milvus 返回的 `chunk_id` 回 PostgreSQL 回填 canonical chunk。两种做法的区别：
+
+| 方案 | 优点 | 风险 |
+| --- | --- | --- |
+| Milvus 只存索引字段，例如 `chunk_id`、`source_id`、向量 | PostgreSQL 是唯一事实源；权限、引用、删除、迁移和审计更一致；embedding 或 chunk 策略变化时可以重建索引 | 检索后多一次 PostgreSQL 回填 |
+| Milvus 同时存正文并直接返回正文 | 少一次数据库读取，局部实现更简单 | 正文可能与 PostgreSQL 不一致；权限或删除后容易残留旧内容；IRS/OIR 双 collection 迁移时难判断哪个正文可信；引用和审计链路更容易漂移 |
+
+因此 OIR 当前采用第一种：Milvus 命中只证明“哪个 chunk 语义相关”，不证明“正文事实是什么”。真正传给 Agent 的内容来自 PostgreSQL canonical chunk。
+
+## Agent Invocation Input
+
+`Agent invocation input` 是 OIR 调用目标 Agent 时传给 Invoker 的结构化输入对象。它不是用户原始文本本身，而是“用户输入 + 平台组装的运行上下文”的合并结果。
+
+典型字段包括：
+
+```json
+{
+  "text": "用户原始问题",
+  "memory_context": {
+    "summary": "...",
+    "items": [],
+    "status": "ok"
+  },
+  "knowledge_context": {
+    "summary": "...",
+    "items": [],
+    "citations": [],
+    "source_ids": [],
+    "status": "ok"
+  }
+}
+```
+
+不同 Invoker 会用同一个 invocation input 调用不同类型的 Agent：mock、本地函数、HTTP Agent、UI handoff 或后续 workflow node。这样 Agent 不需要知道 mem0、Milvus、PostgreSQL 或 Evidence Provider 的内部实现，只消费稳定的 `memory_context` / `knowledge_context` 合约。
+
 ## 安全与审计
 
 Evidence Provider 返回的内容可能进入路由日志，因此应遵守以下约束：
