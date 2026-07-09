@@ -39,7 +39,7 @@
 - 已新增 mem0 显式配置、Milvus Lite memory collection、PostgreSQL-backed OIR ledger、阿里 embedding 默认值、fail-closed/local fallback 分支和 debug/runtime 可观测字段。
 - 已新增 fake mem0 单元/服务闭环测试，覆盖 add/search/delete、`mem0_memory_id` 映射、Milvus Lite collection load、Milvus Lite `id/metadata` 显式返回字段兼容、history event、policy-before-adapter、fail-closed、local degraded fallback 和敏感字段不泄漏。
 - 已新增可选 smoke helper：`scripts/smoke_mem0_memory_loop.py`。真实 PostgreSQL、Milvus Lite、mem0 SDK 和阿里 embedding 凭证可用时，按 `docs/mem0-memory-integration.md` 运行并记录结果。
-- 2026-07-09 真实 smoke 已通过：`DATABASE_URL=postgresql+asyncpg://oac:oac@127.0.0.1:5432/oac`、`STORAGE_BACKEND=database`、`MEMORY_STRATEGY_PROVIDER=mem0`、`MEMORY_MEM0_FAIL_CLOSED=true`、Milvus Lite `.data/oir_memory_milvus.db`、DashScope/OpenAI-compatible `text-embedding-v4`、现有 DeepSeek router LLM。结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite `oir_memory_vectors` collection、`memory_context` 召回闭环通过，`events=8`。
+- 2026-07-09 真实 smoke 已通过：`DATABASE_URL=postgresql+asyncpg://oir:***@127.0.0.1:5432/oir`、`STORAGE_BACKEND=database`、`MEMORY_STRATEGY_PROVIDER=mem0`、`MEMORY_MEM0_FAIL_CLOSED=true`、Milvus Lite `.data/oir_memory_milvus.db`、DashScope/OpenAI-compatible `text-embedding-v4`、现有 DeepSeek router LLM。结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite `oir_memory_vectors` collection、`memory_context` 召回闭环通过，`events=6`。PostgreSQL 已使用独立 `oir` role + `oir` database，14 张 OIR 表 owner 均为 `oir`。
 
 ## 2. 原始测试结论
 

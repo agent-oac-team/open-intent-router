@@ -40,12 +40,14 @@ MEMORY_STRATEGY_PROVIDER=memory
 本地真实 mem0 闭环：
 
 ```env
+DATABASE_URL=postgresql+asyncpg://oir:replace-with-local-password@127.0.0.1:5432/oir
 MEMORY_STRATEGY_PROVIDER=mem0
 MEMORY_MEM0_FAIL_CLOSED=false
 MEMORY_MEM0_VECTOR_PROVIDER=milvus
 MEMORY_MEM0_MILVUS_COLLECTION=oir_memory_vectors
 MEMORY_MEM0_MILVUS_URI=.data/oir_memory_milvus.db
 MEMORY_MEM0_HISTORY_BACKEND=postgresql
+MEMORY_MEM0_HISTORY_DATABASE_URL=postgresql+asyncpg://oir:replace-with-local-password@127.0.0.1:5432/oir
 KNOWLEDGE_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 KNOWLEDGE_EMBEDDING_API_KEY=replace-with-real-key
 KNOWLEDGE_EMBEDDING_MODEL=text-embedding-v4
@@ -69,6 +71,14 @@ ROUTER_LLM_MODEL=deepseek-chat
 ROUTER_LLM_BASE_URL=replace-with-current-deepseek-base-url
 ROUTER_LLM_API_KEY=replace-with-real-key
 ```
+
+PostgreSQL 初始化：
+
+```bash
+psql postgresql://<postgres-admin>@127.0.0.1:5432/postgres -f sql/postgresql_schema.sql
+```
+
+`sql/postgresql_schema.sql` 默认创建 `oir` role/database 并在 `oir` 专属库里建表。不要把 OIR 表继续建在 IRS/OAC 的 `oac` database 中，否则 memory/history 与旧系统数据会混在一起，后续迁移审计会变困难。
 
 生产或验收建议：
 
@@ -163,6 +173,6 @@ MEMORY_MEM0_FAIL_CLOSED=true \
 
 2026-07-09 本地真实 smoke 记录：
 
-- 配置：真实 PostgreSQL `oac` 数据库、mem0 SDK、Milvus Lite `.data/oir_memory_milvus.db`、`oir_memory_vectors`、DashScope/OpenAI-compatible `text-embedding-v4`、1024 维、当前 DeepSeek router LLM。
-- 结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite collection、`memory_context` 召回闭环通过，`events=8`。
+- 配置：真实 PostgreSQL `oir` role + `oir` database、mem0 SDK、Milvus Lite `.data/oir_memory_milvus.db`、`oir_memory_vectors`、DashScope/OpenAI-compatible `text-embedding-v4`、1024 维、当前 DeepSeek router LLM。
+- 结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite collection、`memory_context` 召回闭环通过，`events=6`。
 - 非阻塞提示：未安装 `mem0ai[nlp]` 时 spaCy lemma/full model 会提示缺失，当前闭环仍通过；如后续需要更强 BM25/实体处理，可再安装 NLP extra 并单独回归。

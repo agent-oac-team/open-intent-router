@@ -1,6 +1,78 @@
--- OIR PostgreSQL schema snapshot.
+-- OIR PostgreSQL bootstrap and schema snapshot.
 -- Source of truth: app/db/models.py
--- Usage: psql postgresql://oac:oac@127.0.0.1:5432/oac -f sql/postgresql_schema.sql
+--
+-- Usage:
+--   psql postgresql://<admin-user>@127.0.0.1:5432/postgres -f sql/postgresql_schema.sql
+--
+-- Optional variables:
+--   psql postgresql://<admin-user>@127.0.0.1:5432/postgres \
+--     -v oir_db=oir \
+--     -v oir_user=oir \
+--     -v oir_password=oir \
+--     -f sql/postgresql_schema.sql
+--
+-- This file creates an OIR-only database by default. Do not run OIR tables in the
+-- legacy IRS/OAC `oac` database; keeping `oir` separate makes later IRS->OIR
+-- replacement and data migration audits much clearer.
+
+\set ON_ERROR_STOP on
+
+\if :{?oir_db}
+\else
+\set oir_db oir
+\endif
+
+\if :{?oir_user}
+\else
+\set oir_user oir
+\endif
+
+\if :{?oir_password}
+\else
+\set oir_password oir
+\endif
+
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'oir_user', :'oir_password')
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM pg_roles
+    WHERE rolname = :'oir_user'
+)
+\gexec
+
+SELECT format('CREATE DATABASE %I OWNER %I ENCODING %L', :'oir_db', :'oir_user', 'UTF8')
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM pg_database
+    WHERE datname = :'oir_db'
+)
+\gexec
+
+GRANT CONNECT ON DATABASE :"oir_db" TO :"oir_user";
+
+SELECT format('GRANT %I TO CURRENT_USER', :'oir_user')
+WHERE current_user <> :'oir_user'
+\gexec
+
+SELECT format('ALTER DATABASE %I OWNER TO %I', :'oir_db', :'oir_user')
+WHERE EXISTS (
+    SELECT 1
+    FROM pg_database
+    WHERE datname = :'oir_db'
+      AND pg_catalog.pg_get_userbyid(datdba) <> :'oir_user'
+)
+\gexec
+
+\connect :oir_db
+
+SELECT format('REASSIGN OWNED BY CURRENT_USER TO %I', :'oir_user')
+WHERE current_user <> :'oir_user'
+\gexec
+
+ALTER SCHEMA public OWNER TO :"oir_user";
+GRANT USAGE, CREATE ON SCHEMA public TO :"oir_user";
+
+SET ROLE :"oir_user";
 
 BEGIN;
 
@@ -113,9 +185,6 @@ CREATE TABLE IF NOT EXISTS agent_results (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     PRIMARY KEY (result_id)
 );
--- 兼容旧开发库：早期 agent_results 以 event/plan 字段为主，缺少当前模型字段。
-ALTER TABLE IF EXISTS agent_results ADD COLUMN IF NOT EXISTS run_id VARCHAR(128);
-ALTER TABLE IF EXISTS agent_results ADD COLUMN IF NOT EXISTS error_text TEXT;
 CREATE INDEX IF NOT EXISTS ix_agent_results_agent_id ON agent_results (agent_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_run_id ON agent_results (run_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_session_id ON agent_results (session_id);
@@ -266,10 +335,6 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     PRIMARY KEY (chunk_id)
 );
--- 兼容旧开发库：早期 knowledge_chunks 以 asset/index 字段为主，当前模型按 source/chunk 简化。
-ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS source_id VARCHAR(128);
-ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS uri TEXT;
-ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS tags_text TEXT;
 CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_source_id ON knowledge_chunks (source_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source ON knowledge_chunks (source_id);
 
@@ -298,3 +363,5 @@ CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_logs_tenant_id ON knowledge_re
 CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_logs_user_id ON knowledge_retrieval_logs (user_id);
 
 COMMIT;
+
+RESET ROLE;

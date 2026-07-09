@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sqlalchemy import inspect, text
 
 from app.core.config import Settings
@@ -8,6 +10,18 @@ from app.repositories.context_stores import (
 )
 from app.schemas.knowledge import KnowledgeChunk, KnowledgeRetrievalLog, KnowledgeSource
 from app.schemas.memory import MemoryEvent, MemoryItem
+
+
+def test_postgresql_schema_targets_oir_database() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    assert "\\set oir_db oir" in schema_sql
+    assert "\\set oir_user oir" in schema_sql
+    assert "DATABASE %I OWNER %I" in schema_sql
+    assert "ALTER DATABASE %I OWNER TO %I" in schema_sql
+    assert "REASSIGN OWNED BY CURRENT_USER TO %I" in schema_sql
+    assert "127.0.0.1:5432/oac" not in schema_sql
+    assert "postgresql://oac:oac" not in schema_sql
 
 
 async def test_create_all_tables_adds_agent_context_column_to_existing_database(tmp_path) -> None:

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from app.core.config import Settings
@@ -12,6 +14,25 @@ from app.repositories.memory import (
 )
 from app.schemas.agents import AgentDefinition
 from app.services.registry_service import AgentRegistryService
+
+TEST_ENV_DEFAULTS = {
+    "APP_ENV": "local",
+    "DATABASE_URL": "sqlite+aiosqlite:///./data/test-open-intent-router.db",
+    "STORAGE_BACKEND": "memory",
+    "ROUTER_LLM_PROVIDER": "mock",
+    "ROUTER_LLM_MODEL": "mock-router",
+    "ROUTER_LLM_BASE_URL": "",
+    "ROUTER_LLM_API_KEY": "",
+    "MEMORY_STRATEGY_PROVIDER": "memory",
+}
+
+# Tests should not inherit the developer's local .env. Individual tests can still
+# pass explicit Settings fields or use monkeypatch for env-specific behavior.
+Settings.model_config["env_file"] = None
+
+for key, value in TEST_ENV_DEFAULTS.items():
+    os.environ[key] = value
+os.environ.pop("MEMORY_MEM0_FAIL_CLOSED", None)
 
 
 @pytest.fixture
