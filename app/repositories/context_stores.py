@@ -140,6 +140,9 @@ class KnowledgeRepository:
             scored.append((chunk, min(score or 0.1, 1.0)))
         return sorted(scored, key=lambda item: item[1], reverse=True)[:limit]
 
+    async def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[KnowledgeChunk]:
+        return [chunk for chunk_id in chunk_ids if (chunk := self.chunks.get(chunk_id))]
+
     async def add_log(self, log: KnowledgeRetrievalLog) -> KnowledgeRetrievalLog:
         self.logs.append(log)
         return log
@@ -387,6 +390,25 @@ class DatabaseKnowledgeRepository:
                 continue
             scored.append((chunk, min(score or 0.1, 1.0)))
         return sorted(scored, key=lambda item: item[1], reverse=True)[:limit]
+
+    async def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[KnowledgeChunk]:
+        if not chunk_ids:
+            return []
+        async with self.session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(KnowledgeChunkModel).where(
+                            KnowledgeChunkModel.chunk_id.in_(chunk_ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        chunks = [_knowledge_chunk_from_row(row) for row in rows]
+        chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+        return [chunk_by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in chunk_by_id]
 
     async def add_log(self, log: KnowledgeRetrievalLog) -> KnowledgeRetrievalLog:
         async with self.session_factory() as session:

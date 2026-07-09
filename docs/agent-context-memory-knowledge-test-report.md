@@ -1,6 +1,6 @@
 # add-agent-context-memory-knowledge 测试报告
 
-版本：v1.1
+版本：v1.2
 原始测试日期：2026-07-08
 修复复测日期：2026-07-09
 测试负责人：Codex
@@ -30,8 +30,6 @@
 
 仍需单独环境验证：
 
-- knowledge 侧 Milvus 真实向量检索闭环。
-- PostgreSQL-backed knowledge metadata/log 的真实实例 round trip。
 - 50 并发 route/invoke 下 context 不串用户/租户/session 的压力验证。
 
 2026-07-09 `integrate-mem0-memory-loop` 追加实现记录：
@@ -40,6 +38,8 @@
 - 已新增 fake mem0 单元/服务闭环测试，覆盖 add/search/delete、`mem0_memory_id` 映射、Milvus Lite collection load、Milvus Lite `id/metadata` 显式返回字段兼容、history event、policy-before-adapter、fail-closed、local degraded fallback 和敏感字段不泄漏。
 - 已新增可选 smoke helper：`scripts/smoke_mem0_memory_loop.py`。真实 PostgreSQL、Milvus Lite、mem0 SDK 和阿里 embedding 凭证可用时，按 `docs/mem0-memory-integration.md` 运行并记录结果。
 - 2026-07-09 真实 smoke 已通过：`DATABASE_URL=postgresql+asyncpg://oir:***@127.0.0.1:5432/oir`、`STORAGE_BACKEND=database`、`MEMORY_STRATEGY_PROVIDER=mem0`、`MEMORY_MEM0_FAIL_CLOSED=true`、Milvus Lite `.data/oir_memory_milvus.db`、DashScope/OpenAI-compatible `text-embedding-v4`、现有 DeepSeek router LLM。结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite `oir_memory_vectors` collection、`memory_context` 召回闭环通过，`events=6`。PostgreSQL 已使用独立 `oir` role + `oir` database，14 张 OIR 表 owner 均为 `oir`。
+- 已新增 knowledge 侧 Milvus Lite 真实向量检索实现和 smoke helper：`scripts/smoke_knowledge_milvus_vector_search.py`。`MilvusKnowledgeVectorStore` 会调用阿里 embedding，写入/检索 `oir_knowledge_vectors`，并用 Milvus 返回的 `chunk_id` 回填 PostgreSQL canonical `knowledge_chunks`。
+- 2026-07-09 knowledge 侧真实 smoke 已通过：真实 PostgreSQL `oir` role + `oir` database、Milvus Lite `.data/oir_knowledge_milvus.db`、`oir_knowledge_vectors`、DashScope/OpenAI-compatible `text-embedding-v4`、1024 维。结果：`SMOKE_OK`，写入 2 个 knowledge chunk，Milvus 语义检索首位命中目标 chunk，`knowledge_retrieval_logs` 写入 1 条。
 
 ## 2. 原始测试结论
 
@@ -69,8 +69,6 @@
 
 未完成或无法证明：
 
-- PostgreSQL 真实数据库后端的 knowledge repository round trip；SQLite database-backed repository round trip 已在 2026-07-09 复测通过，mem0 memory/OIR ledger 真实 PostgreSQL smoke 已在 2026-07-09 通过。
-- knowledge 侧 Milvus 真实向量检索、连接失败和 collection 配置。
 - 50 并发 route/invoke 下 context 不串用户/租户/session 的压力验证。
 - debug/admin 输出的完整敏感字段脱敏扫描。
 
@@ -216,7 +214,7 @@
 
 ### RISK-ACMK-004：`storage_backend=database` 未接入 memory/knowledge 数据库仓库
 
-修复状态：已修复，已补充 SQLite database-backed context repository round-trip 测试。mem0 memory/OIR ledger 已在真实 PostgreSQL 实例上通过冒烟验证；knowledge metadata/log 仍建议补充真实 PostgreSQL round trip。
+修复状态：已修复，已补充 SQLite database-backed context repository round-trip 测试。mem0 memory/OIR ledger 已在真实 PostgreSQL 实例上通过冒烟验证；knowledge metadata/log 已在真实 PostgreSQL `oir` database 中通过 Milvus smoke 验证。
 
 级别：Critical
 优先级：P0
@@ -233,20 +231,26 @@
 
 验收建议：
 
-- SQLite database-backed repository 已通过 round trip。mem0 memory/OIR ledger 的 PostgreSQL-backed metadata 已通过真实 smoke；knowledge metadata/log 若声明生产环境通过，仍需在真实 PostgreSQL 实例上补充冒烟。
+- SQLite database-backed repository 已通过 round trip。mem0 memory/OIR ledger 的 PostgreSQL-backed metadata 已通过真实 smoke；knowledge source/chunk/log 已通过真实 PostgreSQL + Milvus Lite smoke。
 
 ### RISK-ACMK-005：Milvus 后端不是可验收的真实向量检索闭环
 
 级别：Major
 优先级：P1
+状态：已通过本轮实现与真实 smoke 缓解；连接失败、权限错误和异常降级仍可继续补充专项测试。
 
 观察：
 
-- `MilvusKnowledgeVectorStore.search()` 在 `app/services/knowledge_vector_store.py:44` 到 `app/services/knowledge_vector_store.py:50` 只验证 `pymilvus` import，随后仍 fallback 到 repository keyword search。
+- `MilvusKnowledgeVectorStore` 已改为使用 OpenAI-compatible 阿里 embedding 生成 query/chunk 向量，使用 Milvus Lite `oir_knowledge_vectors` 写入和 search，并通过 `chunk_id` 回填 PostgreSQL canonical `knowledge_chunks`。
 
 风险：
 
-- `knowledge_vector_backend=milvus` 不能证明真实 collection、embedding、向量检索、连接失败和权限错误。
+- 已证明 `knowledge_vector_backend=milvus` 的真实 collection、embedding、向量检索和 canonical chunk 回填闭环；仍未覆盖连接失败和权限错误专项场景。
+
+复核结果：
+
+- 2026-07-09 真实 smoke 已确认 PostgreSQL `knowledge_sources` / `knowledge_chunks` / `knowledge_retrieval_logs`、Milvus Lite `.data/oir_knowledge_milvus.db`、`oir_knowledge_vectors`、阿里 embedding `text-embedding-v4` / 1024 维可形成 knowledge 检索闭环。
+- 本次验收没有写入 `oac_knowledge_chunks`，保留 IRS 到 OIR 双 collection 过渡边界。
 
 ### RISK-ACMK-006：mem0 异常 fallback 可能掩盖生产配置失败
 
@@ -294,7 +298,7 @@
 
 ## 10. 验收建议
 
-2026-07-09 修复复测后，建议进入有条件验收：内存环境、SQLite database-backed repository、mem0 memory 真实闭环、PostgreSQL OIR ledger、Milvus Lite memory collection、后端回归、静态检查、OpenSpec、前端测试与构建均已通过。knowledge 侧 Milvus 真实向量检索、knowledge PostgreSQL round trip 和并发隔离仍属于需要单独验证的条件项。
+2026-07-09 修复复测后，建议进入有条件验收：内存环境、SQLite database-backed repository、mem0 memory 真实闭环、PostgreSQL OIR ledger、Milvus Lite memory collection、knowledge 侧 Milvus Lite 真实向量检索、knowledge PostgreSQL source/chunk/log round trip、后端回归、静态检查、OpenSpec、前端测试与构建均已通过。并发隔离和连接失败专项仍属于需要单独验证的条件项。
 
 已完成修复项：
 
@@ -304,12 +308,12 @@
 4. 为 memory/knowledge 增加 database-backed repository，并补充 SQLite round trip 测试。
 5. 修复 ruff lint 和 format check。
 6. 接入真实 mem0 SDK + Milvus Lite memory collection + 阿里 embedding + DeepSeek router LLM，并补齐 Milvus Lite load/output_fields 兼容。
+7. 接入 knowledge 侧 Milvus Lite 真实向量写入/检索，使用阿里 embedding，并通过 Milvus `chunk_id` 回填 PostgreSQL canonical chunk。
 
 仍需外部环境验证：
 
-1. knowledge 侧 Milvus 真实向量检索闭环。
-2. PostgreSQL-backed knowledge metadata/log 真实实例冒烟。
-3. 50 并发 route/invoke 下 context 隔离压力验证。
+1. 50 并发 route/invoke 下 context 隔离压力验证。
+2. Milvus/embedding/PostgreSQL 连接失败、权限错误和超时的专项验收。
 
 复测命令：
 
@@ -319,6 +323,7 @@
 .venv/bin/python -m ruff check .
 .venv/bin/python -m ruff format --check .
 openspec validate add-agent-context-memory-knowledge --strict
+.venv/bin/python scripts/smoke_knowledge_milvus_vector_search.py
 npm run test
 npm run build
 ```

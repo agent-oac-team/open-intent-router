@@ -85,13 +85,23 @@ class KnowledgeService:
                 "caller_id": request.caller_id,
                 "purpose": request.purpose,
                 "denied_source_ids": denied_source_ids,
+                "vector_backend": self.settings.knowledge_vector_backend,
+                "collection": self.settings.knowledge_milvus_collection
+                if self.settings.knowledge_vector_backend == "milvus"
+                else None,
             },
         )
         response = KnowledgeSearchResponse(
             context=context,
             denied_source_ids=denied_source_ids,
             selected_source_ids=selected_source_ids,
-            metadata={"hit_count": len(items)},
+            metadata={
+                "hit_count": len(items),
+                "vector_backend": self.settings.knowledge_vector_backend,
+                "collection": self.settings.knowledge_milvus_collection
+                if self.settings.knowledge_vector_backend == "milvus"
+                else None,
+            },
         )
         await self._log(request, response, status=status)
         return response

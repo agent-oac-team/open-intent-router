@@ -176,3 +176,40 @@ MEMORY_MEM0_FAIL_CLOSED=true \
 - 配置：真实 PostgreSQL `oir` role + `oir` database、mem0 SDK、Milvus Lite `.data/oir_memory_milvus.db`、`oir_memory_vectors`、DashScope/OpenAI-compatible `text-embedding-v4`、1024 维、当前 DeepSeek router LLM。
 - 结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite collection、`memory_context` 召回闭环通过，`events=6`。
 - 非阻塞提示：未安装 `mem0ai[nlp]` 时 spaCy lemma/full model 会提示缺失，当前闭环仍通过；如后续需要更强 BM25/实体处理，可再安装 NLP extra 并单独回归。
+
+### Knowledge 侧 Milvus 真实向量检索 Smoke
+
+knowledge 侧使用同一套本地基础设施约束：PostgreSQL 复用本机服务但写入 OIR 专属 `oir` database，Milvus 本地统一使用 Milvus Lite，embedding 沿用阿里 DashScope/OpenAI-compatible 配置。`.env` 推荐配置：
+
+```env
+DATABASE_URL=postgresql+asyncpg://oir:replace-with-local-password@127.0.0.1:5432/oir
+STORAGE_BACKEND=database
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_API_KEY=replace-with-real-key
+EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_DIM=1024
+KNOWLEDGE_ENABLED=true
+KNOWLEDGE_VECTOR_BACKEND=milvus
+KNOWLEDGE_MILVUS_COLLECTION=oir_knowledge_vectors
+KNOWLEDGE_MILVUS_URI=.data/oir_knowledge_milvus.db
+```
+
+运行命令：
+
+```bash
+.venv/bin/python scripts/smoke_knowledge_milvus_vector_search.py
+```
+
+脚本验证项：
+
+- 在 PostgreSQL `knowledge_sources` / `knowledge_chunks` 写入 canonical source/chunk。
+- 对两个 knowledge chunk 调用阿里 embedding，并写入 Milvus Lite `oir_knowledge_vectors`。
+- 通过 `KnowledgeService.search()` 走 `MilvusKnowledgeVectorStore`，不是 repository keyword fallback。
+- Milvus search 返回 `chunk_id` 后，再从 PostgreSQL canonical chunk 回填正文、title、URI 和 citation。
+- 在 `knowledge_retrieval_logs` 写入检索日志。
+
+2026-07-09 本地真实 smoke 记录：
+
+- 配置：真实 PostgreSQL `oir` role + `oir` database、Milvus Lite `.data/oir_knowledge_milvus.db`、`oir_knowledge_vectors`、DashScope/OpenAI-compatible `text-embedding-v4`、1024 维。
+- 结果：`SMOKE_OK`，knowledge Milvus Lite 真实向量检索闭环通过，写入 2 个 chunk，首位命中目标 chunk，retrieval log 写入 1 条。
+- 迁移边界：本次验收不写 `oac_knowledge_chunks`。`oac_knowledge_chunks` 仍作为 IRS 现有知识 collection 过渡保留；OIR 新索引写入 `oir_knowledge_vectors`，未来迁移必须从 PostgreSQL canonical chunks reindex。

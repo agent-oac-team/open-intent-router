@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     knowledge_prefetch_timeout_seconds: float = 1.5
     knowledge_default_max_items: int = 5
     knowledge_milvus_collection: str = "oir_knowledge_vectors"
-    knowledge_milvus_uri: str | None = None
+    knowledge_milvus_uri: str | None = ".data/oir_knowledge_milvus.db"
     knowledge_milvus_token: str | None = None
     knowledge_milvus_db_name: str | None = None
     knowledge_embedding_base_url: str | None = None
