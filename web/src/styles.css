@@ -909,6 +909,39 @@ textarea:focus {
   gap: 8px;
 }
 
+.context-result {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.context-result + .context-result,
+.context-result + .json-block,
+.json-block + .context-result {
+  margin-top: 10px;
+}
+
+.context-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.context-result-head span {
+  color: var(--accent-2);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.context-result p {
+  margin: 8px 0 0;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
 .context-group-list,
 .context-group {
   display: grid;

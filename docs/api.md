@@ -59,6 +59,15 @@ Context Pack 默认预算可通过 `.env` 配置，修改后需要重启后端�
 | `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE` | `true` | 是否允许请求或 `frontend_context` 覆盖预算 |
 | `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER` | `true` | 截断时是否记录摘要占位标记 |
 
+M5/M6 起，路由器和 Invoker 会根据目标 Agent 的 `context` 配置组装平台治理上下文。目标 Agent 不直接自由调用记忆或知识检索，而是消费稳定字段：
+
+- `memory_context`：包含 `summary`、结构化 `items`、`status`、`truncated`、`errors` 和调试 `metadata`。
+- `knowledge_context`：包含 `summary`、结构化 `items`、`citations`、`source_ids`、`status`、`truncated`、`errors` 和调试 `metadata`。
+
+当 `context.memory.mode=prefetch` 时，每次路由到该 Agent 或显式调用该 Agent 都会尝试预召回记忆。当前输入只控制本轮执行，不会直接改写长期记忆；冲突会记录在 `memory_context.metadata.conflicts`。
+
+知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型任意决定检索。
+
 ### `POST /api/v1/route-and-invoke`
 
 先执行路由，再在目标 Agent 可调用且输入满足要求时执行调用。
@@ -93,6 +102,32 @@ MVP 支持的 Invoker：
 - `http`：调用配置的 HTTP Endpoint。
 - `local_function`：调用受信任的本地注册函数。
 - `ui_handoff`：返回宿主应用所需的路由交接数据，不执行外部系统调用。
+
+如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，Invoker 会沿用调用方提供的上下文字段；否则会按 Agent Definition 自动组装。
+
+## Memory
+
+Memory API 用于 M5 记忆召回、低风险写入候选处理、TTL 清理和调试检查。mem0 作为可选策略层隐藏在 adapter 后面；OIR 仍负责租户启用、scope、TTL、可见性、权限、审计和 Agent 可见范围。
+
+- `POST /api/v1/memories/recall`：按 `query`、`user`、`scopes`、`subject`、`agent_id` 和 `max_items` 召回记忆，返回 `MemoryRecallResponse.context`。
+- `POST /api/v1/memories/write-candidates`：提交候选记忆，服务根据置信度、敏感标记、scope TTL 等策略返回 accepted/rejected 决策。
+- `POST /api/v1/memories/cleanup`：清理已过期记忆，并记录过期事件。
+- `GET /api/v1/memories/debug`：按 user、tenant、agent、scope 查看当前可见记忆项、写入/过期事件、mem0 provider 状态、外部 ID 映射和最近错误摘要，用于调试或管理页。
+
+真实 mem0 记忆闭环使用 `MEMORY_STRATEGY_PROVIDER=mem0` 开启，本地 Milvus 统一使用 Milvus Lite，默认 memory collection 为 `oir_memory_vectors`。OIR 会把 mem0 add/search/delete history 和 `memory_id`/`mem0_memory_id` 映射写入 PostgreSQL-backed `memory_events`，不把 mem0 SDK 内部 SQLite history 当作长期事实来源。完整配置、失败策略、Mermaid 流程和 smoke 路径见 [mem0-memory-integration.md](/Users/lijingtong/project/open_intent_router/docs/mem0-memory-integration.md)。
+
+记忆 scope 包括：`user_preference`、`stable_fact`、`task_memory`、`artifact_reference`、`session_summary`。其中 `task_memory`、`artifact_reference`、`session_summary` 默认 14 天过期；用户偏好和稳定事实默认长期保留。
+
+## Knowledge
+
+Knowledge API 是 M6 的通用治理检索接口，不强绑定 Agent ID。调用方必须声明 `caller_type`、可选 `caller_id`、`purpose`、用户和租户上下文，KnowledgeService 会再次执行 source policy。
+
+- `POST /api/v1/knowledge/search`：通用知识检索。支持 `caller_type=router|agent|host|admin`，`purpose=route_evidence|agent_execution|debug|preview`，以及 `source_ids`、`source_tags`、`top_k`。
+- `GET /api/v1/knowledge/debug`：查看知识源、chunk 和检索日志，便于排查 denied source、timeout、provider error 和命中情况。
+
+Agent Definition 中的 `context.knowledge.source_ids` 只是请求来源，不是最终授权证明。若知识源因角色、用户组、租户或启用状态被拒绝，结果会在 `denied_source_ids` 和 `knowledge_context.metadata.denied_source_ids` 中记录。检索失败或超时默认降级为 `status=error|timeout`，不阻塞普通调用。
+
+知识向量过渡期保留 `oac_knowledge_chunks` 与 `oir_knowledge_vectors` 双 collection。Milvus collection 只是派生索引；embedding 模型、维度、chunk 策略或 schema 不兼容时必须基于 canonical chunks reindex，不能直接复制向量。检索和 debug/citation 应保留 collection provenance。
 
 ## Agent 查询
 

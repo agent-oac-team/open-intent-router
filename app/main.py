@@ -4,7 +4,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, agents, events, health, plans, router, runs, runtime, sessions
+from app.api import (
+    admin,
+    agents,
+    events,
+    health,
+    knowledge,
+    memory,
+    plans,
+    router,
+    runs,
+    runtime,
+    sessions,
+)
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import create_all_tables
@@ -38,6 +50,8 @@ def create_app() -> FastAPI:
     app.include_router(runs.router)
     app.include_router(events.router)
     app.include_router(plans.router)
+    app.include_router(memory.router)
+    app.include_router(knowledge.router)
     app.include_router(sessions.router)
     app.include_router(runtime.router)
     return app

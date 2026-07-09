@@ -33,6 +33,12 @@ export type RuntimeConfig = {
   evidence_provider_enabled: boolean;
   evidence_fixed_questions_path: string | null;
   agent_http_timeout_seconds: number;
+  memory_enabled: boolean;
+  memory_strategy_provider: string;
+  memory_prefetch_timeout_seconds: number;
+  knowledge_enabled: boolean;
+  knowledge_vector_backend: string;
+  knowledge_prefetch_timeout_seconds: number;
 };
 
 export type ServiceReady = {
@@ -64,6 +70,25 @@ export type SchemaContract = {
   properties: JsonRecord;
 };
 
+export type AgentContextSpec = {
+  memory?: {
+    mode?: "disabled" | "prefetch" | "controlled_retrieval" | string;
+    scopes?: string[];
+    max_items?: number;
+    controlled_retrieval?: JsonRecord | null;
+    metadata?: JsonRecord;
+  };
+  knowledge?: {
+    mode?: "disabled" | "prefetch" | "controlled_retrieval" | string;
+    source_ids?: string[];
+    source_tags?: string[];
+    max_items?: number;
+    controlled_retrieval?: JsonRecord | null;
+    metadata?: JsonRecord;
+  };
+  metadata?: JsonRecord;
+};
+
 export type AgentDefinition = {
   agent_id: string;
   name: string;
@@ -90,6 +115,7 @@ export type AgentDefinition = {
     route?: string | null;
     params: JsonRecord;
   };
+  context?: AgentContextSpec;
   priority: number;
   metadata: JsonRecord;
   source: string;

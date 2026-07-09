@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -35,7 +36,19 @@ async def create_all_tables(settings: Settings) -> None:
     engine = create_engine(settings)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_compatible_columns)
     await engine.dispose()
+
+
+def _ensure_compatible_columns(sync_conn) -> None:
+    inspector = inspect(sync_conn)
+    if "agent_definitions" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("agent_definitions")}
+    if "context_text" not in columns:
+        sync_conn.execute(
+            text("ALTER TABLE agent_definitions ADD COLUMN context_text TEXT DEFAULT '{}'")
+        )
 
 
 async def session_scope(

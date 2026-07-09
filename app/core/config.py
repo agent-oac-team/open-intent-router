@@ -8,6 +8,10 @@ RegistryBackend = Literal["database", "file", "hybrid"]
 StorageBackend = Literal["memory", "database"]
 RouteMode = Literal["route_only", "route_and_invoke"]
 LLMProvider = Literal["mock", "openai_compatible"]
+MemoryStrategyProvider = Literal["memory", "mem0"]
+KnowledgeVectorBackend = Literal["memory", "milvus"]
+Mem0VectorProvider = Literal["milvus"]
+Mem0HistoryBackend = Literal["postgresql", "sqlite", "none"]
 PlanExecutionPolicy = Literal[
     "return_plan_only",
     "require_confirmation",
@@ -58,10 +62,66 @@ class Settings(BaseSettings):
 
     agent_http_timeout_seconds: float = 30.0
 
+    memory_enabled: bool = True
+    memory_strategy_provider: MemoryStrategyProvider = "memory"
+    memory_prefetch_timeout_seconds: float = 0.8
+    memory_default_max_items: int = 5
+    memory_task_ttl_days: int = 14
+    memory_session_summary_ttl_days: int = 14
+    memory_artifact_reference_ttl_days: int = 14
+    memory_mem0_fail_closed: bool | None = None
+    memory_mem0_vector_provider: Mem0VectorProvider = "milvus"
+    memory_mem0_milvus_collection: str = "oir_memory_vectors"
+    memory_mem0_milvus_uri: str = ".data/oir_memory_milvus.db"
+    memory_mem0_milvus_token: str | None = Field(default=None)
+    memory_mem0_milvus_db_name: str | None = None
+    memory_mem0_history_backend: Mem0HistoryBackend = "postgresql"
+    memory_mem0_history_database_url: str | None = None
+    memory_mem0_history_db_path: str = "./data/mem0-history.db"
+    memory_mem0_embedding_base_url: str | None = None
+    memory_mem0_embedding_api_key: str | None = Field(default=None)
+    memory_mem0_embedding_model: str | None = None
+    memory_mem0_embedding_dims: int | None = None
+    memory_mem0_llm_provider: str = "openai"
+    memory_mem0_llm_model: str | None = None
+    memory_mem0_llm_base_url: str | None = None
+    memory_mem0_llm_api_key: str | None = Field(default=None)
+    memory_mem0_embedder_provider: str = "openai"
+    memory_mem0_embedder_model: str | None = None
+    memory_milvus_collection: str = "oir_memory_vectors"
+    mem0_history_db_path: str = "./data/mem0-history.db"
+    mem0_config_json: str = ""
+
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = Field(default=None)
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
+
+    knowledge_enabled: bool = True
+    knowledge_vector_backend: KnowledgeVectorBackend = "memory"
+    knowledge_prefetch_timeout_seconds: float = 1.5
+    knowledge_default_max_items: int = 5
+    knowledge_milvus_collection: str = "oir_knowledge_vectors"
+    knowledge_milvus_uri: str | None = None
+    knowledge_milvus_token: str | None = None
+    knowledge_milvus_db_name: str | None = None
+    knowledge_embedding_base_url: str | None = None
+    knowledge_embedding_api_key: str | None = Field(default=None)
+    knowledge_embedding_model: str = "text-embedding-v4"
+    knowledge_embedding_dim: int = 1024
+    knowledge_default_source_ids: str = ""
+
     evidence_provider_enabled: bool = False
     evidence_fixed_questions_path: str = "./config/fixed_questions.example.yaml"
+    evidence_provider_timeout_seconds: float = 1.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @property
+    def memory_mem0_fail_closed_effective(self) -> bool:
+        if self.memory_mem0_fail_closed is not None:
+            return self.memory_mem0_fail_closed
+        return self.app_env != "local"
 
 
 @lru_cache

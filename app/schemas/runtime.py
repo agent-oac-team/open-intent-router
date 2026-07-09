@@ -21,3 +21,17 @@ class RuntimeConfigResponse(StrictBaseModel):
     evidence_provider_enabled: bool
     evidence_fixed_questions_path: str | None = None
     agent_http_timeout_seconds: float
+    memory_enabled: bool
+    memory_strategy_provider: str
+    memory_prefetch_timeout_seconds: float
+    memory_mem0_collection: str | None = None
+    memory_mem0_vector_provider: str | None = None
+    memory_mem0_milvus_uri: str | None = None
+    memory_mem0_history_backend: str | None = None
+    memory_mem0_fail_closed: bool = False
+    memory_mem0_degraded: bool = False
+    memory_mem0_last_error: str | None = None
+    memory_mem0_health_status: str | None = None
+    knowledge_enabled: bool
+    knowledge_vector_backend: str
+    knowledge_prefetch_timeout_seconds: float

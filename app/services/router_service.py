@@ -40,6 +40,7 @@ class RouterService:
         route_log_repository=None,
         evidence_provider=None,
         plan_service: PlanService | None = None,
+        agent_context_service=None,
     ) -> None:
         self.settings = settings
         self.registry = registry
@@ -50,6 +51,7 @@ class RouterService:
         self.route_log_repository = route_log_repository
         self.evidence_provider = evidence_provider
         self.plan_service = plan_service
+        self.agent_context_service = agent_context_service
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         request_id = request.request_id or f"req_{uuid4().hex}"
@@ -264,13 +266,41 @@ class RouterService:
                     "invocation": None,
                 }
             )
+        metadata = {}
+        context = output.context
+        if self.agent_context_service:
+            runtime_context = await self.agent_context_service.assemble_for_route(
+                agent=agent,
+                request=request,
+                invocation_input=invocation_input,
+            )
+            metadata = {
+                "memory_context_status": runtime_context.memory_context.status,
+                "knowledge_context_status": runtime_context.knowledge_context.status,
+            }
+            context = output.context.model_copy(
+                update={
+                    "metadata": {
+                        **output.context.metadata,
+                        "agent_context": {
+                            "agent_id": agent.agent_id,
+                            "memory_context_status": runtime_context.memory_context.status,
+                            "knowledge_context_status": runtime_context.knowledge_context.status,
+                            "memory_item_count": len(runtime_context.memory_context.items),
+                            "knowledge_item_count": len(runtime_context.knowledge_context.items),
+                        },
+                    }
+                }
+            )
         return output.model_copy(
             update={
+                "context": context,
                 "invocation": InvocationPreview(
                     mode="deferred",
                     agent_id=agent.agent_id,
                     input=invocation_input,
-                )
+                    metadata=metadata,
+                ),
             }
         )
 
@@ -741,6 +771,8 @@ def _with_evidence_metadata(context: RouteContext, evidence_result) -> RouteCont
         metadata["evidence_candidate_agent_ids"] = evidence_result.candidate_agent_ids
     if evidence_result.errors:
         metadata["evidence_errors"] = evidence_result.errors
+    if getattr(evidence_result, "metadata", None):
+        metadata["evidence_provider_metadata"] = evidence_result.metadata
     if evidence_result.route_override_denied:
         denied = evidence_result.route_override_denied
         metadata["route_override_denied"] = {

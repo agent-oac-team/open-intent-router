@@ -86,6 +86,11 @@ const blankAgent = (): AgentDefinition => ({
     route: null,
     params: {},
   },
+  context: {
+    memory: { mode: "disabled", scopes: [], max_items: 5, metadata: {} },
+    knowledge: { mode: "disabled", source_ids: [], source_tags: [], max_items: 5, metadata: {} },
+    metadata: {},
+  },
   priority: 0,
   metadata: {},
   source: "database",
@@ -168,6 +173,7 @@ type FormState = {
   ui_mode: string;
   ui_route: string;
   ui_params: string;
+  context: string;
   metadata: string;
 };
 
@@ -712,12 +718,14 @@ function RuntimePanel({
   return (
     <section className="panel runtime-panel">
       <PanelTitle icon={<Server size={18} />} title="运行状态" />
-      <div className="metric-grid">
-        <Metric label="模型提供方" value={runtime?.router_llm_provider || "unknown"} />
-        <Metric label="模型" value={runtime?.router_llm_model || "-"} />
-        <Metric label="注册来源" value={runtime?.registry_active_source || "-"} />
-        <Metric label="Agent 数量" value={String(runtime?.registry_agent_count ?? "-")} />
-      </div>
+        <div className="metric-grid">
+          <Metric label="模型提供方" value={runtime?.router_llm_provider || "unknown"} />
+          <Metric label="模型" value={runtime?.router_llm_model || "-"} />
+          <Metric label="注册来源" value={runtime?.registry_active_source || "-"} />
+          <Metric label="Agent 数量" value={String(runtime?.registry_agent_count ?? "-")} />
+          <Metric label="Memory" value={runtime ? `${runtime.memory_enabled ? "on" : "off"} / ${runtime.memory_strategy_provider}` : "-"} />
+          <Metric label="Knowledge" value={runtime ? `${runtime.knowledge_enabled ? "on" : "off"} / ${runtime.knowledge_vector_backend}` : "-"} />
+        </div>
       <div className="segmented" role="radiogroup" aria-label="路由模式">
         <button
           type="button"
@@ -973,6 +981,7 @@ function AgentEditorModal({
           <TextField label="UI 路由" value={form.ui_route} onChange={(value) => update("ui_route", value)} />
           <TextAreaField label="UI 参数 JSON" value={form.ui_params} onChange={(value) => update("ui_params", value)} rows={3} />
         </div>
+        <TextAreaField label="Context JSON" value={form.context} onChange={(value) => update("context", value)} rows={8} />
         <div className="submit-row">
           <span>{registryReadOnly ? "文件注册表只读" : registryMutationDisabled ? "管理写入已禁用" : isExisting ? "编辑现有 Agent" : "新增 Agent"}</span>
           <button type="submit" className="primary-button" disabled={registryReadOnly || registryMutationDisabled}>
@@ -1361,12 +1370,14 @@ function PlanTab({
 
 function EvidenceTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
   const evidence = arrayContextValue(routeResponse, "evidence");
-  if (!evidence.length) {
+  const metadata = metadataValue(routeResponse, "evidence_provider_metadata");
+  if (!evidence.length && !metadata) {
     return <EmptyState icon={<Eye size={20} />} label="暂无 Evidence 数据" />;
   }
   return (
     <div className="status-section">
-      <JsonBlock title="Evidence" value={evidence} />
+      {metadata ? <JsonBlock title="Evidence Provider Metadata" value={metadata} /> : null}
+      {evidence.length ? <JsonBlock title="Evidence" value={evidence} defaultOpen={!metadata} /> : null}
     </div>
   );
 }
@@ -1442,13 +1453,41 @@ function ContextTab({ routeResponse }: { routeResponse: RouteResponse | null }) 
 }
 
 function MemoryTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
+  const memoryContext = invocationInputValue(routeResponse, "memory_context");
+  const knowledgeContext = invocationInputValue(routeResponse, "knowledge_context");
+  const agentContext = metadataValue(routeResponse, "agent_context");
   const memory = contextValue(routeResponse, "memory") || metadataValue(routeResponse, "memory");
-  if (!memory) {
-    return <EmptyState icon={<Database size={20} />} label="暂无 Memory 数据" />;
+  const hasData = memoryContext || knowledgeContext || agentContext || memory;
+  if (!hasData) {
+    return <EmptyState icon={<Database size={20} />} label="暂无 Memory / Knowledge 数据" />;
   }
   return (
     <div className="status-section">
-      <JsonBlock title="Memory" value={memory} />
+      {agentContext ? <JsonBlock title="Agent Context Metadata" value={agentContext} /> : null}
+      {memoryContext ? <ContextResultBlock title="Memory Context" value={memoryContext} /> : null}
+      {knowledgeContext ? <ContextResultBlock title="Knowledge Context" value={knowledgeContext} /> : null}
+      {memory ? <JsonBlock title="Legacy Memory Metadata" value={memory} defaultOpen={false} /> : null}
+    </div>
+  );
+}
+
+function ContextResultBlock({ title, value }: { title: string; value: unknown }) {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
+  const itemCount = Array.isArray(record?.items) ? record.items.length : 0;
+  const citationCount = Array.isArray(record?.citations) ? record.citations.length : 0;
+  return (
+    <div className="context-result">
+      <div className="context-result-head">
+        <strong>{title}</strong>
+        <span>{String(record?.status || "-")}</span>
+      </div>
+      <div className="decision-meta">
+        <span>items: {itemCount}</span>
+        {citationCount ? <span>citations: {citationCount}</span> : null}
+        {record?.truncated ? <span>truncated</span> : null}
+      </div>
+      {record?.summary ? <p>{String(record.summary)}</p> : null}
+      <JsonBlock title={`${title} JSON`} value={value} defaultOpen={false} />
     </div>
   );
 }
@@ -1511,6 +1550,14 @@ function metadataValue(routeResponse: RouteResponse | null, key: string): unknow
   const metadata = contextValue(routeResponse, "metadata");
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
   return (metadata as JsonRecord)[key] ?? null;
+}
+
+function invocationInputValue(routeResponse: RouteResponse | null, key: string): unknown {
+  const invocation = routeResponse?.invocation;
+  if (!invocation || typeof invocation !== "object" || Array.isArray(invocation)) return null;
+  const input = (invocation as JsonRecord).input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  return (input as JsonRecord)[key] ?? null;
 }
 
 function contextPackFromRoute(routeResponse: RouteResponse | null): ContextPackDebug | null {
@@ -1734,6 +1781,7 @@ function agentToForm(agent: AgentDefinition): FormState {
     ui_mode: agent.ui_handoff?.mode || "none",
     ui_route: agent.ui_handoff?.route || "",
     ui_params: JSON.stringify(agent.ui_handoff?.params || {}, null, 2),
+    context: JSON.stringify(agent.context || { memory: { mode: "disabled" }, knowledge: { mode: "disabled" } }, null, 2),
     metadata: JSON.stringify(agent.metadata || {}, null, 2),
   };
 }
@@ -1781,6 +1829,7 @@ function formToAgent(form: FormState): AgentDefinition {
       route: form.ui_route.trim() || null,
       params: parseJsonRecord(form.ui_params, "ui params"),
     },
+    context: parseJsonRecord(form.context, "context") as AgentDefinition["context"],
     priority: Number.parseInt(form.priority || "0", 10) || 0,
     metadata: parseJsonRecord(form.metadata, "metadata"),
     source: "database",

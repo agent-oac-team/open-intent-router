@@ -38,6 +38,10 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert body["admin_api_token_configured"] is True
     assert body["admin_auth_mode"] == "token_required"
     assert body["registry_mutation_mode"] == "token_required"
+    assert body["memory_enabled"] is True
+    assert body["memory_strategy_provider"] == "memory"
+    assert body["knowledge_enabled"] is True
+    assert body["knowledge_vector_backend"] == "memory"
     serialized = str(body)
     assert "secret-key" not in serialized
     assert "admin-secret" not in serialized

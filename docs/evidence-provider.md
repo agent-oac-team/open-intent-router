@@ -2,7 +2,7 @@
 
 Evidence Provider 是可选插件，运行在 LLM 路由之前，用于向路由器提供外部证据、意图提示或固定问题命中结果。
 
-它的定位不是 Agent Registry，也不是知识库管理系统，而是“给路由决策提供上下文”的轻量扩展点。
+它的定位不是 Agent Registry，也不是 Agent 执行阶段的知识库工具，而是“给路由决策提供上下文”的轻量扩展点。
 
 ## 输出能力
 
@@ -49,16 +49,24 @@ fixed_questions:
 
 当前路由顺序为：权限过滤 > 固定问强命中 > 标签/语义观察信号 > LLM 判断。标签/语义信号不会覆盖固定问强命中，也不会裁剪传给 LLM 的候选 Agent。
 
+M6 引入 Evidence Provider Scheduler 后，固定问题仍保留特殊地位：
+
+- 强固定问命中可在目标 Agent 可用时直接返回 `route_override`，不受普通证据片段预算裁剪影响。
+- 强固定问命中但目标 Agent 不可用时返回无权限，不再进入 LLM 兜底。
+- 弱固定问只进入上下文和调试 metadata，不缩小权限过滤后的候选集。
+- 固定问只做“问题到意图/路由”的映射，本 change 不定义固定 FAQ 答案绕过。
+
 ## 与知识库检索的关系
 
-从 `intent_recon_sys` 迁移而来的知识库检索能力，建议作为后续 Evidence Provider 插件实现，而不是进入核心路由器。
+从 `intent_recon_sys` 迁移而来的路由阶段知识证据，可以作为 Evidence Provider 插件；Agent 执行阶段知识检索则通过 `AgentDefinition.context.knowledge` 和 `/api/v1/knowledge/search` 治理。
 
 推荐方式：
 
-- 知识库检索插件返回证据片段、来源、分数和候选意图。
+- 路由阶段知识库检索插件返回证据片段、来源、分数和候选意图。
 - 路由器将检索结果作为 LLM 路由上下文。
 - 如果检索结果来自固定问映射，可返回强 `route_override`；强命中目标无权限时应保留 denied 信号，供路由器返回无权限提示。
-- 知识库文件管理、向量索引、召回策略等能力留在插件内部。
+- Agent 执行阶段需要文档证据时，使用 `knowledge_context` 预取或固定 workflow node 的 controlled retrieval。
+- 知识库文件管理、向量索引、召回策略等能力保留在 Knowledge Source、向量存储或后续 adapter 内部。
 
 这样可以让核心项目保持通用，同时保留“固定问命中到固定意图”的扩展能力。
 

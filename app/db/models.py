@@ -33,6 +33,7 @@ class AgentDefinitionModel(Base):
     )
     invocation_text: Mapped[str] = mapped_column(Text, default="{}")
     ui_handoff_text: Mapped[str] = mapped_column(Text, default="{}")
+    context_text: Mapped[str] = mapped_column(Text, default="{}")
     priority: Mapped[int] = mapped_column(Integer, default=0)
     metadata_text: Mapped[str] = mapped_column(Text, default="{}")
     source: Mapped[str] = mapped_column(String(64), default="database")
@@ -193,4 +194,100 @@ class RouteLogModel(Base):
     validation_status: Mapped[str] = mapped_column(String(32), default="ok")
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryItemModel(Base):
+    __tablename__ = "memory_items"
+    __table_args__ = (
+        Index("idx_memory_items_subject_scope", "subject_type", "subject_id", "scope"),
+        Index("idx_memory_items_user_tenant", "user_id", "tenant_id"),
+    )
+
+    memory_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)
+    subject_type: Mapped[str] = mapped_column(String(64), default="user")
+    subject_id: Mapped[str] = mapped_column(String(128), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    content: Mapped[str] = mapped_column(Text)
+    structured_value_text: Mapped[str] = mapped_column(Text, default="{}")
+    source: Mapped[str] = mapped_column(String(64), default="manual")
+    confidence: Mapped[int] = mapped_column(Integer, default=100)
+    importance: Mapped[int] = mapped_column(Integer, default=50)
+    visibility: Mapped[str] = mapped_column(String(32), default="user")
+    ttl_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_text: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class MemoryEventModel(Base):
+    __tablename__ = "memory_events"
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    memory_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    payload_text: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeSourceModel(Base):
+    __tablename__ = "knowledge_sources"
+
+    source_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    allow_roles_text: Mapped[str] = mapped_column(Text, default="[]")
+    allow_groups_text: Mapped[str] = mapped_column(Text, default="[]")
+    allow_tenants_text: Mapped[str] = mapped_column(Text, default="[]")
+    tags_text: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_text: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class KnowledgeChunkModel(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (Index("idx_knowledge_chunks_source", "source_id"),)
+
+    chunk_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags_text: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_text: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeRetrievalLogModel(Base):
+    __tablename__ = "knowledge_retrieval_logs"
+
+    log_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    query: Mapped[str] = mapped_column(Text)
+    caller_type: Mapped[str] = mapped_column(String(64), index=True)
+    caller_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    purpose: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    selected_source_ids_text: Mapped[str] = mapped_column(Text, default="[]")
+    denied_source_ids_text: Mapped[str] = mapped_column(Text, default="[]")
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="ok", index=True)
+    errors_text: Mapped[str] = mapped_column(Text, default="[]")
+    metadata_text: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

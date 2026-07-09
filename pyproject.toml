@@ -19,6 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+memory = [
+    "mem0ai>=0.1.100",
+    "pymilvus>=2.4.0",
+    "milvus-lite>=2.4.0",
+]
 test = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",

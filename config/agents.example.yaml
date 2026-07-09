@@ -65,6 +65,16 @@ agents:
         response:
           draft: 您好，我结合您的关注点整理了一段可参考的话术，建议先说明背景，再给出明确下一步动作。
       provider_config: {}
+    context:
+      memory:
+        mode: prefetch
+        scopes:
+          - user_preference
+          - stable_fact
+          - task_memory
+        max_items: 5
+      knowledge:
+        mode: disabled
     ui_handoff:
       mode: none
       route: null
@@ -145,6 +155,25 @@ agents:
             - 准备可能追问和风险提示
             - 记录会后跟进动作
       provider_config: {}
+    context:
+      memory:
+        mode: prefetch
+        scopes:
+          - user_preference
+          - stable_fact
+          - session_summary
+        max_items: 5
+      knowledge:
+        mode: controlled_retrieval
+        source_ids:
+          - visit_playbook
+        max_items: 5
+        controlled_retrieval:
+          query_template: "{{ user_input }} {{ slots.visit_goal }}"
+          allowed_variables:
+            - user_input
+            - slots.visit_goal
+          output_key: knowledge_context
     ui_handoff:
       mode: none
       route: null
@@ -217,6 +246,11 @@ agents:
       type: ui_handoff
       config: {}
       provider_config: {}
+    context:
+      memory:
+        mode: disabled
+      knowledge:
+        mode: disabled
     ui_handoff:
       mode: host_route
       route: /ziya/help/customer-profile
@@ -293,6 +327,19 @@ agents:
         response:
           answer: 这是一个理财知识解释示例。正式接入时可由子牙知识库 Evidence Provider 提供依据。
       provider_config: {}
+    context:
+      memory:
+        mode: prefetch
+        scopes:
+          - user_preference
+          - stable_fact
+        max_items: 3
+      knowledge:
+        mode: prefetch
+        source_ids:
+          - wealth_product_docs
+          - risk_policy_docs
+        max_items: 5
     ui_handoff:
       mode: none
       route: null

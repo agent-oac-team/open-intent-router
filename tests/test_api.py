@@ -1,10 +1,21 @@
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_chat_history_service, get_router_service
+from app.core.config import Settings
+from app.dependencies import (
+    get_chat_history_service,
+    get_knowledge_service,
+    get_memory_service,
+    get_router_service,
+)
 from app.main import create_app
+from app.repositories.context_stores import KnowledgeRepository, MemoryItemRepository
 from app.repositories.memory import MemoryMessageRepository
+from app.schemas.knowledge import KnowledgeChunk, KnowledgeSource
+from app.schemas.memory import MemoryItem
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
 from app.services.chat_history_service import ChatHistoryService
+from app.services.knowledge_service import KnowledgeService
+from app.services.memory_service import MemoryService
 
 
 def test_health_endpoint() -> None:
@@ -94,6 +105,37 @@ def test_route_endpoint_preserves_response_contract_shape() -> None:
     assert body["context"]["candidate_agent_ids"] == ["summarizer"]
     assert body["invocation"]["mode"] == "deferred"
     assert body["invocation"]["agent_id"] == "summarizer"
+
+
+async def test_memory_and_knowledge_debug_endpoints_return_admin_state() -> None:
+    memory_repository = MemoryItemRepository()
+    await memory_repository.add(
+        MemoryItem(
+            scope="user_preference", subject_id="u1", user_id="u1", content="prefers concise"
+        )
+    )
+    knowledge_repository = KnowledgeRepository()
+    await knowledge_repository.upsert_source(KnowledgeSource(source_id="docs", name="Docs"))
+    await knowledge_repository.add_chunk(KnowledgeChunk(source_id="docs", content="risk guide"))
+    app = create_app()
+    app.dependency_overrides[get_memory_service] = lambda: MemoryService(
+        settings=Settings(storage_backend="memory"),
+        repository=memory_repository,
+    )
+    app.dependency_overrides[get_knowledge_service] = lambda: KnowledgeService(
+        settings=Settings(storage_backend="memory"),
+        repository=knowledge_repository,
+    )
+    client = TestClient(app)
+
+    memory_response = client.get("/api/v1/memories/debug?user_id=u1")
+    knowledge_response = client.get("/api/v1/knowledge/debug?source_ids=docs")
+
+    assert memory_response.status_code == 200
+    assert memory_response.json()["metadata"]["item_count"] == 1
+    assert knowledge_response.status_code == 200
+    assert knowledge_response.json()["metadata"]["source_count"] == 1
+    assert knowledge_response.json()["chunks"][0]["source_id"] == "docs"
 
 
 class ContractRouterService:

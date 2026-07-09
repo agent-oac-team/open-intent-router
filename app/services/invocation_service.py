@@ -10,6 +10,7 @@ from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegis
 from app.invokers.mock import MockAgentInvoker
 from app.invokers.registry import AgentInvokerRegistry
 from app.invokers.ui_handoff import UiHandoffInvoker
+from app.schemas.agent_context import KnowledgeContext, MemoryContext
 from app.schemas.common import ErrorDetail
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
 from app.schemas.logs import AgentResult, AgentRun
@@ -24,11 +25,13 @@ class InvocationService:
         run_repository,
         result_repository,
         invokers: AgentInvokerRegistry,
+        agent_context_service=None,
     ) -> None:
         self.registry = registry
         self.run_repository = run_repository
         self.result_repository = result_repository
         self.invokers = invokers
+        self.agent_context_service = agent_context_service
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
         definition = await self.registry.get_definition(request.agent_id)
@@ -43,6 +46,8 @@ class InvocationService:
             user=request.user,
             input=request.input,
             context=request.context,
+            memory_context=request.memory_context or MemoryContext(),
+            knowledge_context=request.knowledge_context or KnowledgeContext(),
         )
         return await self._invoke_definition(definition, invocation)
 
@@ -97,6 +102,7 @@ class InvocationService:
         definition,
         invocation: AgentInvocation,
     ) -> AgentInvocationResult:
+        invocation = await self._with_agent_context(definition, invocation)
         started = time.perf_counter()
         run = AgentRun(
             run_id=invocation.run_id,
@@ -152,6 +158,39 @@ class InvocationService:
         )
         return result
 
+    async def _with_agent_context(
+        self,
+        definition,
+        invocation: AgentInvocation,
+    ) -> AgentInvocation:
+        if not self.agent_context_service:
+            return invocation
+        input_values = dict(invocation.input or {})
+        if "memory_context" not in input_values and _has_memory_context(invocation.memory_context):
+            input_values["memory_context"] = invocation.memory_context.model_dump(mode="json")
+        if "knowledge_context" not in input_values and _has_knowledge_context(
+            invocation.knowledge_context
+        ):
+            input_values["knowledge_context"] = invocation.knowledge_context.model_dump(mode="json")
+        query = _query_text(input_values)
+        runtime = await self.agent_context_service.assemble(
+            agent=definition,
+            user=invocation.user,
+            session_id=invocation.session_id,
+            query=query,
+            invocation_input=input_values,
+            caller_type="agent",
+            caller_id=definition.agent_id,
+            purpose="agent_execution",
+        )
+        return invocation.model_copy(
+            update={
+                "input": input_values,
+                "memory_context": runtime.memory_context,
+                "knowledge_context": runtime.knowledge_context,
+            }
+        )
+
 
 def build_default_invoker_registry(settings, local_functions: LocalFunctionRegistry | None = None):
     registry = AgentInvokerRegistry()
@@ -200,3 +239,35 @@ def missing_required_inputs(definition, invocation_input: dict) -> list[str]:
 def _context_str(context: dict, key: str) -> str | None:
     value = context.get(key)
     return str(value) if value is not None else None
+
+
+def _query_text(input_values: dict) -> str:
+    for key in ("text", "query", "title"):
+        value = input_values.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return " ".join(str(value) for value in input_values.values() if isinstance(value, str))
+
+
+def _has_memory_context(context: MemoryContext) -> bool:
+    return bool(
+        context.summary
+        or context.items
+        or context.status != "empty"
+        or context.truncated
+        or context.errors
+        or context.metadata
+    )
+
+
+def _has_knowledge_context(context: KnowledgeContext) -> bool:
+    return bool(
+        context.summary
+        or context.items
+        or context.citations
+        or context.source_ids
+        or context.status != "disabled"
+        or context.truncated
+        or context.errors
+        or context.metadata
+    )

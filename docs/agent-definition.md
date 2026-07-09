@@ -40,6 +40,7 @@ Agent Definition 建议包含以下字段：
 - `output_schema`：输出 JSON Schema。
 - `invocation`：后端调用配置。
 - `ui_handoff`：宿主应用页面或动作交接配置。
+- `context`：声明该 Agent 需要的平台治理上下文，包括记忆和知识检索模式。
 - `provider_config`：第三方平台相关配置。
 - `metadata`：非核心扩展数据。
 
@@ -64,6 +65,36 @@ Agent Definition 建议包含以下字段：
 - Coze `bot_id`、Dify App ID 等第三方字段放入 `provider_config` 或 `invocation.config`。
 - OAC `route_path` 一类前端路由字段放入 `ui_handoff.route`。
 - 飞书表格字段不进入核心 Agent Schema。
+
+## Context 配置
+
+`context` 是 M5/M6 的产品入口。Agent 只声明需要什么上下文；中控、Invoker 或固定工作流节点负责召回、预算、审计和传参。
+
+```yaml
+context:
+  memory:
+    mode: prefetch
+    scopes:
+      - user_preference
+      - stable_fact
+      - task_memory
+    max_items: 5
+  knowledge:
+    mode: disabled
+    source_ids:
+      - product_docs
+    max_items: 5
+```
+
+支持模式：
+
+- `disabled`：不召回。
+- `prefetch`：路由/调用目标 Agent 前自动召回，并传入 `memory_context` 或 `knowledge_context`。
+- `controlled_retrieval`：固定工作流节点按预设模板调用 `/knowledge/search` 或记忆召回，不允许模型自由决定。
+
+`memory_context` 固定包含 `summary`、`items`、`status` 和截断信息；`knowledge_context` 额外包含 `citations` 和 `source_ids`。低代码 Bot 可以只读取 summary，复杂 Agent 可以读取 items 和 citations。
+
+知识默认不预取，只有 Agent 明确配置 `context.knowledge.mode=prefetch` 才会执行。固定问属于 M6 Evidence Provider 的“问题到意图”映射，不应写入 Agent context，也不作为固定答案能力。
 
 ## Registry 后端
 

@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from app.plugins.evidence import FileFixedQuestionEvidenceProvider, NoopEvidenceProvider
+from app.plugins.evidence import (
+    EvidenceProviderScheduler,
+    EvidenceResult,
+    FileFixedQuestionEvidenceProvider,
+    NoopEvidenceProvider,
+)
 from app.schemas.common import UserContext
 from app.schemas.events import AgentEvent
 from app.schemas.plans import Plan
@@ -111,3 +116,74 @@ fixed_questions:
     assert result.route_override_denied["target_agent_id"] == "handoff_dashboard"
     assert result.route_override_denied["reason"] == "permission_denied"
     assert result.evidence[0]["route_override_denied"] is True
+
+
+async def test_file_fixed_question_provider_weak_hint_does_not_override(tmp_path: Path) -> None:
+    path = tmp_path / "fixed.yaml"
+    path.write_text(
+        """
+fixed_questions:
+  - question: help me choose
+    strength: weak
+    intent_hint: maybe_advisor
+    candidate_agent_ids:
+      - advisor
+    route_override:
+      action: open_agent
+      target_agent_id: advisor
+""",
+        encoding="utf-8",
+    )
+    result = await FileFixedQuestionEvidenceProvider(str(path)).match(
+        question="help me choose",
+        candidate_agent_ids=["advisor"],
+        user=UserContext(id="u1"),
+    )
+    assert result.intent_hint == "maybe_advisor"
+    assert result.candidate_agent_ids == ["advisor"]
+    assert result.route_override is None
+
+
+async def test_evidence_scheduler_records_no_match_error_and_timeout() -> None:
+    scheduler = EvidenceProviderScheduler(
+        [
+            ("no_match", StaticEvidenceProvider(EvidenceResult(metadata={"status": "no_match"}))),
+            ("error", ErrorEvidenceProvider()),
+            ("slow", SlowEvidenceProvider()),
+        ],
+        timeout_seconds=0.01,
+    )
+
+    result = await scheduler.match(
+        question="anything",
+        candidate_agent_ids=["summarizer"],
+        user=UserContext(id="u1"),
+    )
+
+    scheduled = result.metadata["scheduled_providers"]
+    assert scheduled[0]["result"]["status"] == "no_match"
+    assert scheduled[1]["status"] == "error"
+    assert scheduled[2]["status"] == "timeout"
+    assert any("failed: error" in error for error in result.errors)
+    assert any("timed out: slow" in error for error in result.errors)
+
+
+class StaticEvidenceProvider:
+    def __init__(self, result: EvidenceResult) -> None:
+        self.result = result
+
+    async def match(self, *, question, candidate_agent_ids, user):
+        return self.result
+
+
+class ErrorEvidenceProvider:
+    async def match(self, *, question, candidate_agent_ids, user):
+        raise RuntimeError("error")
+
+
+class SlowEvidenceProvider:
+    async def match(self, *, question, candidate_agent_ids, user):
+        import asyncio
+
+        await asyncio.sleep(0.05)
+        return EvidenceResult()

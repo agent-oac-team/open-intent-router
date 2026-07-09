@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.core.config import Settings, get_settings
 from app.dependencies import get_registry_service
 from app.schemas.runtime import RuntimeConfigResponse
+from app.services.mem0_config import mem0_health_check
 from app.services.registry_service import AgentRegistryService
 
 router = APIRouter(prefix="/api/v1", tags=["runtime"])
@@ -17,6 +18,7 @@ async def runtime_config(
         await registry.load()
     admin_auth_mode = _admin_auth_mode(settings)
     registry_mutation_mode = _registry_mutation_mode(settings, admin_auth_mode)
+    mem0_metadata = mem0_health_check(settings)
     return RuntimeConfigResponse(
         app_env=settings.app_env,
         storage_backend=settings.storage_backend,
@@ -37,6 +39,20 @@ async def runtime_config(
         evidence_provider_enabled=settings.evidence_provider_enabled,
         evidence_fixed_questions_path=settings.evidence_fixed_questions_path,
         agent_http_timeout_seconds=settings.agent_http_timeout_seconds,
+        memory_enabled=settings.memory_enabled,
+        memory_strategy_provider=settings.memory_strategy_provider,
+        memory_prefetch_timeout_seconds=settings.memory_prefetch_timeout_seconds,
+        memory_mem0_collection=mem0_metadata.get("collection"),
+        memory_mem0_vector_provider=mem0_metadata.get("vector_provider"),
+        memory_mem0_milvus_uri=mem0_metadata.get("milvus_uri"),
+        memory_mem0_history_backend=mem0_metadata.get("history_backend"),
+        memory_mem0_fail_closed=bool(mem0_metadata.get("fail_closed")),
+        memory_mem0_degraded=mem0_metadata.get("status") == "degraded",
+        memory_mem0_last_error=None,
+        memory_mem0_health_status=mem0_metadata.get("status"),
+        knowledge_enabled=settings.knowledge_enabled,
+        knowledge_vector_backend=settings.knowledge_vector_backend,
+        knowledge_prefetch_timeout_seconds=settings.knowledge_prefetch_timeout_seconds,
     )
 
 

@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from app.core.redaction import redact_value
+from app.schemas.agent_context import AgentContextSpec
 from app.schemas.common import AgentType, JsonDict, SchemaContract, StrictBaseModel, UserContext
 
 
@@ -75,6 +76,7 @@ class AgentDefinition(StrictBaseModel):
     output_schema: SchemaContract = Field(default_factory=SchemaContract)
     invocation: InvocationSpec
     ui_handoff: UiHandoffSpec = Field(default_factory=UiHandoffSpec)
+    context: AgentContextSpec = Field(default_factory=AgentContextSpec)
     priority: int = 0
     metadata: JsonDict = Field(default_factory=dict)
     source: str = "database"
@@ -143,6 +145,7 @@ class AgentDefinition(StrictBaseModel):
             input_schema=self.input_schema,
             output_schema=self.output_schema,
             ui_handoff=self.ui_handoff,
+            context=self.context,
             priority=self.priority,
             metadata=redact_value(self.metadata),
             source=self.source,
@@ -179,6 +182,7 @@ class AgentPublic(StrictBaseModel):
     input_schema: SchemaContract = Field(default_factory=SchemaContract)
     output_schema: SchemaContract = Field(default_factory=SchemaContract)
     ui_handoff: UiHandoffSpec = Field(default_factory=UiHandoffSpec)
+    context: AgentContextSpec = Field(default_factory=AgentContextSpec)
     priority: int = 0
     metadata: JsonDict = Field(default_factory=dict)
     source: str = "database"
