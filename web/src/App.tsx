@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  BookOpen,
   Bot,
   Braces,
   CheckCircle2,
@@ -30,9 +31,16 @@ import { api, isApiError } from "./api";
 import type {
   AgentDefinition,
   AgentListResponse,
+  ChatMessage,
+  ConversationTurn,
   ContextPackDebug,
   ContextSelectionDebug,
+  KnowledgeDebugFilters,
+  KnowledgeDebugResponse,
+  MemoryDebugFilters,
+  MemoryDebugResponse,
   JsonRecord,
+  JsonValue,
   RouteAndInvokeResponse,
   RouteRequest,
   RouteResponse,
@@ -104,15 +112,7 @@ type DemoPrompt = {
   text: string;
   mode: ExecutionMode;
 };
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  status: "pending" | "completed" | "failed";
-  createdAt: string;
-  requestId?: string;
-};
-type StatusTab = "route" | "plan" | "context" | "memory" | "evidence" | "debug";
+type StatusTab = "route" | "plan" | "context" | "memory" | "knowledge" | "evidence" | "debug";
 
 const demoPrompts: DemoPrompt[] = [
   {
@@ -205,7 +205,8 @@ function App() {
   const [eventJson, setEventJson] = useState(defaultEventJson());
   const [routeResponse, setRouteResponse] = useState<RouteResponse | null>(null);
   const [invokeResponse, setInvokeResponse] = useState<RouteAndInvokeResponse["result"] | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [conversationTurns, setConversationTurns] = useState<ConversationTurn[]>([]);
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
   const [plan, setPlan] = useState<JsonRecord | null>(null);
   const [eventResponse, setEventResponse] = useState<JsonRecord | null>(null);
   const [busy, setBusy] = useState(false);
@@ -226,6 +227,15 @@ function App() {
   const adminTokenRequired = runtime?.registry_mutation_mode === "token_required";
   const modeMismatch = runtime ? runtime.router_llm_provider !== llmModeChoice : false;
   const canSubmit = source !== "agent_chat" || currentAgentId.trim().length > 0;
+  const latestTurn = useMemo(
+    () => conversationTurns[conversationTurns.length - 1] || null,
+    [conversationTurns],
+  );
+  const selectedTurn = useMemo(
+    () => conversationTurns.find((turn) => turn.id === selectedTurnId) || null,
+    [conversationTurns, selectedTurnId],
+  );
+  const inspectedTurn = selectedTurn || latestTurn;
 
   useEffect(() => {
     void bootstrap();
@@ -407,72 +417,118 @@ function App() {
       return;
     }
     const timestamp = Date.now();
+    const turnId = `turn_${timestamp}`;
     const userMessageId = `msg_user_${timestamp}`;
     const assistantMessageId = `msg_assistant_${timestamp}`;
     const createdAt = new Date().toISOString();
-    setChatMessages((current) => [
-      ...current,
-      { id: userMessageId, role: "user", content: text, status: "completed", createdAt },
-      {
+    const pendingTurn: ConversationTurn = {
+      id: turnId,
+      mode: executionMode,
+      userMessage: { id: userMessageId, role: "user", content: text, status: "completed", createdAt },
+      assistantMessage: {
         id: assistantMessageId,
         role: "assistant",
         content: "正在判断意图...",
         status: "pending",
         createdAt,
       },
+      routeResponse: null,
+      invokeResponse: null,
+      memoryContext: null,
+      knowledgeContext: null,
+      agentContext: null,
+    };
+    setConversationTurns((current) => [
+      ...current,
+      pendingTurn,
     ]);
+    setSelectedTurnId(turnId);
     setMessage("");
     setBusy(true);
     try {
       const payload = buildRouteRequest(text);
       if (executionMode === "route") {
         const result = await api.route(payload);
+        const trace = traceFromRoute(result);
         setRouteResponse(result);
         setInvokeResponse(null);
         if (result.plan && typeof result.plan === "object") setPlan(result.plan as JsonRecord);
-        setChatMessages((current) =>
-          current.map((item) =>
-            item.id === assistantMessageId
+        setConversationTurns((current) =>
+          current.map((turn) =>
+            turn.id === turnId
               ? {
-                  ...item,
-                  content: assistantTextFromRoute(result),
-                  status: "completed",
+                  ...turn,
                   requestId: result.request_id,
+                  routeResponse: result,
+                  invokeResponse: null,
+                  memoryContext: trace.memoryContext,
+                  knowledgeContext: trace.knowledgeContext,
+                  agentContext: trace.agentContext,
+                  assistantMessage: {
+                    ...turn.assistantMessage,
+                    content: assistantTextFromRoute(result),
+                    status: "completed",
+                    requestId: result.request_id,
+                  },
                 }
-              : item,
+              : turn,
           ),
         );
+        setSelectedTurnId(turnId);
       } else {
         const result = await api.routeAndInvoke(payload);
+        const trace = traceFromRoute(result.route);
         setRouteResponse(result.route);
         setInvokeResponse(result.result || null);
         if (result.route.plan && typeof result.route.plan === "object") setPlan(result.route.plan as JsonRecord);
-        setChatMessages((current) =>
-          current.map((item) =>
-            item.id === assistantMessageId
+        setConversationTurns((current) =>
+          current.map((turn) =>
+            turn.id === turnId
               ? {
-                  ...item,
-                  content: assistantTextFromRoute(result.route),
-                  status: "completed",
+                  ...turn,
                   requestId: result.route.request_id,
+                  routeResponse: result.route,
+                  invokeResponse: result.result || null,
+                  memoryContext: trace.memoryContext,
+                  knowledgeContext: trace.knowledgeContext,
+                  agentContext: trace.agentContext,
+                  assistantMessage: {
+                    ...turn.assistantMessage,
+                    content: assistantTextFromRoute(result.route),
+                    status: "completed",
+                    requestId: result.route.request_id,
+                  },
                 }
-              : item,
+              : turn,
           ),
         );
+        setSelectedTurnId(turnId);
       }
     } catch (error) {
       setNotice(formatError(error));
-      setChatMessages((current) =>
-        current.map((item) =>
-          item.id === assistantMessageId
+      setRouteResponse(null);
+      setInvokeResponse(null);
+      setConversationTurns((current) =>
+        current.map((turn) =>
+          turn.id === turnId
             ? {
-                ...item,
-                content: "请求失败，请查看页面提示或右侧调试信息。",
-                status: "failed",
+                ...turn,
+                requestId: undefined,
+                routeResponse: null,
+                invokeResponse: null,
+                memoryContext: null,
+                knowledgeContext: null,
+                agentContext: null,
+                assistantMessage: {
+                  ...turn.assistantMessage,
+                  content: "请求失败，请查看页面提示或右侧调试信息。",
+                  status: "failed",
+                },
               }
-            : item,
+            : turn,
         ),
       );
+      setSelectedTurnId(turnId);
     } finally {
       setBusy(false);
     }
@@ -482,7 +538,8 @@ function App() {
     const nextSessionId = `demo_${Date.now()}`;
     setSessionId(nextSessionId);
     setMessage("");
-    setChatMessages([]);
+    setConversationTurns([]);
+    setSelectedTurnId(null);
     setRouteResponse(null);
     setInvokeResponse(null);
     setPlan(null);
@@ -555,7 +612,7 @@ function App() {
       setPlan(response.plan);
       if (response.results[0]) {
         const first = response.results[0];
-        setInvokeResponse({
+        const nextInvokeResponse = {
           run_id: String(first.run_id || ""),
           agent_id: String(first.agent_id || ""),
           status: String(first.status || ""),
@@ -564,7 +621,21 @@ function App() {
           artifact_refs: Array.isArray(first.artifact_refs) ? (first.artifact_refs as JsonRecord[]) : [],
           usage: {},
           error: (first.error as JsonRecord | null) || null,
-        });
+        };
+        setInvokeResponse(nextInvokeResponse);
+        const targetTurnId = selectedTurnId || latestTurn?.id || null;
+        if (targetTurnId) {
+          setConversationTurns((current) =>
+            current.map((turn) =>
+              turn.id === targetTurnId
+                ? {
+                    ...turn,
+                    invokeResponse: nextInvokeResponse,
+                  }
+                : turn,
+            ),
+          );
+        }
       }
     } catch (error) {
       setNotice(formatError(error));
@@ -667,14 +738,16 @@ function App() {
             onSubmit={sendMessage}
             onNewConversation={startNewConversation}
             onSelectDemoPrompt={selectDemoPrompt}
-            messages={chatMessages}
+            turns={conversationTurns}
+            selectedTurnId={inspectedTurn?.id || null}
+            onSelectTurn={setSelectedTurnId}
           />
+          <DebugManagementPanel runtime={runtime} />
         </section>
 
         <aside className="right-rail">
           <StatusInspector
-            routeResponse={routeResponse}
-            invokeResponse={invokeResponse}
+            turn={inspectedTurn}
             plan={plan}
             planId={planId}
             setPlanId={setPlanId}
@@ -1031,7 +1104,9 @@ function ConversationPanel(props: {
   onSubmit: (event: FormEvent) => void;
   onNewConversation: () => void;
   onSelectDemoPrompt: (prompt: DemoPrompt) => void;
-  messages: ChatMessage[];
+  turns: ConversationTurn[];
+  selectedTurnId: string | null;
+  onSelectTurn: (turnId: string) => void;
 }) {
   return (
     <section className="panel conversation-panel">
@@ -1065,7 +1140,11 @@ function ConversationPanel(props: {
           <TextField label="会话 ID" value={props.sessionId} onChange={props.setSessionId} />
         </div>
         <DemoPromptShelf onSelect={props.onSelectDemoPrompt} />
-        <ChatTranscript messages={props.messages} />
+        <ChatTranscript
+          turns={props.turns}
+          selectedTurnId={props.selectedTurnId}
+          onSelectTurn={props.onSelectTurn}
+        />
         <TextAreaField label="用户消息" value={props.message} onChange={props.setMessage} rows={4} />
         <details className="advanced-options">
           <summary>高级上下文</summary>
@@ -1140,33 +1219,81 @@ function DemoPromptShelf({ onSelect }: { onSelect: (prompt: DemoPrompt) => void 
   );
 }
 
-function ChatTranscript({ messages }: { messages: ChatMessage[] }) {
-  if (!messages.length) {
+function ChatTranscript({
+  turns,
+  selectedTurnId,
+  onSelectTurn,
+}: {
+  turns: ConversationTurn[];
+  selectedTurnId: string | null;
+  onSelectTurn: (turnId: string) => void;
+}) {
+  if (!turns.length) {
     return <EmptyState icon={<MessageSquareText size={20} />} label="选择演示问题或直接输入用户请求" />;
   }
   return (
     <div className="chat-transcript" aria-label="聊天记录">
-      {messages.map((item) => (
-        <article className={`chat-message ${item.role} ${item.status}`} key={item.id}>
-          <div className="chat-avatar" aria-hidden="true">
-            {item.role === "user" ? "U" : item.role === "assistant" ? "AI" : "S"}
-          </div>
-          <div className="chat-bubble">
-            <div className="chat-meta">
-              <span>{item.role === "user" ? "用户" : item.role === "assistant" ? "中控" : "系统"}</span>
-              <strong>{chatStatusLabel(item.status)}</strong>
-            </div>
-            <p>{item.content}</p>
-          </div>
-        </article>
+      {turns.map((turn, index) => (
+        <button
+          type="button"
+          className={`chat-turn ${turn.assistantMessage.status} ${selectedTurnId === turn.id ? "selected" : ""}`}
+          key={turn.id}
+          onClick={() => onSelectTurn(turn.id)}
+          aria-pressed={selectedTurnId === turn.id}
+          aria-label={`选择第 ${index + 1} 轮对话`}
+        >
+          <ChatMessageBubble message={turn.userMessage} />
+          <ChatMessageBubble message={turn.assistantMessage}>
+            <TurnTraceBadges turn={turn} />
+          </ChatMessageBubble>
+        </button>
       ))}
     </div>
   );
 }
 
+function ChatMessageBubble({ message, children }: { message: ChatMessage; children?: React.ReactNode }) {
+  return (
+    <article className={`chat-message ${message.role} ${message.status}`}>
+      <div className="chat-avatar" aria-hidden="true">
+        {message.role === "user" ? "U" : message.role === "assistant" ? "AI" : "S"}
+      </div>
+      <div className="chat-bubble">
+        <div className="chat-meta">
+          <span>{message.role === "user" ? "用户" : message.role === "assistant" ? "中控" : "系统"}</span>
+          <strong>{chatStatusLabel(message.status)}</strong>
+        </div>
+        <p>{message.content}</p>
+        {children}
+      </div>
+    </article>
+  );
+}
+
+function TurnTraceBadges({ turn }: { turn: ConversationTurn }) {
+  if (turn.assistantMessage.status === "pending") {
+    return (
+      <div className="turn-trace-badges">
+        <span>Context 等待中</span>
+      </div>
+    );
+  }
+  const memory = contextTraceSummary(turn.memoryContext ?? null);
+  const knowledge = contextTraceSummary(turn.knowledgeContext ?? null);
+  const deniedCount = deniedSourceCount(turn.knowledgeContext ?? null);
+  return (
+    <div className="turn-trace-badges">
+      <span>Memory {memory.label}</span>
+      <span>Knowledge {knowledge.label}</span>
+      <span>Citations {knowledge.citationCount}</span>
+      <span>Denied {deniedCount}</span>
+      <span>{contextAvailabilityLabel(turn)}</span>
+    </div>
+  );
+}
+
 function StatusInspector({
-  routeResponse,
-  invokeResponse,
+  turn,
   plan,
   planId,
   setPlanId,
@@ -1177,8 +1304,7 @@ function StatusInspector({
   onPlanAction,
   onSubmitEvent,
 }: {
-  routeResponse: RouteResponse | null;
-  invokeResponse: RouteAndInvokeResponse["result"] | null;
+  turn: ConversationTurn | null;
   plan: JsonRecord | null;
   planId: string;
   setPlanId: (value: string) => void;
@@ -1190,11 +1316,15 @@ function StatusInspector({
   onSubmitEvent: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<StatusTab>("route");
+  const routeResponse = turn?.routeResponse || null;
+  const invokeResponse = turn?.invokeResponse || null;
+  const turnPlan = routeResponse?.plan && typeof routeResponse.plan === "object" ? (routeResponse.plan as JsonRecord) : null;
   const tabs: Array<{ id: StatusTab; label: string; icon: React.ReactNode }> = [
     { id: "route", label: "Route", icon: <Route size={15} /> },
     { id: "plan", label: "Plan", icon: <ClipboardList size={15} /> },
     { id: "context", label: "Context", icon: <Braces size={15} /> },
     { id: "memory", label: "Memory", icon: <Database size={15} /> },
+    { id: "knowledge", label: "Knowledge", icon: <BookOpen size={15} /> },
     { id: "evidence", label: "Evidence", icon: <Eye size={15} /> },
     { id: "debug", label: "Debug", icon: <FileJson size={15} /> },
   ];
@@ -1202,6 +1332,10 @@ function StatusInspector({
   return (
     <section className="panel status-inspector">
       <PanelTitle icon={<Eye size={18} />} title="状态面板" />
+      <div className="selected-turn-strip">
+        <span>当前轮次</span>
+        <strong>{turn?.requestId || turn?.id || "未选择"}</strong>
+      </div>
       <div className="status-tabs" role="tablist" aria-label="中控状态">
         {tabs.map((tab) => (
           <button
@@ -1223,7 +1357,7 @@ function StatusInspector({
         ) : null}
         {activeTab === "plan" ? (
           <PlanTab
-            plan={plan}
+            plan={turnPlan || plan}
             planId={planId}
             setPlanId={setPlanId}
             onRefreshPlan={onRefreshPlan}
@@ -1231,7 +1365,12 @@ function StatusInspector({
           />
         ) : null}
         {activeTab === "context" ? <ContextTab routeResponse={routeResponse} /> : null}
-        {activeTab === "memory" ? <MemoryTab routeResponse={routeResponse} /> : null}
+        {activeTab === "memory" ? (
+          <MemoryTab memoryContext={turn?.memoryContext || null} agentContext={turn?.agentContext || null} routeResponse={routeResponse} />
+        ) : null}
+        {activeTab === "knowledge" ? (
+          <KnowledgeTab knowledgeContext={turn?.knowledgeContext || null} routeResponse={routeResponse} />
+        ) : null}
         {activeTab === "evidence" ? <EvidenceTab routeResponse={routeResponse} /> : null}
         {activeTab === "debug" ? (
           <DebugTab
@@ -1452,42 +1591,151 @@ function ContextTab({ routeResponse }: { routeResponse: RouteResponse | null }) 
   );
 }
 
-function MemoryTab({ routeResponse }: { routeResponse: RouteResponse | null }) {
-  const memoryContext = invocationInputValue(routeResponse, "memory_context");
-  const knowledgeContext = invocationInputValue(routeResponse, "knowledge_context");
-  const agentContext = metadataValue(routeResponse, "agent_context");
-  const memory = contextValue(routeResponse, "memory") || metadataValue(routeResponse, "memory");
-  const hasData = memoryContext || knowledgeContext || agentContext || memory;
-  if (!hasData) {
-    return <EmptyState icon={<Database size={20} />} label="暂无 Memory / Knowledge 数据" />;
+function MemoryTab({
+  memoryContext,
+  agentContext,
+  routeResponse,
+}: {
+  memoryContext: JsonRecord | null;
+  agentContext: JsonRecord | null;
+  routeResponse: RouteResponse | null;
+}) {
+  const legacyMemory = contextValue(routeResponse, "memory") || metadataValue(routeResponse, "memory");
+  if (!memoryContext && !agentContext && !legacyMemory) {
+    return <EmptyState icon={<Database size={20} />} label="本轮没有可用 Memory Context" />;
   }
+  const summary = contextTraceSummary(memoryContext);
+  const items = contextItems(memoryContext);
+  const errors = stringArrayValue(memoryContext?.errors);
   return (
     <div className="status-section">
-      {agentContext ? <JsonBlock title="Agent Context Metadata" value={agentContext} /> : null}
-      {memoryContext ? <ContextResultBlock title="Memory Context" value={memoryContext} /> : null}
-      {knowledgeContext ? <ContextResultBlock title="Knowledge Context" value={knowledgeContext} /> : null}
-      {memory ? <JsonBlock title="Legacy Memory Metadata" value={memory} defaultOpen={false} /> : null}
+      <ContextResultHeader title="Memory Context" status={summary.status} itemCount={summary.itemCount} />
+      {memoryContext?.summary ? <p className="context-summary-text">{String(memoryContext.summary)}</p> : null}
+      {items.length ? (
+        <div className="debug-list">
+          {items.map((item, index) => (
+            <article className="debug-row" key={String(item.memory_id || item.item_id || index)}>
+              <div>
+                <strong>{String(item.memory_id || item.item_id || `memory_${index + 1}`)}</strong>
+                <span>{String(item.content || "")}</span>
+              </div>
+              <div className="context-item-meta">
+                {item.scope ? <span>{String(item.scope)}</span> : null}
+                {numberValue(item.relevance) !== null ? <span>relevance {numberValue(item.relevance)?.toFixed(2)}</span> : null}
+                {numberValue(item.confidence) !== null ? <span>confidence {numberValue(item.confidence)?.toFixed(2)}</span> : null}
+                {item.source ? <span>{String(item.source)}</span> : null}
+                {item.ttl_expires_at ? <span>TTL {String(item.ttl_expires_at)}</span> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <EmptyState icon={<Database size={20} />} label={memoryContext ? "Memory Context 为空" : "本轮未返回 Memory Context"} />
+      )}
+      {errors.length ? <ErrorList title="Memory Errors" errors={errors} /> : null}
+      {agentContext ? <JsonBlock title="Agent Context Metadata" value={agentContext} defaultOpen={false} /> : null}
+      {memoryContext ? <JsonBlock title="Memory Context JSON" value={memoryContext} defaultOpen={false} /> : null}
+      {legacyMemory ? <JsonBlock title="Legacy Memory Metadata" value={legacyMemory} defaultOpen={false} /> : null}
     </div>
   );
 }
 
-function ContextResultBlock({ title, value }: { title: string; value: unknown }) {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
-  const itemCount = Array.isArray(record?.items) ? record.items.length : 0;
-  const citationCount = Array.isArray(record?.citations) ? record.citations.length : 0;
+function KnowledgeTab({
+  knowledgeContext,
+  routeResponse,
+}: {
+  knowledgeContext: JsonRecord | null;
+  routeResponse: RouteResponse | null;
+}) {
+  const agentContext = metadataValue(routeResponse, "agent_context");
+  if (!knowledgeContext && !agentContext) {
+    return <EmptyState icon={<BookOpen size={20} />} label="本轮没有可用 Knowledge Context" />;
+  }
+  const summary = contextTraceSummary(knowledgeContext);
+  const items = contextItems(knowledgeContext);
+  const citations = jsonRecordArray(knowledgeContext?.citations);
+  const sourceIds = stringArrayValue(knowledgeContext?.source_ids);
+  const metadata = recordValue(knowledgeContext?.metadata);
+  const deniedSourceIds = stringArrayValue(metadata?.denied_source_ids);
+  const errors = stringArrayValue(knowledgeContext?.errors);
+  return (
+    <div className="status-section">
+      <ContextResultHeader title="Knowledge Context" status={summary.status} itemCount={summary.itemCount} />
+      <div className="storage-boundary">
+        <span>PostgreSQL source / chunk / log 是 canonical 数据</span>
+        <span>Milvus 仅作为向量索引元数据</span>
+      </div>
+      {knowledgeContext?.summary ? <p className="context-summary-text">{String(knowledgeContext.summary)}</p> : null}
+      <dl className="detail-list">
+        <div>
+          <dt>Source IDs</dt>
+          <dd>{sourceIds.length ? sourceIds.join(", ") : "-"}</dd>
+        </div>
+        <div>
+          <dt>Denied</dt>
+          <dd>{deniedSourceIds.length ? deniedSourceIds.join(", ") : "-"}</dd>
+        </div>
+        <div>
+          <dt>Vector</dt>
+          <dd>{[metadata?.vector_backend, metadata?.collection].filter(Boolean).map(String).join(" / ") || "-"}</dd>
+        </div>
+      </dl>
+      {items.length ? (
+        <div className="debug-list">
+          {items.map((item, index) => (
+            <article className="debug-row" key={String(item.item_id || item.chunk_id || index)}>
+              <div>
+                <strong>{String(item.title || item.item_id || item.chunk_id || `knowledge_${index + 1}`)}</strong>
+                <span>{String(item.content || "")}</span>
+              </div>
+              <div className="context-item-meta">
+                {item.source_id ? <span>{String(item.source_id)}</span> : null}
+                {numberValue(item.score) !== null ? <span>score {numberValue(item.score)?.toFixed(2)}</span> : null}
+                {item.uri ? <span>{String(item.uri)}</span> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <EmptyState icon={<BookOpen size={20} />} label={knowledgeContext ? "Knowledge Context 为空" : "本轮未返回 Knowledge Context"} />
+      )}
+      {citations.length ? <JsonBlock title="Citations" value={citations} defaultOpen={false} /> : null}
+      {errors.length ? <ErrorList title="Knowledge Errors" errors={errors} /> : null}
+      {agentContext ? <JsonBlock title="Agent Context Metadata" value={agentContext} defaultOpen={false} /> : null}
+      {knowledgeContext ? <JsonBlock title="Knowledge Context JSON" value={knowledgeContext} defaultOpen={false} /> : null}
+    </div>
+  );
+}
+
+function ContextResultHeader({
+  title,
+  status,
+  itemCount,
+}: {
+  title: string;
+  status: string;
+  itemCount: number;
+}) {
   return (
     <div className="context-result">
       <div className="context-result-head">
         <strong>{title}</strong>
-        <span>{String(record?.status || "-")}</span>
+        <span>{status}</span>
       </div>
       <div className="decision-meta">
         <span>items: {itemCount}</span>
-        {citationCount ? <span>citations: {citationCount}</span> : null}
-        {record?.truncated ? <span>truncated</span> : null}
       </div>
-      {record?.summary ? <p>{String(record.summary)}</p> : null}
-      <JsonBlock title={`${title} JSON`} value={value} defaultOpen={false} />
+    </div>
+  );
+}
+
+function ErrorList({ title, errors }: { title: string; errors: string[] }) {
+  return (
+    <div className="error-list">
+      <strong>{title}</strong>
+      {errors.map((error) => (
+        <span key={error}>{error}</span>
+      ))}
     </div>
   );
 }
@@ -1526,6 +1774,352 @@ function DebugTab({
   );
 }
 
+function DebugManagementPanel({ runtime }: { runtime: RuntimeConfig | null }) {
+  const [activeView, setActiveView] = useState<"memory" | "knowledge">("memory");
+  const [memoryFilters, setMemoryFilters] = useState<MemoryDebugFilters>({
+    user_id: "",
+    tenant_id: "",
+    agent_id: "",
+    scopes: "",
+    limit: "50",
+  });
+  const [knowledgeFilters, setKnowledgeFilters] = useState<KnowledgeDebugFilters>({
+    source_ids: "",
+    caller_type: "",
+    caller_id: "",
+    purpose: "",
+    tenant_id: "",
+    limit: "50",
+  });
+  const [memoryDebug, setMemoryDebug] = useState<MemoryDebugResponse | null>(null);
+  const [knowledgeDebug, setKnowledgeDebug] = useState<KnowledgeDebugResponse | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState("");
+  const [knowledgeError, setKnowledgeError] = useState("");
+
+  useEffect(() => {
+    void loadMemoryDebug();
+    void loadKnowledgeDebug();
+  }, []);
+
+  async function loadMemoryDebug(event?: FormEvent) {
+    event?.preventDefault();
+    setMemoryLoading(true);
+    setMemoryError("");
+    try {
+      setMemoryDebug(await api.memoryDebug(memoryFilters));
+    } catch (error) {
+      setMemoryError(formatError(error));
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
+  async function loadKnowledgeDebug(event?: FormEvent) {
+    event?.preventDefault();
+    setKnowledgeLoading(true);
+    setKnowledgeError("");
+    try {
+      setKnowledgeDebug(await api.knowledgeDebug(knowledgeFilters));
+    } catch (error) {
+      setKnowledgeError(formatError(error));
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }
+
+  return (
+    <section className="panel debug-management-panel">
+      <div className="panel-title-row">
+        <PanelTitle icon={<Database size={18} />} title="记忆与知识库调试管理" />
+        <span className="read-only-chip">只读</span>
+      </div>
+      <RuntimeDebugSummary runtime={runtime} />
+      <div className="segmented compact-segmented" role="tablist" aria-label="调试管理视图">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === "memory"}
+          className={activeView === "memory" ? "active" : ""}
+          onClick={() => setActiveView("memory")}
+        >
+          <Database size={15} />
+          Memory
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === "knowledge"}
+          className={activeView === "knowledge" ? "active" : ""}
+          onClick={() => setActiveView("knowledge")}
+        >
+          <BookOpen size={15} />
+          Knowledge
+        </button>
+      </div>
+      {activeView === "memory" ? (
+        <MemoryDebugView
+          filters={memoryFilters}
+          setFilters={setMemoryFilters}
+          data={memoryDebug}
+          loading={memoryLoading}
+          error={memoryError}
+          onSubmit={loadMemoryDebug}
+        />
+      ) : (
+        <KnowledgeDebugView
+          filters={knowledgeFilters}
+          setFilters={setKnowledgeFilters}
+          data={knowledgeDebug}
+          loading={knowledgeLoading}
+          error={knowledgeError}
+          onSubmit={loadKnowledgeDebug}
+        />
+      )}
+    </section>
+  );
+}
+
+function RuntimeDebugSummary({ runtime }: { runtime: RuntimeConfig | null }) {
+  return (
+    <div className="runtime-debug-summary">
+      <Metric label="Memory Provider" value={runtime ? `${runtime.memory_enabled ? "on" : "off"} / ${runtime.memory_strategy_provider}` : "-"} />
+      <Metric label="mem0 Collection" value={runtime?.memory_mem0_collection || "-"} />
+      <Metric label="mem0 History" value={runtime?.memory_mem0_history_backend || "-"} />
+      <Metric label="mem0 Health" value={runtime?.memory_mem0_health_status || (runtime?.memory_mem0_degraded ? "degraded" : "-")} />
+      <Metric label="Knowledge Backend" value={runtime ? `${runtime.knowledge_enabled ? "on" : "off"} / ${runtime.knowledge_vector_backend}` : "-"} />
+      <Metric label="Knowledge Index" value={runtime?.knowledge_milvus_collection || "-"} />
+      <Metric label="Milvus Lite URI" value={runtime?.knowledge_milvus_uri || runtime?.memory_mem0_milvus_uri || "-"} />
+    </div>
+  );
+}
+
+function MemoryDebugView({
+  filters,
+  setFilters,
+  data,
+  loading,
+  error,
+  onSubmit,
+}: {
+  filters: MemoryDebugFilters;
+  setFilters: (filters: MemoryDebugFilters) => void;
+  data: MemoryDebugResponse | null;
+  loading: boolean;
+  error: string;
+  onSubmit: (event?: FormEvent) => void;
+}) {
+  const update = (key: keyof MemoryDebugFilters, value: string) => setFilters({ ...filters, [key]: value });
+  return (
+    <div className="debug-management-view">
+      <form className="debug-filter-form" onSubmit={onSubmit}>
+        <TextField label="user_id" value={String(filters.user_id || "")} onChange={(value) => update("user_id", value)} />
+        <TextField label="tenant_id" value={String(filters.tenant_id || "")} onChange={(value) => update("tenant_id", value)} />
+        <TextField label="agent_id" value={String(filters.agent_id || "")} onChange={(value) => update("agent_id", value)} />
+        <TextField label="scopes" value={String(filters.scopes || "")} onChange={(value) => update("scopes", value)} />
+        <TextField label="limit" value={String(filters.limit || "")} onChange={(value) => update("limit", value)} />
+        <button type="submit" className="secondary-button" disabled={loading}>
+          {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+          刷新 Memory
+        </button>
+      </form>
+      <ReadOnlyNotice />
+      {error ? <div className="inline-error"><XCircle size={15} />{error}</div> : null}
+      {data ? (
+        <>
+          <div className="context-pack-summary">
+            <Metric label="Items" value={String(data.items.length)} />
+            <Metric label="Events" value={String(data.events.length)} />
+            <Metric label="Provider" value={String(data.metadata.strategy_provider || data.metadata.memory_provider || "-")} />
+            <Metric label="Status" value={String(recordValue(data.metadata.mem0)?.status || data.metadata.mem0_status || "-")} />
+          </div>
+          <section className="debug-section">
+            <h3>Memory Items</h3>
+            {data.items.length ? (
+              <div className="debug-list">
+                {data.items.map((item) => (
+                  <article className="debug-row" key={item.memory_id}>
+                    <div>
+                      <strong>{item.memory_id}</strong>
+                      <span>{item.content}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      <span>{item.scope}</span>
+                      {item.user_id ? <span>{item.user_id}</span> : null}
+                      {item.tenant_id ? <span>{item.tenant_id}</span> : null}
+                      {item.agent_id ? <span>{item.agent_id}</span> : null}
+                      {typeof item.confidence === "number" ? <span>confidence {item.confidence.toFixed(2)}</span> : null}
+                      {item.ttl_expires_at ? <span>TTL {item.ttl_expires_at}</span> : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<Database size={20} />} label="当前过滤条件下没有 Memory Item" />
+            )}
+          </section>
+          <section className="debug-section">
+            <h3>Memory Events</h3>
+            {data.events.length ? (
+              <div className="debug-list compact">
+                {data.events.map((event) => (
+                  <article className="debug-row" key={event.event_id}>
+                    <div>
+                      <strong>{event.event_type}</strong>
+                      <span>{event.memory_id || event.event_id}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      {event.user_id ? <span>{event.user_id}</span> : null}
+                      {event.tenant_id ? <span>{event.tenant_id}</span> : null}
+                      {event.agent_id ? <span>{event.agent_id}</span> : null}
+                      {event.created_at ? <span>{event.created_at}</span> : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<Activity size={20} />} label="当前过滤条件下没有 Memory Event" />
+            )}
+          </section>
+          <JsonBlock title="Memory Debug Metadata" value={redactSensitive(data.metadata)} defaultOpen={false} />
+        </>
+      ) : (
+        <EmptyState icon={<Database size={20} />} label={loading ? "正在读取 Memory Debug" : "尚未读取 Memory Debug"} />
+      )}
+    </div>
+  );
+}
+
+function KnowledgeDebugView({
+  filters,
+  setFilters,
+  data,
+  loading,
+  error,
+  onSubmit,
+}: {
+  filters: KnowledgeDebugFilters;
+  setFilters: (filters: KnowledgeDebugFilters) => void;
+  data: KnowledgeDebugResponse | null;
+  loading: boolean;
+  error: string;
+  onSubmit: (event?: FormEvent) => void;
+}) {
+  const update = (key: keyof KnowledgeDebugFilters, value: string) => setFilters({ ...filters, [key]: value });
+  return (
+    <div className="debug-management-view">
+      <form className="debug-filter-form" onSubmit={onSubmit}>
+        <TextField label="source_ids" value={String(filters.source_ids || "")} onChange={(value) => update("source_ids", value)} />
+        <TextField label="caller_type" value={String(filters.caller_type || "")} onChange={(value) => update("caller_type", value)} />
+        <TextField label="caller_id" value={String(filters.caller_id || "")} onChange={(value) => update("caller_id", value)} />
+        <TextField label="purpose" value={String(filters.purpose || "")} onChange={(value) => update("purpose", value)} />
+        <TextField label="tenant_id" value={String(filters.tenant_id || "")} onChange={(value) => update("tenant_id", value)} />
+        <TextField label="limit" value={String(filters.limit || "")} onChange={(value) => update("limit", value)} />
+        <button type="submit" className="secondary-button" disabled={loading}>
+          {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+          刷新 Knowledge
+        </button>
+      </form>
+      <ReadOnlyNotice />
+      <div className="storage-boundary">
+        <span>PostgreSQL knowledge_sources / knowledge_chunks / knowledge_retrieval_logs 是 canonical 数据</span>
+        <span>Milvus collection 只表示向量索引，不作为正文事实源</span>
+      </div>
+      {error ? <div className="inline-error"><XCircle size={15} />{error}</div> : null}
+      {data ? (
+        <>
+          <div className="context-pack-summary">
+            <Metric label="Sources" value={String(data.sources.length)} />
+            <Metric label="Chunks" value={String(data.chunks.length)} />
+            <Metric label="Logs" value={String(data.logs.length)} />
+            <Metric label="Vector" value={String(data.metadata.vector_backend || "-")} />
+          </div>
+          <section className="debug-section">
+            <h3>Knowledge Sources</h3>
+            {data.sources.length ? (
+              <div className="debug-list compact">
+                {data.sources.map((source) => (
+                  <article className="debug-row" key={source.source_id}>
+                    <div>
+                      <strong>{source.name || source.source_id}</strong>
+                      <span>{source.description || source.source_id}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      <span>{source.enabled ? "enabled" : "disabled"}</span>
+                      {source.tags?.map((tag) => <span key={tag}>{tag}</span>)}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<BookOpen size={20} />} label="当前过滤条件下没有 Knowledge Source" />
+            )}
+          </section>
+          <section className="debug-section">
+            <h3>Knowledge Chunks</h3>
+            {data.chunks.length ? (
+              <div className="debug-list">
+                {data.chunks.map((chunk) => (
+                  <article className="debug-row" key={chunk.chunk_id}>
+                    <div>
+                      <strong>{chunk.title || chunk.chunk_id}</strong>
+                      <span>{chunk.content}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      <span>{chunk.chunk_id}</span>
+                      <span>{chunk.source_id}</span>
+                      {chunk.uri ? <span>{chunk.uri}</span> : null}
+                      {chunk.updated_at ? <span>{chunk.updated_at}</span> : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<BookOpen size={20} />} label="当前过滤条件下没有 Knowledge Chunk" />
+            )}
+          </section>
+          <section className="debug-section">
+            <h3>Retrieval Logs</h3>
+            {data.logs.length ? (
+              <div className="debug-list compact">
+                {data.logs.map((log) => (
+                  <article className="debug-row" key={log.log_id}>
+                    <div>
+                      <strong>{log.query}</strong>
+                      <span>{log.log_id}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      <span>{log.status || "-"}</span>
+                      <span>{log.purpose}</span>
+                      <span>hits {log.hit_count ?? 0}</span>
+                      {(log.denied_source_ids || []).length ? <span>denied {(log.denied_source_ids || []).length}</span> : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<Activity size={20} />} label="当前过滤条件下没有 Retrieval Log" />
+            )}
+          </section>
+          <JsonBlock title="Knowledge Debug Metadata" value={redactSensitive(data.metadata)} defaultOpen={false} />
+        </>
+      ) : (
+        <EmptyState icon={<BookOpen size={20} />} label={loading ? "正在读取 Knowledge Debug" : "尚未读取 Knowledge Debug"} />
+      )}
+    </div>
+  );
+}
+
+function ReadOnlyNotice() {
+  return (
+    <div className="inline-note">
+      <Shield size={14} />
+      <span>当前调试管理视图只读，不提供编辑、删除、上传、合并或 reindex 操作。</span>
+    </div>
+  );
+}
+
 function assistantTextFromRoute(route: RouteResponse): string {
   const assistantMessage = route.assistant_message?.trim();
   if (assistantMessage) return assistantMessage;
@@ -1539,6 +2133,112 @@ function chatStatusLabel(status: ChatMessage["status"]): string {
   if (status === "pending") return "处理中";
   if (status === "failed") return "失败";
   return "已完成";
+}
+
+function traceFromRoute(route: RouteResponse): {
+  memoryContext: JsonRecord | null;
+  knowledgeContext: JsonRecord | null;
+  agentContext: JsonRecord | null;
+} {
+  return {
+    memoryContext: recordValue(invocationInputValue(route, "memory_context")),
+    knowledgeContext: recordValue(invocationInputValue(route, "knowledge_context")),
+    agentContext: recordValue(metadataValue(route, "agent_context")),
+  };
+}
+
+function contextTraceSummary(context: JsonRecord | null): {
+  status: string;
+  itemCount: number;
+  citationCount: number;
+  label: string;
+} {
+  if (!context) {
+    return { status: "unavailable", itemCount: 0, citationCount: 0, label: "unavailable" };
+  }
+  const status = String(context.status || "unknown");
+  const itemCount = contextItems(context).length;
+  const citationCount = jsonRecordArray(context.citations).length;
+  return {
+    status,
+    itemCount,
+    citationCount,
+    label: `${itemCount} / ${status}`,
+  };
+}
+
+function contextAvailabilityLabel(turn: ConversationTurn): string {
+  if (turn.assistantMessage.status === "failed") return "Trace failed";
+  if (!turn.routeResponse) return "Trace unavailable";
+  if (!turn.memoryContext && !turn.knowledgeContext) return "Context unavailable";
+  const memoryStatus = contextTraceSummary(turn.memoryContext ?? null).status;
+  const knowledgeStatus = contextTraceSummary(turn.knowledgeContext ?? null).status;
+  return `${memoryStatus} / ${knowledgeStatus}`;
+}
+
+function deniedSourceCount(context: JsonRecord | null): number {
+  const metadata = recordValue(context?.metadata);
+  return stringArrayValue(metadata?.denied_source_ids).length;
+}
+
+function contextItems(context: JsonRecord | null): JsonRecord[] {
+  return jsonRecordArray(context?.items);
+}
+
+function jsonRecordArray(value: unknown): JsonRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is JsonRecord => Boolean(recordValue(item)));
+}
+
+function recordValue(value: unknown): JsonRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as JsonRecord;
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item)).filter(Boolean);
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function redactSensitive(value: unknown): JsonValue {
+  if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
+    return value as JsonValue;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitive(item));
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const sanitized: JsonRecord = {};
+  Object.entries(value as Record<string, unknown>).forEach(([key, child]) => {
+    sanitized[key] = isSensitiveKey(key) ? "[redacted]" : redactSensitive(child);
+  });
+  return sanitized;
+}
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return (
+    normalized.includes("api_key") ||
+    normalized.includes("apikey") ||
+    normalized.includes("password") ||
+    normalized.includes("secret") ||
+    normalized.includes("token") ||
+    normalized.includes("credential") ||
+    normalized === "database_url" ||
+    normalized.includes("connection_string") ||
+    normalized.endsWith("_dsn")
+  );
 }
 
 function contextValue(routeResponse: RouteResponse | null, key: string): unknown {

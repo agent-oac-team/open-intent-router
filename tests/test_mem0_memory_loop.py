@@ -8,7 +8,7 @@ from app.repositories.memory import MemoryAgentDefinitionRepository
 from app.schemas.common import UserContext
 from app.schemas.memory import MemoryItem, MemoryRecallRequest, MemoryWriteCandidate
 from app.services.mem0_config import build_mem0_config, mem0_static_metadata
-from app.services.memory_adapter import Mem0MemoryAdapter
+from app.services.memory_adapter import Mem0MemoryAdapter, _search_filter_sets
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
 
@@ -130,6 +130,37 @@ async def test_mem0_adapter_add_search_delete_and_history_traceability() -> None
     ]
     assert repository.events[0].payload["collection"] == "oir_memory_vectors"
     assert repository.events[0].payload["history_canonical"] == "oir_memory_events_ledger"
+
+
+def test_mem0_search_filter_sets_expand_multiple_scopes() -> None:
+    filters = _search_filter_sets(
+        MemoryRecallRequest(
+            query="concise stable",
+            user=UserContext(id="u1", attributes={"tenant_id": "t1"}),
+            scopes=["user_preference", "stable_fact"],
+            agent_id="script_writer",
+            metadata_filters={"source": "e2e_seed"},
+        )
+    )
+
+    assert filters == [
+        {
+            "user_id": "u1",
+            "tenant_id": "t1",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "source": "e2e_seed",
+            "scope": "user_preference",
+        },
+        {
+            "user_id": "u1",
+            "tenant_id": "t1",
+            "subject_type": "user",
+            "subject_id": "u1",
+            "source": "e2e_seed",
+            "scope": "stable_fact",
+        },
+    ]
 
 
 async def test_mem0_adapter_loads_milvus_collection_after_client_init() -> None:

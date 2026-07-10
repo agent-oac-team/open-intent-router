@@ -53,6 +53,8 @@ async def runtime_config(
         knowledge_enabled=settings.knowledge_enabled,
         knowledge_vector_backend=settings.knowledge_vector_backend,
         knowledge_prefetch_timeout_seconds=settings.knowledge_prefetch_timeout_seconds,
+        knowledge_milvus_collection=settings.knowledge_milvus_collection,
+        knowledge_milvus_uri=settings.knowledge_milvus_uri,
     )
 
 

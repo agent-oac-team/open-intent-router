@@ -64,7 +64,7 @@ class Settings(BaseSettings):
 
     memory_enabled: bool = True
     memory_strategy_provider: MemoryStrategyProvider = "memory"
-    memory_prefetch_timeout_seconds: float = 0.8
+    memory_prefetch_timeout_seconds: float = 3.0
     memory_default_max_items: int = 5
     memory_task_ttl_days: int = 14
     memory_session_summary_ttl_days: int = 14
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     knowledge_enabled: bool = True
     knowledge_vector_backend: KnowledgeVectorBackend = "memory"
-    knowledge_prefetch_timeout_seconds: float = 1.5
+    knowledge_prefetch_timeout_seconds: float = 5.0
     knowledge_default_max_items: int = 5
     knowledge_milvus_collection: str = "oir_knowledge_vectors"
     knowledge_milvus_uri: str | None = ".data/oir_knowledge_milvus.db"

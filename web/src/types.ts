@@ -36,9 +36,19 @@ export type RuntimeConfig = {
   memory_enabled: boolean;
   memory_strategy_provider: string;
   memory_prefetch_timeout_seconds: number;
+  memory_mem0_collection?: string | null;
+  memory_mem0_vector_provider?: string | null;
+  memory_mem0_milvus_uri?: string | null;
+  memory_mem0_history_backend?: string | null;
+  memory_mem0_fail_closed?: boolean;
+  memory_mem0_degraded?: boolean;
+  memory_mem0_last_error?: string | null;
+  memory_mem0_health_status?: string | null;
   knowledge_enabled: boolean;
   knowledge_vector_backend: string;
   knowledge_prefetch_timeout_seconds: number;
+  knowledge_milvus_collection?: string | null;
+  knowledge_milvus_uri?: string | null;
 };
 
 export type ServiceReady = {
@@ -242,6 +252,131 @@ export type InvocationResult = {
 export type RouteAndInvokeResponse = {
   route: RouteResponse;
   result?: InvocationResult | null;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  status: "pending" | "completed" | "failed";
+  createdAt: string;
+  requestId?: string;
+};
+
+export type ConversationTurn = {
+  id: string;
+  mode: "route" | "route-and-invoke";
+  requestId?: string;
+  userMessage: ChatMessage;
+  assistantMessage: ChatMessage;
+  routeResponse?: RouteResponse | null;
+  invokeResponse?: InvocationResult | null;
+  memoryContext?: JsonRecord | null;
+  knowledgeContext?: JsonRecord | null;
+  agentContext?: JsonRecord | null;
+};
+
+export type MemoryDebugFilters = {
+  user_id?: string;
+  tenant_id?: string;
+  agent_id?: string;
+  scopes?: string;
+  limit?: string | number;
+};
+
+export type MemoryDebugItem = {
+  memory_id: string;
+  scope: string;
+  subject_type?: string;
+  subject_id?: string;
+  user_id?: string | null;
+  tenant_id?: string | null;
+  agent_id?: string | null;
+  content: string;
+  structured_value?: JsonRecord;
+  source?: string;
+  confidence?: number;
+  importance?: number;
+  visibility?: string;
+  ttl_expires_at?: string | null;
+  metadata?: JsonRecord;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type MemoryDebugEvent = {
+  event_id: string;
+  event_type: string;
+  memory_id?: string | null;
+  user_id?: string | null;
+  tenant_id?: string | null;
+  agent_id?: string | null;
+  payload?: JsonRecord;
+  created_at?: string;
+};
+
+export type MemoryDebugResponse = {
+  items: MemoryDebugItem[];
+  events: MemoryDebugEvent[];
+  metadata: JsonRecord;
+};
+
+export type KnowledgeDebugFilters = {
+  source_ids?: string;
+  caller_type?: string;
+  caller_id?: string;
+  purpose?: string;
+  tenant_id?: string;
+  limit?: string | number;
+};
+
+export type KnowledgeDebugSource = {
+  source_id: string;
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  allow_roles?: string[];
+  allow_groups?: string[];
+  allow_tenants?: string[];
+  tags?: string[];
+  metadata?: JsonRecord;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type KnowledgeDebugChunk = {
+  chunk_id: string;
+  source_id: string;
+  content: string;
+  title?: string | null;
+  uri?: string | null;
+  tags?: string[];
+  metadata?: JsonRecord;
+  updated_at?: string;
+};
+
+export type KnowledgeDebugLog = {
+  log_id: string;
+  query: string;
+  caller_type: string;
+  caller_id?: string | null;
+  purpose: string;
+  user_id?: string | null;
+  tenant_id?: string | null;
+  selected_source_ids?: string[];
+  denied_source_ids?: string[];
+  hit_count?: number;
+  status?: string;
+  errors?: string[];
+  metadata?: JsonRecord;
+  created_at?: string;
+};
+
+export type KnowledgeDebugResponse = {
+  sources: KnowledgeDebugSource[];
+  chunks: KnowledgeDebugChunk[];
+  logs: KnowledgeDebugLog[];
+  metadata: JsonRecord;
 };
 
 export type PlanExecutionResponse = {

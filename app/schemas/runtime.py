@@ -35,3 +35,5 @@ class RuntimeConfigResponse(StrictBaseModel):
     knowledge_enabled: bool
     knowledge_vector_backend: str
     knowledge_prefetch_timeout_seconds: float
+    knowledge_milvus_collection: str | None = None
+    knowledge_milvus_uri: str | None = None

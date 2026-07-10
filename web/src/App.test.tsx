@@ -138,9 +138,200 @@ const mockContextPack = {
   created_at: "2026-07-02T00:00:00Z",
 };
 
+const mockMemoryContext = {
+  summary: "用户偏好稳健表达。",
+  status: "ok",
+  items: [
+    {
+      memory_id: "mem_pref_language",
+      scope: "user_preference",
+      content: "用户偏好专业、稳健的表达。",
+      relevance: 0.91,
+      confidence: 0.86,
+      importance: 0.7,
+      source: "mem0",
+      ttl_expires_at: null,
+      metadata: {},
+    },
+  ],
+  truncated: false,
+  errors: [],
+  metadata: { provider: "mem0" },
+};
+
+const mockKnowledgeContext = {
+  summary: "风险等级说明来自知识库。",
+  status: "ok",
+  source_ids: ["risk_guide"],
+  items: [
+    {
+      item_id: "risk_doc_chunk_1",
+      source_id: "risk_guide",
+      title: "风险等级说明",
+      content: "R1 到 R5 表示不同风险等级。",
+      score: 0.88,
+      uri: "https://example.test/risk",
+      metadata: {},
+    },
+  ],
+  citations: [
+    {
+      source_id: "risk_guide",
+      chunk_id: "risk_doc_chunk_1",
+      title: "风险等级说明",
+      uri: "https://example.test/risk",
+      metadata: {},
+    },
+  ],
+  truncated: false,
+  errors: [],
+  metadata: {
+    denied_source_ids: ["private_docs"],
+    vector_backend: "milvus",
+    collection: "oir_knowledge_vectors",
+  },
+};
+
+const secondMemoryContext = {
+  ...mockMemoryContext,
+  summary: "第二轮记忆。",
+  items: [
+    {
+      ...mockMemoryContext.items[0],
+      memory_id: "mem_second_turn",
+      content: "第二轮使用的记忆。",
+    },
+  ],
+};
+
+const secondKnowledgeContext = {
+  ...mockKnowledgeContext,
+  summary: "第二轮知识。",
+  items: [
+    {
+      ...mockKnowledgeContext.items[0],
+      item_id: "knowledge_second_turn",
+      title: "第二轮知识片段",
+    },
+  ],
+  citations: [
+    {
+      ...mockKnowledgeContext.citations[0],
+      chunk_id: "knowledge_second_turn",
+      title: "第二轮知识片段",
+    },
+  ],
+};
+
+const mockMemoryDebug = {
+  items: [
+    {
+      memory_id: "mem_debug_1",
+      scope: "user_preference",
+      subject_type: "user",
+      subject_id: "u1",
+      user_id: "u1",
+      tenant_id: "tenant_a",
+      agent_id: "script_writer",
+      content: "调试台中的记忆。",
+      structured_value: {},
+      source: "mem0",
+      confidence: 0.82,
+      importance: 0.6,
+      visibility: "user",
+      ttl_expires_at: null,
+      metadata: { mem0_memory_id: "m0_1", api_key: "should-not-render" },
+      created_at: "2026-07-09T00:00:00Z",
+      updated_at: "2026-07-09T00:00:00Z",
+    },
+  ],
+  events: [
+    {
+      event_id: "evt_1",
+      event_type: "memory_added",
+      memory_id: "mem_debug_1",
+      user_id: "u1",
+      tenant_id: "tenant_a",
+      agent_id: "script_writer",
+      payload: {},
+      created_at: "2026-07-09T00:00:00Z",
+    },
+  ],
+  metadata: {
+    memory_enabled: true,
+    strategy_provider: "mem0",
+    item_count: 1,
+    event_count: 1,
+    mem0: {
+      status: "ok",
+      collection: "oir_memory_vectors",
+      api_key: "should-not-render",
+    },
+  },
+};
+
+const mockKnowledgeDebug = {
+  sources: [
+    {
+      source_id: "risk_guide",
+      name: "风险知识库",
+      description: "理财风险等级说明。",
+      enabled: true,
+      allow_roles: ["operator"],
+      allow_groups: [],
+      allow_tenants: ["tenant_a"],
+      tags: ["risk"],
+      metadata: {},
+      created_at: "2026-07-09T00:00:00Z",
+      updated_at: "2026-07-09T00:00:00Z",
+    },
+  ],
+  chunks: [
+    {
+      chunk_id: "risk_doc_chunk_1",
+      source_id: "risk_guide",
+      content: "R1 到 R5 表示不同风险等级。",
+      title: "风险等级说明",
+      uri: "https://example.test/risk",
+      tags: ["risk"],
+      metadata: {},
+      updated_at: "2026-07-09T00:00:00Z",
+    },
+  ],
+  logs: [
+    {
+      log_id: "klog_1",
+      query: "理财产品风险等级怎么理解",
+      caller_type: "agent",
+      caller_id: "script_writer",
+      purpose: "agent_execution",
+      user_id: "u1",
+      tenant_id: "tenant_a",
+      selected_source_ids: ["risk_guide"],
+      denied_source_ids: ["private_docs"],
+      hit_count: 1,
+      status: "ok",
+      errors: [],
+      metadata: {},
+      created_at: "2026-07-09T00:00:00Z",
+    },
+  ],
+  metadata: {
+    knowledge_enabled: true,
+    vector_backend: "milvus",
+    collection: "oir_knowledge_vectors",
+    token: "should-not-render",
+  },
+};
+
 describe("意图路由测试台", () => {
+  let failMemoryDebug = false;
+  let failRouteAndInvoke = false;
+
   beforeEach(() => {
     vi.restoreAllMocks();
+    failMemoryDebug = false;
+    failRouteAndInvoke = false;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -168,16 +359,39 @@ describe("意图路由测试台", () => {
             evidence_provider_enabled: false,
             evidence_fixed_questions_path: "./config/fixed_questions.example.yaml",
             agent_http_timeout_seconds: 30,
+            memory_enabled: true,
+            memory_strategy_provider: "mem0",
+            memory_prefetch_timeout_seconds: 1,
+            memory_mem0_collection: "oir_memory_vectors",
+            memory_mem0_vector_provider: "milvus",
+            memory_mem0_milvus_uri: ".data/oir_memory_milvus.db",
+            memory_mem0_history_backend: "postgresql",
+            memory_mem0_fail_closed: true,
+            memory_mem0_degraded: false,
+            memory_mem0_last_error: null,
+            memory_mem0_health_status: "ok",
+            knowledge_enabled: true,
+            knowledge_vector_backend: "milvus",
+            knowledge_prefetch_timeout_seconds: 1,
+            knowledge_milvus_collection: "oir_knowledge_vectors",
+            knowledge_milvus_uri: ".data/oir_knowledge_milvus.db",
           });
         }
         if (url.endsWith("/api/v1/agents")) return json({ agents: [mockAgent] });
+        if (url.includes("/api/v1/memories/debug")) {
+          if (failMemoryDebug) return json({ detail: "memory debug down" }, 500);
+          return json(mockMemoryDebug);
+        }
+        if (url.includes("/api/v1/knowledge/debug")) return json(mockKnowledgeDebug);
         if (url.endsWith("/api/v1/route-and-invoke") && init?.method === "POST") {
+          if (failRouteAndInvoke) return json({ detail: "route failed" }, 500);
           const body = JSON.parse(String(init.body));
+          const isSecond = String(body.input.text).includes("第二轮");
           return json({
             route: {
-              request_id: "req_1",
+              request_id: isSecond ? "req_2" : "req_1",
               session_id: body.session_id,
-              assistant_message: "我会交给话术生成处理。",
+              assistant_message: isSecond ? "第二轮回答。" : "我会交给话术生成处理。",
               decision: {
                 status: "ok",
                 action: "open_agent",
@@ -194,11 +408,15 @@ describe("意图路由测试台", () => {
               invocation: {
                 mode: "deferred",
                 agent_id: "script_writer",
-                input: { text: body.input.text },
+                input: {
+                  text: body.input.text,
+                  memory_context: isSecond ? secondMemoryContext : mockMemoryContext,
+                  knowledge_context: isSecond ? secondKnowledgeContext : mockKnowledgeContext,
+                },
               },
             },
             result: {
-              run_id: "run_1",
+              run_id: isSecond ? "run_2" : "run_1",
               agent_id: "script_writer",
               status: "completed",
               message: "ok",
@@ -276,6 +494,10 @@ describe("意图路由测试台", () => {
     const transcript = screen.getByLabelText("聊天记录");
     expect(within(transcript).getByText("帮我生成一段客户邀约话术，语气专业一点。")).toBeInTheDocument();
     expect(await within(transcript).findByText("我会交给话术生成处理。")).toBeInTheDocument();
+    expect(within(transcript).getByText("Memory 1 / ok")).toBeInTheDocument();
+    expect(within(transcript).getByText("Knowledge 1 / ok")).toBeInTheDocument();
+    expect(within(transcript).getByText("Citations 1")).toBeInTheDocument();
+    expect(within(transcript).getByText("Denied 1")).toBeInTheDocument();
     expect(within(transcript).queryByText("Routing to 话术生成.")).not.toBeInTheDocument();
     expect(screen.queryByText("第 1 轮")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText("open_agent").length).toBeGreaterThan(0));
@@ -302,6 +524,7 @@ describe("意图路由测试台", () => {
 
     const transcript = screen.getByLabelText("聊天记录");
     expect(await within(transcript).findByText("已生成计划，请在右侧确认。")).toBeInTheDocument();
+    expect(within(transcript).getByText("Context unavailable")).toBeInTheDocument();
     expect(within(transcript).queryByText("请确认是否执行该计划。")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("tab", { name: /Plan/i }));
@@ -335,12 +558,87 @@ describe("意图路由测试台", () => {
     expect(screen.getByText("total_budget_exceeded: 1")).toBeInTheDocument();
     expect(screen.getByText("summary_placeholder")).toBeInTheDocument();
   });
+
+  it("Memory 和 Knowledge 标签按选中轮次分开展示", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await screen.findByText("我会交给话术生成处理。")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("用户消息"), "第二轮问题");
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await screen.findByText("第二轮回答。")).toBeInTheDocument();
+
+    const statusTabs = screen.getByLabelText("中控状态");
+    await userEvent.click(within(statusTabs).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(within(inspector).getByText("mem_second_turn")).toBeInTheDocument();
+    expect(within(inspector).queryByText("第二轮知识片段")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "选择第 1 轮对话" }));
+    expect(await within(inspector).findByText("mem_pref_language")).toBeInTheDocument();
+
+    await userEvent.click(within(statusTabs).getByRole("tab", { name: /Knowledge/i }));
+    expect(within(inspector).getByText("风险等级说明")).toBeInTheDocument();
+    expect(within(inspector).getByText("private_docs")).toBeInTheDocument();
+    expect(within(inspector).queryByText("用户偏好专业、稳健的表达。")).not.toBeInTheDocument();
+  });
+
+  it("失败轮次不复用上一轮 memory/knowledge trace", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await screen.findByText("我会交给话术生成处理。")).toBeInTheDocument();
+
+    failRouteAndInvoke = true;
+    await userEvent.type(screen.getByLabelText("用户消息"), "触发失败");
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await screen.findByText("请求失败，请查看页面提示或右侧调试信息。")).toBeInTheDocument();
+
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(within(inspector).getByText("本轮没有可用 Memory Context")).toBeInTheDocument();
+    expect(within(inspector).queryByText("mem_pref_language")).not.toBeInTheDocument();
+  });
+
+  it("只读 debug 管理视图展示 memory 和 knowledge 数据并脱敏", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("记忆与知识库调试管理")).toBeInTheDocument();
+    expect((await screen.findAllByText("mem_debug_1")).length).toBeGreaterThan(0);
+    expect(screen.getByText("memory_added")).toBeInTheDocument();
+    expect(screen.queryByText("should-not-render")).not.toBeInTheDocument();
+
+    const debugTabs = screen.getByLabelText("调试管理视图");
+    await userEvent.click(within(debugTabs).getByRole("tab", { name: /Knowledge/i }));
+    expect(await screen.findByText("风险知识库")).toBeInTheDocument();
+    expect(screen.getAllByText("risk_doc_chunk_1").length).toBeGreaterThan(0);
+    expect(screen.getByText("klog_1")).toBeInTheDocument();
+    expect(screen.getByText(/canonical 数据/)).toBeInTheDocument();
+    expect(screen.getByText(/Milvus collection 只表示向量索引/)).toBeInTheDocument();
+    expect(screen.queryByText("should-not-render")).not.toBeInTheDocument();
+  });
+
+  it("debug API 失败时显示错误且保留选中轮次 trace", async () => {
+    failMemoryDebug = true;
+    render(<App />);
+
+    expect(await screen.findByText(/500/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await screen.findByText("我会交给话术生成处理。")).toBeInTheDocument();
+
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(within(inspector).getByText("mem_pref_language")).toBeInTheDocument();
+  });
 });
 
-function json(body: unknown) {
+function json(body: unknown, status = 200) {
   return Promise.resolve(
     new Response(JSON.stringify(body), {
-      status: 200,
+      status,
       headers: { "Content-Type": "application/json" },
     }),
   );

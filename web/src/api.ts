@@ -2,6 +2,10 @@ import type {
   AgentDefinition,
   AgentListResponse,
   JsonRecord,
+  KnowledgeDebugFilters,
+  KnowledgeDebugResponse,
+  MemoryDebugFilters,
+  MemoryDebugResponse,
   PlanExecutionResponse,
   RouteAndExecuteResponse,
   RouteAndInvokeResponse,
@@ -44,6 +48,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 function adminHeaders(token: string): HeadersInit {
   return token.trim() ? { "X-Admin-Token": token.trim() } : {};
+}
+
+function queryString(params: Record<string, string | number | undefined>): string {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    const normalized = typeof value === "string" ? value.trim() : value;
+    if (normalized !== undefined && normalized !== "") {
+      query.set(key, String(normalized));
+    }
+  });
+  const serialized = query.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
 export const api = {
@@ -91,6 +107,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  memoryDebug: (filters: MemoryDebugFilters = {}) =>
+    request<MemoryDebugResponse>(`/api/v1/memories/debug${queryString(filters)}`),
+  knowledgeDebug: (filters: KnowledgeDebugFilters = {}) =>
+    request<KnowledgeDebugResponse>(`/api/v1/knowledge/debug${queryString(filters)}`),
   getPlan: (planId: string) => request<JsonRecord>(`/api/v1/plans/${encodeURIComponent(planId)}`),
   planAction: (planId: string, action: "confirm" | "cancel") =>
     request<JsonRecord>(`/api/v1/plans/${encodeURIComponent(planId)}/actions`, {

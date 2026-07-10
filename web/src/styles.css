@@ -518,6 +518,32 @@ button:disabled {
     rgba(0, 0, 0, 0.16);
 }
 
+.chat-turn {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.chat-turn.selected {
+  border-color: rgba(214, 255, 99, 0.62);
+  background: rgba(214, 255, 99, 0.055);
+}
+
+.chat-turn.pending {
+  border-color: rgba(255, 204, 102, 0.22);
+}
+
+.chat-turn.failed {
+  border-color: rgba(255, 116, 110, 0.5);
+}
+
 .chat-message {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
@@ -589,6 +615,28 @@ button:disabled {
   margin: 0;
   overflow-wrap: anywhere;
   line-height: 1.55;
+}
+
+.turn-trace-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.turn-trace-badges span,
+.read-only-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(104, 215, 194, 0.26);
+  border-radius: 999px;
+  background: rgba(104, 215, 194, 0.08);
+  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .conversation-timeline {
@@ -834,6 +882,31 @@ textarea:focus {
   gap: 12px;
 }
 
+.selected-turn-strip,
+.storage-boundary,
+.error-list {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid rgba(104, 215, 194, 0.24);
+  border-radius: 8px;
+  background: rgba(104, 215, 194, 0.055);
+}
+
+.selected-turn-strip span,
+.storage-boundary span:first-child {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selected-turn-strip strong,
+.storage-boundary span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--accent-2);
+  font-size: 12px;
+}
+
 .status-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -942,6 +1015,15 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.context-summary-text {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  white-space: pre-wrap;
+}
+
 .context-group-list,
 .context-group {
   display: grid;
@@ -1013,6 +1095,78 @@ textarea:focus {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.18);
+}
+
+.debug-management-panel,
+.debug-management-view,
+.debug-section,
+.debug-list {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-debug-summary,
+.debug-filter-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.debug-filter-form {
+  align-items: end;
+}
+
+.debug-filter-form .secondary-button {
+  min-height: 38px;
+}
+
+.debug-section h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.debug-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.032);
+}
+
+.debug-row div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.debug-row strong,
+.debug-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.debug-row span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.debug-list.compact .debug-row {
+  padding: 8px 10px;
+}
+
+.error-list {
+  border-color: rgba(255, 116, 110, 0.34);
+  background: rgba(255, 116, 110, 0.06);
+}
+
+.error-list strong,
+.error-list span {
+  color: var(--bad);
+  font-size: 12px;
 }
 
 .json-block {
@@ -1146,11 +1300,15 @@ pre {
   }
 
   .context-pack-summary,
-  .context-item-row {
+  .context-item-row,
+  .runtime-debug-summary,
+  .debug-filter-form,
+  .debug-row {
     grid-template-columns: 1fr;
   }
 
-  .context-item-row {
+  .context-item-row,
+  .debug-row {
     align-items: flex-start;
     flex-direction: column;
   }

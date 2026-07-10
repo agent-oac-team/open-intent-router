@@ -109,18 +109,23 @@ class Mem0MemoryAdapter:
     async def search(self, request: MemoryRecallRequest) -> list[MemoryItem]:
         try:
             client = self._memory()
-            filters = _search_filters(request)
-            raw = await _call_mem0_search(
-                client,
-                query=request.query,
-                filters=filters,
-                limit=request.max_items,
-            )
-            items = _items_from_mem0_results(
-                raw,
-                request=request,
-                collection=self.settings.memory_mem0_milvus_collection,
-            )
+            filter_sets = _search_filter_sets(request)
+            items: list[MemoryItem] = []
+            for filters in filter_sets:
+                raw = await _call_mem0_search(
+                    client,
+                    query=request.query,
+                    filters=filters,
+                    limit=request.max_items,
+                )
+                items.extend(
+                    _items_from_mem0_results(
+                        raw,
+                        request=request,
+                        collection=self.settings.memory_mem0_milvus_collection,
+                    )
+                )
+            items = _dedupe_items(items)[: request.max_items]
             await self._record_history(
                 "search",
                 status="ok",
@@ -129,7 +134,7 @@ class Mem0MemoryAdapter:
                 agent_id=request.agent_id,
                 payload={
                     "query": request.query,
-                    "filters": filters,
+                    "filters": filter_sets[0] if len(filter_sets) == 1 else filter_sets,
                     "hit_count": len(items),
                     "subject_type": request.subject_type,
                     "subject_id": request.subject_id or request.user.id,
@@ -383,19 +388,34 @@ def _search_filters(request: MemoryRecallRequest) -> dict[str, Any]:
         "tenant_id": request.user.tenant_id,
         "subject_type": request.subject_type,
         "subject_id": request.subject_id or request.user.id,
-        "agent_id": request.agent_id,
     }
     for key, value in metadata_filters.items():
         if value is not None:
             filters[key] = value
+    for key, value in request.metadata_filters.items():
+        filters[key] = value
     scopes = [str(scope) for scope in request.scopes]
     if len(scopes) == 1:
         filters["scope"] = scopes[0]
-    elif scopes:
-        filters["scope"] = {"in": scopes}
-    for key, value in request.metadata_filters.items():
-        filters[key] = value
     return filters
+
+
+def _search_filter_sets(request: MemoryRecallRequest) -> list[dict[str, Any]]:
+    scopes = [str(scope) for scope in request.scopes]
+    if len(scopes) <= 1:
+        return [_search_filters(request)]
+    return [_search_filters(request.model_copy(update={"scopes": [scope]})) for scope in scopes]
+
+
+def _dedupe_items(items: list[MemoryItem]) -> list[MemoryItem]:
+    deduped = []
+    seen = set()
+    for item in items:
+        if item.memory_id in seen:
+            continue
+        seen.add(item.memory_id)
+        deduped.append(item)
+    return deduped
 
 
 def _mem0_payload_for_item(item: MemoryItem) -> Any:

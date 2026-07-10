@@ -127,12 +127,30 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 - 右侧 Route 标签展示 `decision.action`、目标 Agent、状态、置信度、原因、消息、候选 Agent 和调用预览。
 - 右侧 Plan 标签展示计划状态、执行策略、下一步动作、步骤列表和计划操作按钮。
 - 右侧 Context 标签在响应包含 `context.metadata.context_pack` 时展示预算使用、保留/丢弃数量、裁剪统计、来源分组和每个 Context Item 的丢弃或截断原因。
+- 右侧 Memory 标签展示当前选中轮次的 `memory_context`，包括状态、item 数、scope、relevance/confidence、source、TTL、errors 和原始 JSON。
+- 右侧 Knowledge 标签展示当前选中轮次的 `knowledge_context`，包括状态、source IDs、item scores、title、URI、citations、denied source IDs、errors 和原始 JSON。
 - 右侧 Evidence 标签展示当前响应中的证据命中。
 - 右侧 Debug 标签保留完整 JSON、InvocationResult、UI Handoff 和 Agent Event JSON 提交。
 
 M3 起后端返回顶层 `assistant_message` 字段。聊天窗口优先消费 `assistant_message`，缺失时才兼容回退到 `decision.message`；`decision.reason` 仍保留在 Route / Debug 状态区，不再作为普通聊天气泡来源。`next_action.message` 属于 Plan / Host 协作状态，`AgentInvocationResult.message` 属于调用结果摘要，二者都由右侧状态面板展示。
 
-Context 标签读取 M4 的 `RouteContext.metadata.context_pack`。当响应没有 Context Pack 数据时显示明确空态，不代表路由错误。Memory 标签仍为后续 Memory 模块预留。
+测试台现在以 conversation turn 管理聊天状态。每次提交用户输入都会形成一个 turn，并把该轮自己的 `RouteResponse`、`InvocationResult`、`memory_context`、`knowledge_context` 和 `request_id` 保存在前端状态里。聊天区中控气泡下方会显示本轮 Memory item 数、Knowledge item 数、citation 数、denied source 数和 context 状态；点击任意历史 turn 后，右侧 Route、Plan、Context、Memory、Knowledge、Evidence、Debug 标签都会切到该轮 trace。新响应完成后默认选中新 turn；新对话会清空所有 turn 和选中 trace。
+
+route-only 或后端没有返回 invocation input 时，turn 仍然可选，但 Memory/Knowledge 会显示 unavailable/空态，不会用全局 debug 仓库数据反推“本轮用了什么”。请求失败时，该失败 turn 会显示失败消息和空 trace，避免复用上一轮的 memory/knowledge。
+
+当前 per-turn trace 是本地前端调试状态，刷新页面后会消失。后续如果需要审计级回放，应单独设计后端持久化 `context_trace` 或 route log 扩展，而不是把当前 UI 状态误认为 durable audit。
+
+## 记忆与知识库调试管理
+
+中间区域下方提供只读的“记忆与知识库调试管理”面板：
+
+- Memory 视图调用 `GET /api/v1/memories/debug`，支持 `user_id`、`tenant_id`、`agent_id`、`scopes`、`limit` 过滤，展示 memory items、memory events 和非敏感 metadata。
+- Knowledge 视图调用 `GET /api/v1/knowledge/debug`，支持 `source_ids`、`caller_type`、`caller_id`、`purpose`、`tenant_id`、`limit` 过滤，展示 knowledge sources、chunks、retrieval logs 和非敏感 metadata。
+- 面板旁展示 runtime memory/knowledge backend 摘要，包括 mem0 collection、history backend、knowledge vector backend、Milvus Lite collection/URI 等非敏感字段。
+- 该面板不提供编辑、删除、上传、合并或 reindex 操作；这些写入和治理动作需要后续单独设计。
+- UI 会对 debug metadata 中疑似 API key、password、token、secret、credential、database URL、connection string、DSN 的字段做脱敏展示。
+
+Knowledge 管理视图明确区分事实源边界：PostgreSQL `knowledge_sources`、`knowledge_chunks`、`knowledge_retrieval_logs` 是 canonical 数据；Milvus 只作为向量索引元数据展示，不作为正文事实源。
 
 推荐演示顺序：
 
