@@ -123,3 +123,4 @@ class KnowledgeContext(StrictBaseModel):
 class AgentRuntimeContext(StrictBaseModel):
     memory_context: MemoryContext = Field(default_factory=MemoryContext)
     knowledge_context: KnowledgeContext = Field(default_factory=KnowledgeContext)
+    metadata: JsonDict = Field(default_factory=dict)

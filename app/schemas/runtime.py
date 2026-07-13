@@ -37,3 +37,9 @@ class RuntimeConfigResponse(StrictBaseModel):
     knowledge_prefetch_timeout_seconds: float
     knowledge_milvus_collection: str | None = None
     knowledge_milvus_uri: str | None = None
+    context_pipeline_mode: str
+    context_route_memory_enabled: bool
+    context_route_knowledge_enabled: bool
+    context_policy_version: str
+    context_budget_version: str
+    context_projection_version: str

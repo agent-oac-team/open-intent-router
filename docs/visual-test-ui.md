@@ -126,7 +126,7 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 - 高级上下文仍在聊天区下方折叠配置，用于测试 `source`、`current_agent`、`frontend_context`、`plan_id` 和 `step_id`。
 - 右侧 Route 标签展示 `decision.action`、目标 Agent、状态、置信度、原因、消息、候选 Agent 和调用预览。
 - 右侧 Plan 标签展示计划状态、执行策略、下一步动作、步骤列表和计划操作按钮。
-- 右侧 Context 标签在响应包含 `context.metadata.context_pack` 时展示预算使用、保留/丢弃数量、裁剪统计、来源分组和每个 Context Item 的丢弃或截断原因。
+- 右侧 Context 标签在响应包含 `context.metadata.context_pack` 时展示 purpose/consumer、预算使用、保留/丢弃数量、裁剪统计、来源分组、Provider outcome、Projection hash/version 和每个 Context Item 的治理结果。
 - 右侧 Memory 标签展示当前选中轮次的 `memory_context`，包括状态、item 数、scope、relevance/confidence、source、TTL、errors 和原始 JSON。
 - 右侧 Knowledge 标签展示当前选中轮次的 `knowledge_context`，包括状态、source IDs、item scores、title、URI、citations、denied source IDs、errors 和原始 JSON。
 - 右侧 Evidence 标签展示当前响应中的证据命中。
@@ -138,7 +138,9 @@ M3 起后端返回顶层 `assistant_message` 字段。聊天窗口优先消费 `
 
 route-only 或后端没有返回 invocation input 时，turn 仍然可选，但 Memory/Knowledge 会显示 unavailable/空态，不会用全局 debug 仓库数据反推“本轮用了什么”。请求失败时，该失败 turn 会显示失败消息和空 trace，避免复用上一轮的 memory/knowledge。
 
-当前 per-turn trace 是本地前端调试状态，刷新页面后会消失。后续如果需要审计级回放，应单独设计后端持久化 `context_trace` 或 route log 扩展，而不是把当前 UI 状态误认为 durable audit。
+前端 per-turn 选中状态刷新后仍会消失，但后端已在 Route Log 和 `context.metadata.context_trace` 中记录 bounded Trace 摘要。该摘要适合差异比较和回放基础，不包含完整 Prompt、无界原文或完整 structured values，也不等同于完整内容级审计平台。
+
+runtime 配置会显示 `context_pipeline_mode`、route Memory/Knowledge 开关和 policy/budget/projection version。切回 `legacy` 只回滚 Router 输入路径，不会关闭 Agent access、Memory subject isolation、Knowledge source policy 或脱敏治理。
 
 ## 记忆与知识库调试管理
 

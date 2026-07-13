@@ -16,7 +16,7 @@ from app.schemas.common import (
     UserContext,
     normalize_artifact_refs,
 )
-from app.schemas.context import ContextBudget
+from app.schemas.context import ContextBudget, ContextProjection
 from app.schemas.plans import NextAction, Plan
 
 
@@ -140,6 +140,7 @@ class LLMRouteInput(StrictBaseModel):
     request: RouteRequest
     candidates: list[CandidateAgent]
     context: RouteContext
+    projection: ContextProjection | None = None
 
 
 class RouteAndExecuteResponse(StrictBaseModel):

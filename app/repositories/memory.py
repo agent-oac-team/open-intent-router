@@ -74,6 +74,14 @@ class MemoryEventRepository:
         self.agent_events[event.event_id] = event
         return event, False
 
+    async def get_event(self, event_id: str) -> AgentEvent | None:
+        return self.agent_events.get(event_id)
+
+    async def list_recent_events(self, session_id: str, *, limit: int = 10) -> list[AgentEvent]:
+        bounded_limit = max(0, limit)
+        items = [item for item in self.agent_events.values() if item.session_id == session_id]
+        return list(reversed(items[-bounded_limit:])) if bounded_limit else []
+
 
 class MemoryRunRepository:
     def __init__(self) -> None:
@@ -114,6 +122,14 @@ class MemoryPlanRepository:
 
     async def get(self, plan_id: str) -> Plan | None:
         return self.plans.get(plan_id)
+
+    async def get_active_by_session(self, session_id: str) -> Plan | None:
+        active = [
+            plan
+            for plan in self.plans.values()
+            if plan.session_id == session_id and plan.status in {"pending", "running", "blocked"}
+        ]
+        return active[-1] if active else None
 
 
 class MemoryRouteLogRepository:

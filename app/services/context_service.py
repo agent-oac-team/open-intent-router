@@ -1,3 +1,5 @@
+import hashlib
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from math import ceil
@@ -5,8 +7,9 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.core.redaction import redact_value
-from app.schemas.common import JsonDict
+from app.schemas.common import JsonDict, normalize_artifact_refs
 from app.schemas.context import (
+    ContextAssemblySession,
     ContextBudget,
     ContextItem,
     ContextPack,
@@ -15,11 +18,212 @@ from app.schemas.context import (
 )
 from app.schemas.plans import Plan
 from app.schemas.routing import RouteContext, RouteRequest
+from app.services.context_pipeline_service import ContextPipelineService
+from app.services.context_providers import (
+    ArtifactProvider,
+    CurrentAgentProvider,
+    CurrentInputProvider,
+    EventProvider,
+    EvidenceContextProvider,
+    FrontendContextProvider,
+    HistoryProvider,
+    KnowledgeRetrievalProvider,
+    MemoryRetrievalProvider,
+    PlanProvider,
+    ResultProvider,
+)
 
 
 class ContextService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, memory_service=None, knowledge_service=None) -> None:
         self.settings = settings
+        self.memory_service = memory_service
+        self.knowledge_service = knowledge_service
+        self.pipeline = ContextPipelineService(settings)
+
+    async def assemble_route_context(
+        self,
+        request: RouteRequest,
+        *,
+        candidate_agent_ids: list[str],
+        candidate_agents=None,
+        request_id: str,
+        host_history: list[JsonDict] | None = None,
+        agent_history: list[JsonDict] | None = None,
+        recent_results: list[JsonDict] | None = None,
+        recent_events: list[JsonDict] | None = None,
+        evidence: list[JsonDict] | None = None,
+        active_plan: Plan | JsonDict | None = None,
+        intent_hint: str | None = None,
+        assembly_session: ContextAssemblySession | None = None,
+    ):
+        legacy_context = self.build_route_context(
+            request,
+            candidate_agent_ids=candidate_agent_ids,
+            request_id=request_id,
+            host_history=host_history,
+            agent_history=agent_history,
+            recent_results=recent_results,
+            recent_events=recent_events,
+            evidence=evidence,
+            active_plan=active_plan,
+            intent_hint=intent_hint,
+        )
+        if self.settings.context_pipeline_mode == "legacy":
+            return legacy_context, None, assembly_session
+
+        session = assembly_session or ContextAssemblySession(
+            assembly_id=f"assembly_{uuid4().hex}",
+            request_id=request_id,
+            user_id=request.user.id,
+            tenant_id=request.user.tenant_id,
+        )
+        sources = {
+            "host_history": host_history or [],
+            "agent_history": agent_history or [],
+            "recent_results": recent_results or [],
+            "recent_events": recent_events or [],
+            "evidence": evidence or [],
+            "active_plan": active_plan,
+        }
+        providers = [
+            CurrentInputProvider(),
+            CurrentAgentProvider(),
+            PlanProvider(),
+            HistoryProvider(),
+            EventProvider(),
+            ResultProvider(),
+            ArtifactProvider(),
+            EvidenceContextProvider(),
+            FrontendContextProvider(),
+        ]
+        if self.memory_service is not None:
+            providers.append(
+                MemoryRetrievalProvider(self.settings, self.memory_service, stage="route")
+            )
+        if self.knowledge_service is not None:
+            providers.append(
+                KnowledgeRetrievalProvider(self.settings, self.knowledge_service, stage="route")
+            )
+        result = await self.pipeline.assemble(
+            request=request,
+            purpose="route_decision",
+            consumer="router",
+            providers=providers,
+            budget=self.context_budget_for_request(request),
+            candidate_agents=candidate_agents or [],
+            sources=sources,
+            assembly_session=session,
+        )
+        legacy_input_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "request": request.model_dump(mode="json"),
+                    "context": legacy_context.model_dump(mode="json"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        base_metadata = dict(legacy_context.metadata)
+        if self.settings.context_pipeline_mode == "enforced":
+            for key in (
+                "frontend_context",
+                "host_history",
+                "agent_history",
+                "recent_results",
+                "recent_events",
+                "active_plan",
+            ):
+                value = base_metadata.pop(key, None)
+                if isinstance(value, list):
+                    base_metadata[f"{key}_count"] = len(value)
+                elif isinstance(value, dict):
+                    base_metadata[f"{key}_keys"] = sorted(str(item) for item in value)[:20]
+        metadata = {
+            **base_metadata,
+            "context_pack": self.governed_context_debug(result),
+            "context_trace": self.context_trace_debug(result.trace),
+            "context_pipeline": {
+                "mode": self.settings.context_pipeline_mode,
+                "legacy_input_hash": legacy_input_hash,
+                "projection_hash": result.projection.projection_hash,
+                "policy_version": result.pack.policy_version,
+                "budget_version": result.pack.budget_version,
+                "projection_version": result.pack.projection_version,
+            },
+        }
+        artifact_refs = []
+        for item in result.pack.items:
+            if item.source != "artifact" or not item.structured_value:
+                continue
+            artifact_refs.extend(
+                normalize_artifact_refs(
+                    [
+                        {
+                            key: item.structured_value.get(key)
+                            for key in ("artifact_id", "type", "uri", "title", "metadata")
+                            if item.structured_value.get(key) is not None
+                        }
+                    ]
+                )
+            )
+        if len(artifact_refs) > 1:
+            metadata["artifact_ambiguity"] = {
+                "count": len(artifact_refs),
+                "artifact_ids": [item.artifact_id for item in artifact_refs[:10]],
+            }
+        elif len(artifact_refs) == 1:
+            metadata["resolved_artifact_id"] = artifact_refs[0].artifact_id
+        selected_evidence = [item for item in result.pack.items if item.source == "evidence"]
+        selected_knowledge = [item for item in result.pack.items if item.source == "knowledge"]
+        route_evidence = [
+            {
+                "type": (
+                    item.structured_value.get("type") if item.structured_value else "evidence"
+                ),
+                "id": item.metadata.get("evidence_id"),
+                "source_id": item.metadata.get("source_id"),
+                "content": item.content,
+                "score": item.relevance,
+                "matched_agent_ids": (
+                    item.structured_value.get("matched_agent_ids") if item.structured_value else []
+                ),
+            }
+            for item in selected_evidence
+        ]
+        route_evidence.extend(
+            {
+                "type": "knowledge",
+                "item_id": item.metadata.get("item_id"),
+                "source_id": item.metadata.get("source_id"),
+                "content": item.content,
+                "score": item.relevance,
+                "title": (item.structured_value.get("title") if item.structured_value else None),
+                "uri": item.structured_value.get("uri") if item.structured_value else None,
+            }
+            for item in selected_knowledge
+        )
+        if (
+            self.settings.context_route_knowledge_direct_reply_enabled
+            and selected_knowledge
+            and selected_knowledge[0].relevance >= self.settings.context_route_knowledge_min_score
+        ):
+            metadata["knowledge_direct_reply"] = {
+                "message": selected_knowledge[0].content,
+                "source_id": selected_knowledge[0].metadata.get("source_id"),
+                "item_id": selected_knowledge[0].metadata.get("item_id"),
+                "score": selected_knowledge[0].relevance,
+            }
+        context = legacy_context.model_copy(
+            update={
+                "artifact_refs": artifact_refs,
+                "evidence": route_evidence,
+                "metadata": metadata,
+            }
+        )
+        return context, result.projection, session
 
     def build_route_context(
         self,
@@ -385,12 +589,57 @@ class ContextService:
                 "pack_id": pack.pack_id,
                 "request_id": pack.request_id,
                 "session_id": pack.session_id,
+                "trace_id": pack.trace_id,
+                "purpose": pack.purpose,
+                "consumer": pack.consumer,
+                "policy_version": pack.policy_version,
+                "budget_version": pack.budget_version,
+                "projection_version": pack.projection_version,
                 "budget": pack.budget.model_dump(mode="json"),
                 "usage": pack.usage.model_dump(mode="json"),
                 "selection": [item.model_dump(mode="json") for item in pack.selection],
                 "items": [self._debug_item(item) for item in pack.items],
                 "metadata": pack.metadata,
                 "created_at": pack.created_at.isoformat() if pack.created_at else None,
+            }
+        )
+
+    def governed_context_debug(self, result) -> JsonDict:
+        pack = result.pack
+        payload = self.context_pack_debug(pack)
+        payload["provider_outcomes"] = [
+            item.model_dump(mode="json") for item in result.trace.provider_outcomes
+        ]
+        payload["decisions"] = [item.model_dump(mode="json") for item in result.trace.decisions]
+        payload["projection"] = {
+            "projection_id": result.projection.projection_id,
+            "projection_hash": result.projection.projection_hash,
+            "rendered_chars": result.projection.rendered_chars,
+            "token_estimate": result.projection.token_estimate,
+            "projection_version": result.projection.projection_version,
+        }
+        return redact_value(payload)
+
+    def context_trace_debug(self, trace) -> JsonDict:
+        return redact_value(
+            {
+                "trace_id": trace.trace_id,
+                "pack_id": trace.pack_id,
+                "request_id": trace.request_id,
+                "session_id": trace.session_id,
+                "purpose": trace.purpose,
+                "consumer": trace.consumer,
+                "provider_outcomes": [
+                    item.model_dump(mode="json") for item in trace.provider_outcomes
+                ],
+                "decisions": [item.model_dump(mode="json") for item in trace.decisions],
+                "budget": trace.budget.model_dump(mode="json") if trace.budget else None,
+                "policy_version": trace.policy_version,
+                "budget_version": trace.budget_version,
+                "projection_version": trace.projection_version,
+                "projection_hash": trace.projection_hash,
+                "projection_summary": trace.projection_summary,
+                "errors": trace.errors,
             }
         )
 
@@ -428,6 +677,28 @@ class ContextService:
                 "pack_id": pack_data.get("pack_id"),
                 "request_id": pack_data.get("request_id"),
                 "session_id": pack_data.get("session_id"),
+                "trace_id": pack_data.get("trace_id"),
+                "purpose": pack_data.get("purpose"),
+                "consumer": pack_data.get("consumer"),
+                "policy_version": pack_data.get("policy_version"),
+                "budget_version": pack_data.get("budget_version"),
+                "projection_version": pack_data.get("projection_version"),
+                "projection_hash": (
+                    pack_data.get("projection", {}).get("projection_hash")
+                    if isinstance(pack_data.get("projection"), Mapping)
+                    else None
+                ),
+                "provider_outcomes": [
+                    {
+                        "provider": item.get("provider"),
+                        "status": item.get("status"),
+                        "candidate_count": item.get("candidate_count"),
+                        "cache_hit": item.get("cache_hit"),
+                        "error_code": item.get("error_code"),
+                    }
+                    for item in pack_data.get("provider_outcomes", [])
+                    if isinstance(item, Mapping)
+                ],
                 "budget": {
                     "max_tokens": budget.get("max_tokens"),
                     "source_budgets": budget.get("source_budgets"),

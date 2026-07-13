@@ -14,6 +14,9 @@ class PlanService:
     async def get_plan(self, plan_id: str) -> Plan | None:
         return await self.repository.get(plan_id)
 
+    async def get_active_plan(self, session_id: str) -> Plan | None:
+        return await self.repository.get_active_by_session(session_id)
+
     async def confirm(self, plan_id: str) -> PlanActionResponse:
         plan = await self.get_plan(plan_id)
         if plan is None:

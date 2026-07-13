@@ -37,14 +37,23 @@
 - 固定问强命中但目标 Agent 对当前用户不可用时，返回 `status=unsupported`、`action=unsupported` 和无权限提示，并在 `context.metadata.permission_denied=true` 中记录原因。
 - 标签/语义筛选在当前版本只作为召回观察信号，不裁剪候选集。命中信息会写入 `context.metadata.tag_filter`、`tag_filter_matched_agent_ids` 和 `tag_filter_matches`；传给 Evidence Provider 和 LLM 的候选集仍是权限过滤后的全部可用 Agent。
 
-M4 起，路由流程会在调用 LLM 前构建 Context Pack，并通过 `RouteContext.metadata.context_pack` 暴露调试数据。该字段包含：
+路由与 Agent 执行现在使用统一的 governed Context Pipeline。内部对象严格分层：
+
+- `ContextCandidate`：Provider 返回的未治理候选，只存在于单次 assembly。
+- `ContextPack`：完成 purpose/consumer、权限、时效、脱敏、去重、冲突和预算处理后，某个消费者实际可用的 included items。
+- `ContextProjection`：Router 或目标 Agent 的最终白名单输入。Router Prompt 在 `enforced` 模式只消费 Projection，不再直接序列化完整 `RouteRequest`、`RouteContext.metadata`、Debug Pack 或 dropped candidates。
+- `ContextTrace`：记录 Provider outcome、authority、visibility、去重/冲突、预算、版本和 Projection hash；Trace 不属于模型输入。
+
+`RouteContext.metadata.context_pack` 保留为兼容 Debug 摘要，包含：
 
 - `budget`：本轮上下文 token 预算、可选来源预算、单项限制和字符/token 换算比例。
 - `usage`：已用 token、估算来源、保留/丢弃/截断数量、来源分布和丢弃原因。
 - `selection`：每个候选 Context Item 的 `item_id`、`source`、`scope`、`role`、优先级、估算 token、是否入选、裁剪/丢弃原因和 Agent 会话标识。
-- `items`：用于本地调试的有界内容预览，不应作为长期持久化事实源。
+- `items`：实际 included items 的有界内容预览，不应作为长期持久化事实源。
+- `purpose`、`consumer`、`trace_id` 和 policy/budget/projection version。
+- `provider_outcomes`、治理 decisions 和 bounded Projection hash/usage。
 
-兼容期内，`RouteContext.metadata` 仍保留 `host_history`、`agent_history`、`recent_results` 等旧字段，Prompt 和测试台优先读取 `metadata.context_pack`。Route Log 只持久化 Context Pack usage/selection 摘要，不复制无界长历史原文。
+`legacy`/`observe` 兼容期内，旧 metadata 可能继续存在；`enforced` 会移除这些原始副本，只保留数量或 key 摘要。Route Log 只持久化 bounded Pack/Trace usage、Provider 状态、selection 和 Projection hash，不保存完整 Prompt、无界历史正文或完整 structured values。
 
 Context Pack 默认预算可通过 `.env` 配置，修改后需要重启后端：
 
@@ -58,15 +67,31 @@ Context Pack 默认预算可通过 `.env` 配置，修改后需要重启后端�
 | `CONTEXT_PER_ITEM_CHAR_LIMIT` | `2000` | 单个 Context Item 的字符上限 |
 | `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE` | `true` | 是否允许请求或 `frontend_context` 覆盖预算 |
 | `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER` | `true` | 截断时是否记录摘要占位标记 |
+| `CONTEXT_PIPELINE_MODE` | `legacy` | `legacy`、`observe` 或 `enforced` |
+| `CONTEXT_ROUTE_MEMORY_ENABLED` | `false` | 是否启用 route-stage Memory Provider |
+| `CONTEXT_ROUTE_KNOWLEDGE_ENABLED` | `false` | 是否启用 route-stage Knowledge Provider |
+| `CONTEXT_ROUTE_MEMORY_SCOPES` | 空 | Router 可请求的 Memory scopes，逗号分隔 |
+| `CONTEXT_ROUTE_KNOWLEDGE_SOURCE_IDS` | 空 | Router 可请求的 Knowledge source IDs |
+| `CONTEXT_POLICY_VERSION` | `context-policy-v1` | 治理策略版本 |
+| `CONTEXT_BUDGET_VERSION` | `context-budget-v1` | 预算策略版本 |
+| `CONTEXT_PROJECTION_VERSION` | `context-projection-v1` | Projection 契约版本 |
+
+Rollout 语义：
+
+- `legacy`：保留旧 Router Prompt 输入，用于紧急回滚；Agent access、Memory subject isolation 和 Knowledge source policy 不会放宽。
+- `observe`：构建新 Pack/Projection/Trace，记录 `legacy_input_hash` 和 `projection_hash`，Router LLM 仍只调用一次并使用旧输入。
+- `enforced`：Router Prompt 和 Agent context 只由 governed Projection 生成。
 
 M5/M6 起，路由器和 Invoker 会根据目标 Agent 的 `context` 配置组装平台治理上下文。目标 Agent 不直接自由调用记忆或知识检索，而是消费稳定字段：
 
 - `memory_context`：包含 `summary`、结构化 `items`、`status`、`truncated`、`errors` 和调试 `metadata`。
 - `knowledge_context`：包含 `summary`、结构化 `items`、`citations`、`source_ids`、`status`、`truncated`、`errors` 和调试 `metadata`。
 
-当 `context.memory.mode=prefetch` 时，每次路由到该 Agent 或显式调用该 Agent 都会尝试预召回记忆。当前输入只控制本轮执行，不会直接改写长期记忆；冲突会记录在 `memory_context.metadata.conflicts`。
+当 `context.memory.mode=prefetch` 时，Agent execution Pack 会按声明 scope 预召回记忆。当前输入只控制本轮执行，不会直接改写长期记忆；当前轮覆盖、去重和冲突结果记录在 Context Trace。
 
-知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型任意决定检索。
+Agent 知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型任意决定检索。Router 阶段 Memory/Knowledge 也默认关闭，只有显式 route policy 启用；可靠 Knowledge 可使用现有 `decision.action=reply + assistant_message` 直接回复，不新增公共 Citation 字段。
+
+同一个 Route/Invoke 流程使用 request-scoped assembly cache。Router 检索候选可被目标 Agent 复用，但 Agent 阶段必须重新应用 Agent visibility、声明 source/scope 和预算；不同请求、用户或租户之间不复用。
 
 ### `POST /api/v1/route-and-invoke`
 

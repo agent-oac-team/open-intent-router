@@ -17,6 +17,12 @@ def test_runtime_config_exposes_safe_status() -> None:
         router_llm_base_url="https://api.deepseek.com",
         router_llm_api_key="secret-key",
         admin_api_token="admin-secret",
+        context_pipeline_mode="observe",
+        context_route_memory_enabled=True,
+        context_route_knowledge_enabled=True,
+        context_policy_version="policy-test",
+        context_budget_version="budget-test",
+        context_projection_version="projection-test",
     )
     repository = MemoryAgentDefinitionRepository()
     app = create_app()
@@ -42,6 +48,12 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert body["memory_strategy_provider"] == "memory"
     assert body["knowledge_enabled"] is True
     assert body["knowledge_vector_backend"] == "memory"
+    assert body["context_pipeline_mode"] == "observe"
+    assert body["context_route_memory_enabled"] is True
+    assert body["context_route_knowledge_enabled"] is True
+    assert body["context_policy_version"] == "policy-test"
+    assert body["context_budget_version"] == "budget-test"
+    assert body["context_projection_version"] == "projection-test"
     serialized = str(body)
     assert "secret-key" not in serialized
     assert "admin-secret" not in serialized

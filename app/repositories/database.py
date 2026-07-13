@@ -146,6 +146,22 @@ class DatabaseEventRepository:
             await session.refresh(row)
             return _agent_event_from_row(row), False
 
+    async def get_event(self, event_id: str) -> AgentEvent | None:
+        async with self.session_factory() as session:
+            row = await session.get(AgentEventModel, event_id)
+            return _agent_event_from_row(row) if row else None
+
+    async def list_recent_events(self, session_id: str, *, limit: int = 10) -> list[AgentEvent]:
+        async with self.session_factory() as session:
+            stmt = (
+                select(AgentEventModel)
+                .where(AgentEventModel.session_id == session_id)
+                .order_by(desc(AgentEventModel.created_at))
+                .limit(max(0, limit))
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_agent_event_from_row(row) for row in rows]
+
 
 class DatabaseRunRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -283,6 +299,19 @@ class DatabasePlanRepository:
                     for step in steps
                 ],
             )
+
+    async def get_active_by_session(self, session_id: str) -> Plan | None:
+        async with self.session_factory() as session:
+            row = await session.scalar(
+                select(PlanModel)
+                .where(
+                    PlanModel.session_id == session_id,
+                    PlanModel.status.in_(["pending", "running", "blocked"]),
+                )
+                .order_by(desc(PlanModel.updated_at), desc(PlanModel.created_at))
+                .limit(1)
+            )
+        return await self.get(row.plan_id) if row else None
 
 
 class DatabaseRouteLogRepository:

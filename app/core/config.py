@@ -18,6 +18,7 @@ PlanExecutionPolicy = Literal[
     "auto_execute",
     "host_managed",
 ]
+ContextPipelineMode = Literal["legacy", "observe", "enforced"]
 
 
 class Settings(BaseSettings):
@@ -59,6 +60,22 @@ class Settings(BaseSettings):
     context_per_item_char_limit: int = 2000
     context_allow_request_budget_override: bool = True
     context_allow_summary_placeholder: bool = True
+    context_pipeline_mode: ContextPipelineMode = "legacy"
+    context_route_memory_enabled: bool = False
+    context_route_knowledge_enabled: bool = False
+    context_route_knowledge_direct_reply_enabled: bool = False
+    context_route_knowledge_min_score: float = 0.85
+    context_route_memory_scopes: str = ""
+    context_route_knowledge_source_ids: str = ""
+    context_policy_version: str = "context-policy-v1"
+    context_budget_version: str = "context-budget-v1"
+    context_projection_version: str = "context-projection-v1"
+    context_model_window_tokens: int = 16000
+    context_system_reserve_tokens: int = 1200
+    context_schema_reserve_tokens: int = 1400
+    context_rules_reserve_tokens: int = 600
+    context_output_reserve_tokens: int = 1200
+    context_agent_token_budget: int = 3000
 
     agent_http_timeout_seconds: float = 30.0
 

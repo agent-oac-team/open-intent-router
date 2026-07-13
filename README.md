@@ -200,6 +200,12 @@ CONTEXT_PER_ITEM_TOKEN_LIMIT=512
 CONTEXT_PER_ITEM_CHAR_LIMIT=2000
 CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE=true
 CONTEXT_ALLOW_SUMMARY_PLACEHOLDER=true
+CONTEXT_PIPELINE_MODE=legacy
+CONTEXT_ROUTE_MEMORY_ENABLED=false
+CONTEXT_ROUTE_KNOWLEDGE_ENABLED=false
+CONTEXT_POLICY_VERSION=context-policy-v1
+CONTEXT_BUDGET_VERSION=context-budget-v1
+CONTEXT_PROJECTION_VERSION=context-projection-v1
 ```
 
 - `CONTEXT_DEFAULT_TOKEN_BUDGET`：没有请求级覆盖时的总 token 预算。
@@ -209,6 +215,11 @@ CONTEXT_ALLOW_SUMMARY_PLACEHOLDER=true
 - `CONTEXT_PER_ITEM_TOKEN_LIMIT` / `CONTEXT_PER_ITEM_CHAR_LIMIT`：单个 Context Item 的裁剪上限。
 - `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE`：是否允许请求或 `frontend_context` 覆盖预算。
 - `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER`：截断时是否标记 summary placeholder；M4 不调用额外 LLM 做摘要。
+- `CONTEXT_PIPELINE_MODE`：`legacy` 保持旧 Prompt，`observe` 只构建和比较新 Projection，`enforced` 只使用 governed Projection。
+- `CONTEXT_ROUTE_MEMORY_ENABLED` / `CONTEXT_ROUTE_KNOWLEDGE_ENABLED`：Router 阶段检索默认关闭，必须显式启用。
+- version 字段会进入 Context Trace 和 Route Log，用于后续比较与回放。
+
+Context Pipeline 将 Candidate、Pack、Projection 和 Trace 分离。Router Prompt 在 `enforced` 模式不读取完整请求 metadata、Debug Pack 或 dropped items；Agent 仍通过稳定的 `memory_context`、`knowledge_context` 和 `RouteResponse.invocation.input` 接收上下文。
 
 ## DeepSeek 配置
 

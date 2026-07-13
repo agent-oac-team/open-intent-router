@@ -42,10 +42,19 @@ class RouterPromptTemplate:
         )
 
     def messages(self, payload: LLMRouteInput) -> list[dict[str, str]]:
+        governed_payload = payload.projection.payload if payload.projection else None
         prompt_payload = {
-            "request": payload.request.model_dump(mode="json"),
+            "request": (
+                governed_payload.get("request", {})
+                if governed_payload is not None
+                else payload.request.model_dump(mode="json")
+            ),
             "candidate_agents": [agent.model_dump(mode="json") for agent in payload.candidates],
-            "context": payload.context.model_dump(mode="json"),
+            "context": (
+                governed_payload.get("context", {})
+                if governed_payload is not None
+                else payload.context.model_dump(mode="json")
+            ),
             "response_schema_hint": route_response_schema_hint(
                 [agent.agent_id for agent in payload.candidates]
             ),

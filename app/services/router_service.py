@@ -37,6 +37,7 @@ class RouterService:
         context_service: ContextService | None = None,
         chat_history_service=None,
         result_repository=None,
+        event_service=None,
         route_log_repository=None,
         evidence_provider=None,
         plan_service: PlanService | None = None,
@@ -48,6 +49,7 @@ class RouterService:
         self.context_service = context_service or ContextService(settings)
         self.chat_history_service = chat_history_service
         self.result_repository = result_repository
+        self.event_service = event_service
         self.route_log_repository = route_log_repository
         self.evidence_provider = evidence_provider
         self.plan_service = plan_service
@@ -55,6 +57,7 @@ class RouterService:
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         request_id = request.request_id or f"req_{uuid4().hex}"
+        request = request.model_copy(update={"request_id": request_id})
         available_agents = await self._available_agent_definitions(request)
         available_agent_ids = [agent.agent_id for agent in available_agents]
         tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
@@ -63,6 +66,7 @@ class RouterService:
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
+        recent_events = await self._recent_events(request)
         active_plan = await self._active_plan(request)
         evidence_result = await self._evidence(request, candidate_ids)
         if evidence_result.route_override_denied:
@@ -76,16 +80,20 @@ class RouterService:
                 host_history=host_history,
                 agent_history=agent_history,
                 recent_results=recent_results,
+                recent_events=recent_events,
                 active_plan=active_plan,
+                candidate_agents=candidates,
             )
         if not available_agents:
-            base_context = self.context_service.build_route_context(
+            base_context, _, _ = await self.context_service.assemble_route_context(
                 request,
                 candidate_agent_ids=[],
+                candidate_agents=[],
                 request_id=request_id,
                 host_history=host_history,
                 agent_history=agent_history,
                 recent_results=recent_results,
+                recent_events=recent_events,
                 evidence=evidence_result.evidence,
                 active_plan=active_plan,
                 intent_hint=evidence_result.intent_hint,
@@ -105,7 +113,7 @@ class RouterService:
                 context=base_context,
             )
             response = self._finalize_assistant_message(response)
-            await self._after_route(request, response)
+            response = await self._after_route(request, response)
             return response
 
         if evidence_result.route_override:
@@ -119,24 +127,58 @@ class RouterService:
                 host_history=host_history,
                 agent_history=agent_history,
                 recent_results=recent_results,
+                recent_events=recent_events,
                 active_plan=active_plan,
+                candidate_agents=candidates,
             )
-        base_context = self.context_service.build_route_context(
+        (
+            base_context,
+            projection,
+            assembly_session,
+        ) = await self.context_service.assemble_route_context(
             request,
             candidate_agent_ids=candidate_ids,
+            candidate_agents=candidates,
             request_id=request_id,
             host_history=host_history,
             agent_history=agent_history,
             recent_results=recent_results,
+            recent_events=recent_events,
             evidence=evidence_result.evidence,
             active_plan=active_plan,
             intent_hint=evidence_result.intent_hint,
         )
         base_context = _with_evidence_metadata(base_context, evidence_result)
         base_context = _with_filter_metadata(base_context, tag_filter, available_agent_ids)
+        knowledge_reply = base_context.metadata.get("knowledge_direct_reply")
+        if isinstance(knowledge_reply, dict) and knowledge_reply.get("message"):
+            message = str(knowledge_reply["message"])
+            response = RouteResponse(
+                request_id=request_id,
+                session_id=request.session_id,
+                assistant_message=message,
+                decision=RouteDecision(
+                    status="ok",
+                    action="reply",
+                    confidence=float(knowledge_reply.get("score") or 1.0),
+                    reason="Governed route knowledge supplied a reliable direct answer.",
+                    message=message,
+                ),
+                context=base_context,
+            )
+            response = self._finalize_assistant_message(response)
+            response = await self._after_route(request, response)
+            return response
 
         output = await self.llm_client.route(
-            LLMRouteInput(request=request, candidates=candidates, context=base_context)
+            LLMRouteInput(
+                request=request,
+                candidates=candidates,
+                context=base_context,
+                projection=(
+                    projection if self.settings.context_pipeline_mode == "enforced" else None
+                ),
+            )
         )
         output = self._normalize_candidate_context(output, base_context, candidate_ids)
         output = self._ensure_plan_for_multi_task(output, request, candidates)
@@ -145,9 +187,11 @@ class RouterService:
         output = output.model_copy(update={"request_id": request_id})
         output = await self._post_validate(output, request)
         output = self._clarify_on_low_confidence(output)
-        response = await self._clarify_or_attach_invocation(output, request)
+        response = await self._clarify_or_attach_invocation(
+            output, request, assembly_session=assembly_session
+        )
         response = self._finalize_assistant_message(response)
-        await self._after_route(request, response)
+        response = await self._after_route(request, response)
         return response
 
     async def _available_agent_definitions(self, request: RouteRequest) -> list[AgentDefinition]:
@@ -228,6 +272,8 @@ class RouterService:
         self,
         output: RouteResponse,
         request: RouteRequest,
+        *,
+        assembly_session=None,
     ) -> RouteResponse:
         target = output.decision.target_agent_id
         if output.decision.action not in {"open_agent", "continue_agent"} or not target:
@@ -273,6 +319,7 @@ class RouterService:
                 agent=agent,
                 request=request,
                 invocation_input=invocation_input,
+                assembly_session=assembly_session,
             )
             metadata = {
                 "memory_context_status": runtime_context.memory_context.status,
@@ -348,10 +395,28 @@ class RouterService:
             )
         ]
 
+    async def _recent_events(self, request: RouteRequest) -> list[dict]:
+        if not self.event_service:
+            return []
+        events = await self.event_service.list_recent_events(
+            request.session_id,
+            limit=self.settings.router_max_recent_events,
+        )
+        if request.event_id:
+            referenced = await self.event_service.get_event(request.event_id)
+            if referenced is not None:
+                events = [
+                    referenced,
+                    *[item for item in events if item.event_id != referenced.event_id],
+                ]
+        return [item.model_dump() for item in events[: self.settings.router_max_recent_events]]
+
     async def _active_plan(self, request: RouteRequest):
-        if not self.plan_service or not request.plan_id:
+        if not self.plan_service:
             return None
-        return await self.plan_service.get_plan(request.plan_id)
+        if request.plan_id:
+            return await self.plan_service.get_plan(request.plan_id)
+        return await self.plan_service.get_active_plan(request.session_id)
 
     async def _evidence(self, request: RouteRequest, candidate_agent_ids: list[str]):
         if not self.evidence_provider:
@@ -376,7 +441,9 @@ class RouterService:
         host_history: list[JsonDict] | None = None,
         agent_history: list[JsonDict] | None = None,
         recent_results: list[JsonDict] | None = None,
+        recent_events: list[JsonDict] | None = None,
         active_plan=None,
+        candidate_agents=None,
     ) -> RouteResponse:
         override = evidence_result.route_override or {}
         target_agent_id = override.get("target_agent_id")
@@ -397,15 +464,19 @@ class RouterService:
                 host_history=host_history,
                 agent_history=agent_history,
                 recent_results=recent_results,
+                recent_events=recent_events,
                 active_plan=active_plan,
+                candidate_agents=candidate_agents,
             )
-        base_context = self.context_service.build_route_context(
+        base_context, _, assembly_session = await self.context_service.assemble_route_context(
             request,
             candidate_agent_ids=candidate_agent_ids,
+            candidate_agents=candidate_agents or [],
             request_id=request_id,
             host_history=host_history,
             agent_history=agent_history,
             recent_results=recent_results,
+            recent_events=recent_events,
             evidence=evidence_result.evidence,
             active_plan=active_plan,
             intent_hint=evidence_result.intent_hint,
@@ -435,9 +506,11 @@ class RouterService:
                 )
             }
         )
-        response = await self._clarify_or_attach_invocation(response, request)
+        response = await self._clarify_or_attach_invocation(
+            response, request, assembly_session=assembly_session
+        )
         response = self._finalize_assistant_message(response)
-        await self._after_route(request, response)
+        response = await self._after_route(request, response)
         return response
 
     async def _route_from_denied_evidence_override(
@@ -452,18 +525,22 @@ class RouterService:
         host_history: list[JsonDict] | None = None,
         agent_history: list[JsonDict] | None = None,
         recent_results: list[JsonDict] | None = None,
+        recent_events: list[JsonDict] | None = None,
         active_plan=None,
+        candidate_agents=None,
     ) -> RouteResponse:
         denied = evidence_result.route_override_denied or {}
         target_agent_id = denied.get("target_agent_id")
         message = "你当前无权限使用该能力，请联系管理员开通权限。"
-        context = self.context_service.build_route_context(
+        context, _, _ = await self.context_service.assemble_route_context(
             request,
             candidate_agent_ids=candidate_agent_ids,
+            candidate_agents=candidate_agents or [],
             request_id=request_id,
             host_history=host_history,
             agent_history=agent_history,
             recent_results=recent_results,
+            recent_events=recent_events,
             evidence=evidence_result.evidence,
             active_plan=active_plan,
             intent_hint=evidence_result.intent_hint,
@@ -497,10 +574,10 @@ class RouterService:
             context=context,
         )
         response = self._finalize_assistant_message(response)
-        await self._after_route(request, response)
+        response = await self._after_route(request, response)
         return response
 
-    async def _after_route(self, request: RouteRequest, response: RouteResponse) -> None:
+    async def _after_route(self, request: RouteRequest, response: RouteResponse) -> RouteResponse:
         if self.plan_service and response.plan is not None:
             await self.plan_service.save_plan(response.plan)
         if self.chat_history_service:
@@ -522,27 +599,49 @@ class RouterService:
             context_pack_summary = self.context_service.context_pack_log_summary(
                 response.context.metadata.get("context_pack")
             )
-            await self.route_log_repository.add(
-                RouteLog(
-                    request_id=response.request_id,
-                    session_id=response.session_id,
-                    model_name=self.settings.router_llm_model,
-                    candidate_agent_ids=response.context.candidate_agent_ids,
-                    prompt_summary=request.input.text[:500],
-                    evidence=response.context.evidence,
-                    parsed_output={
-                        **_route_log_response(response, context_pack_summary),
-                        "context_pack_usage": context_pack_summary,
-                        "execution_policy": response.execution_policy,
-                        "next_action": (
-                            response.next_action.model_dump(mode="json")
-                            if response.next_action
-                            else None
-                        ),
-                    },
-                    validation_status="ok",
+            try:
+                await self.route_log_repository.add(
+                    RouteLog(
+                        request_id=response.request_id,
+                        session_id=response.session_id,
+                        model_name=self.settings.router_llm_model,
+                        candidate_agent_ids=response.context.candidate_agent_ids,
+                        prompt_summary=request.input.text[:500],
+                        evidence=response.context.evidence,
+                        parsed_output={
+                            **_route_log_response(response, context_pack_summary),
+                            "context_pack_usage": context_pack_summary,
+                            "execution_policy": response.execution_policy,
+                            "next_action": (
+                                response.next_action.model_dump(mode="json")
+                                if response.next_action
+                                else None
+                            ),
+                        },
+                        validation_status="ok",
+                    )
                 )
-            )
+            except Exception as exc:
+                trace = response.context.metadata.get("context_trace")
+                trace = dict(trace) if isinstance(trace, dict) else {}
+                trace["persistence"] = {
+                    "status": "error",
+                    "error_code": "route_log_persistence_failed",
+                    "error_type": type(exc).__name__,
+                }
+                response = response.model_copy(
+                    update={
+                        "context": response.context.model_copy(
+                            update={
+                                "metadata": {
+                                    **response.context.metadata,
+                                    "context_trace": trace,
+                                }
+                            }
+                        )
+                    }
+                )
+        return response
 
     def _ensure_plan_for_multi_task(
         self,
@@ -796,6 +895,11 @@ def _route_log_response(
                 value = metadata.pop(key, None)
                 if isinstance(value, list):
                     metadata[f"{key}_count"] = len(value)
+            frontend_context = metadata.pop("frontend_context", None)
+            if isinstance(frontend_context, dict):
+                metadata["frontend_context_keys"] = sorted(
+                    str(key) for key in frontend_context.keys()
+                )[:20]
             metadata.pop("active_plan", None)
             if "context_pack" in metadata:
                 metadata["context_pack"] = context_pack_summary

@@ -55,6 +55,12 @@ async def runtime_config(
         knowledge_prefetch_timeout_seconds=settings.knowledge_prefetch_timeout_seconds,
         knowledge_milvus_collection=settings.knowledge_milvus_collection,
         knowledge_milvus_uri=settings.knowledge_milvus_uri,
+        context_pipeline_mode=settings.context_pipeline_mode,
+        context_route_memory_enabled=settings.context_route_memory_enabled,
+        context_route_knowledge_enabled=settings.context_route_knowledge_enabled,
+        context_policy_version=settings.context_policy_version,
+        context_budget_version=settings.context_budget_version,
+        context_projection_version=settings.context_projection_version,
     )
 
 

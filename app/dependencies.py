@@ -122,9 +122,14 @@ def get_router_service() -> RouterService:
     return RouterService(
         settings=settings,
         registry=get_registry_service(),
-        context_service=ContextService(settings),
+        context_service=ContextService(
+            settings,
+            memory_service=get_memory_service(),
+            knowledge_service=get_knowledge_service(),
+        ),
         chat_history_service=get_chat_history_service(),
         result_repository=repositories["results"],
+        event_service=EventService(repositories["events"]),
         route_log_repository=repositories["route_logs"],
         evidence_provider=build_evidence_provider(settings),
         plan_service=PlanService(repositories["plans"]),
