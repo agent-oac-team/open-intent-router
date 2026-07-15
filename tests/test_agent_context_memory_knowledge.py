@@ -118,7 +118,8 @@ async def test_memory_recall_empty_success_scope_ttl_conflict_and_cleanup() -> N
     cleanup = await service.cleanup_expired()
     assert expired.memory_id in cleanup.expired_memory_ids
     assert cleanup.expired_count == 1
-    assert any(event.event_type == "memory_expired" for event in repository.events)
+    assert any(event.event_type == "memory_deletion_requested" for event in repository.events)
+    assert repository.items[expired.memory_id].lifecycle_status == "deletion_pending"
 
 
 async def test_memory_write_policy_rejection_and_debug_visibility() -> None:

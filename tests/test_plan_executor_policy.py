@@ -15,6 +15,8 @@ def test_route_response_accepts_plan_without_show_plan() -> None:
         execution_policy="require_confirmation",
         plan={
             "plan_id": "p1",
+            "user_id": "u1",
+            "tenant_id": "t1",
             "session_id": "s1",
             "steps": [{"step_id": "s1", "agent_id": "summarizer", "description": "summarize"}],
         },
@@ -36,6 +38,8 @@ async def test_plan_executor_confirmed_plan_invokes_steps_in_dependency_order(
         Plan.model_validate(
             {
                 "plan_id": "p1",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "session_id": "s1",
                 "status": "running",
                 "steps": [
@@ -54,14 +58,17 @@ async def test_plan_executor_confirmed_plan_invokes_steps_in_dependency_order(
 
     response = await executor.execute(
         "p1",
-        user={"id": "u1", "roles": ["operator"]},
+        user={"id": "u1", "roles": ["operator"], "attributes": {"tenant_id": "t1"}},
         input_values={"text": "hello"},
     )
 
     assert response.plan.status == "completed"
     assert [item["agent_id"] for item in response.results] == ["summarizer", "task_creator"]
     assert response.results[1]["status"] == "completed"
-    assert len(await repositories["results"].list_recent("s1", limit=10)) == 2
+    assert (
+        len(await repositories["results"].list_recent("s1", tenant_id="t1", user_id="u1", limit=10))
+        == 2
+    )
 
 
 async def test_return_plan_only_policy_does_not_invoke_until_executor_called(
@@ -75,6 +82,8 @@ async def test_return_plan_only_policy_does_not_invoke_until_executor_called(
     plan = Plan.model_validate(
         {
             "plan_id": "p_return",
+            "user_id": "u1",
+            "tenant_id": "t1",
             "session_id": "s1",
             "execution_policy": "return_plan_only",
             "steps": [
@@ -90,8 +99,10 @@ async def test_return_plan_only_policy_does_not_invoke_until_executor_called(
     )
     await repositories["plans"].save(plan)
 
-    assert (await repositories["results"].list_recent("s1", limit=10)) == []
-    saved = await repositories["plans"].get("p_return")
+    assert (
+        await repositories["results"].list_recent("s1", tenant_id="t1", user_id="u1", limit=10)
+    ) == []
+    saved = await repositories["plans"].get("p_return", tenant_id="t1", user_id="u1")
     assert saved
     assert saved.execution_policy == "return_plan_only"
 
@@ -124,7 +135,11 @@ async def test_auto_execute_policy_can_be_applied_in_local_settings(
         RouteRequest.model_validate(
             {
                 "session_id": "s1",
-                "user": {"id": "u1", "roles": ["operator"]},
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
                 "input": {"text": "first summarize this text, then create a task"},
             }
         )
@@ -160,6 +175,8 @@ async def test_plan_executor_pauses_for_ui_handoff(
         Plan.model_validate(
             {
                 "plan_id": "p_ui",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "session_id": "s1",
                 "status": "running",
                 "steps": [{"step_id": "s1", "agent_id": "dashboard", "description": "open"}],
@@ -168,7 +185,9 @@ async def test_plan_executor_pauses_for_ui_handoff(
     )
     executor = _executor(settings, registry_service, repositories)
 
-    response = await executor.execute("p_ui", user={"id": "u1", "roles": ["operator"]})
+    response = await executor.execute(
+        "p_ui", user={"id": "u1", "roles": ["operator"], "attributes": {"tenant_id": "t1"}}
+    )
 
     assert response.plan.status == "blocked"
     assert response.next_action
@@ -183,6 +202,8 @@ async def test_plan_executor_pauses_for_missing_input(
         Plan.model_validate(
             {
                 "plan_id": "p_missing",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "session_id": "s1",
                 "status": "running",
                 "steps": [{"step_id": "s1", "agent_id": "summarizer", "description": "summarize"}],
@@ -191,7 +212,9 @@ async def test_plan_executor_pauses_for_missing_input(
     )
     executor = _executor(settings, registry_service, repositories)
 
-    response = await executor.execute("p_missing", user={"id": "u1", "roles": ["operator"]})
+    response = await executor.execute(
+        "p_missing", user={"id": "u1", "roles": ["operator"], "attributes": {"tenant_id": "t1"}}
+    )
 
     assert response.plan.status == "blocked"
     assert response.next_action
@@ -204,6 +227,8 @@ async def test_plan_executor_resume_with_input(settings, registry_service, repos
         Plan.model_validate(
             {
                 "plan_id": "p_resume",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "session_id": "s1",
                 "status": "blocked",
                 "steps": [
@@ -221,7 +246,7 @@ async def test_plan_executor_resume_with_input(settings, registry_service, repos
 
     response = await executor.execute(
         "p_resume",
-        user={"id": "u1", "roles": ["operator"]},
+        user={"id": "u1", "roles": ["operator"], "attributes": {"tenant_id": "t1"}},
         input_values={"text": "hello"},
     )
 
@@ -238,6 +263,8 @@ async def test_plan_executor_marks_plan_failed_when_step_output_is_invalid(
         Plan.model_validate(
             {
                 "plan_id": "p_invalid_output",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "session_id": "s1",
                 "status": "running",
                 "steps": [{"step_id": "s1", "agent_id": "summarizer", "description": "summarize"}],
@@ -258,12 +285,12 @@ async def test_plan_executor_marks_plan_failed_when_step_output_is_invalid(
 
     response = await executor.execute(
         "p_invalid_output",
-        user={"id": "u1", "roles": ["operator"]},
+        user={"id": "u1", "roles": ["operator"], "attributes": {"tenant_id": "t1"}},
         input_values={"text": "hello"},
     )
 
     assert response.plan.status == "failed"
-    assert response.plan.current_step_id == "s1"
+    assert response.plan.current_step_id is None
     assert response.results[0]["status"] == "invalid_output"
     assert response.results[0]["error"]["code"] == "invalid_output"
 

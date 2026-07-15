@@ -9,6 +9,7 @@ class ChatMessage(StrictBaseModel):
     message_id: str
     session_id: str
     user_id: str | None = None
+    tenant_id: str | None = None
     source: MessageSource
     role: ParticipantRole
     content: str = Field(min_length=1)
@@ -25,6 +26,7 @@ class AppendChatMessageRequest(StrictBaseModel):
     role: ParticipantRole
     content: str = Field(min_length=1)
     user_id: str | None = None
+    tenant_id: str | None = None
     agent_id: str | None = None
     agent_session_id: str | None = None
     request_id: str | None = None

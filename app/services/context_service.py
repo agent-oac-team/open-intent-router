@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.core.redaction import redact_value
+from app.schemas.agent_context import MemoryContextItem
 from app.schemas.common import JsonDict, normalize_artifact_refs
 from app.schemas.context import (
     ContextAssemblySession,
@@ -223,6 +224,16 @@ class ContextService:
                 "metadata": metadata,
             }
         )
+        record_recall_usage = getattr(self.memory_service, "record_recall_usage", None)
+        if callable(record_recall_usage):
+            await record_recall_usage(
+                _selected_memory_items(result.pack.items),
+                user_id=request.user.id,
+                tenant_id=request.user.tenant_id,
+                consumer="router",
+                request_id=request_id,
+                session_id=request.session_id,
+            )
         return context, result.projection, session
 
     def build_route_context(
@@ -982,6 +993,26 @@ def _parse_source_budgets(raw: str) -> dict[str, int]:
 def _min_optional_positive(requested: int | None, configured: int | None) -> int | None:
     values = [value for value in [requested, configured] if value is not None and value > 0]
     return min(values) if values else None
+
+
+def _selected_memory_items(items: list[ContextItem]) -> list[MemoryContextItem]:
+    selected = []
+    for item in items:
+        if item.source != "memory":
+            continue
+        value = item.structured_value or {}
+        selected.append(
+            MemoryContextItem(
+                memory_id=str(
+                    value.get("memory_id") or item.metadata.get("memory_id") or item.item_id
+                ),
+                scope=str(value.get("scope") or item.metadata.get("scope") or "stable_fact"),
+                content=item.content,
+                relevance=item.relevance,
+                current_revision_id=value.get("current_revision_id"),
+            )
+        )
+    return selected
 
 
 def _parse_datetime(value: object) -> datetime | None:

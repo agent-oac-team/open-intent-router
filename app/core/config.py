@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 RegistryBackend = Literal["database", "file", "hybrid"]
@@ -19,6 +19,7 @@ PlanExecutionPolicy = Literal[
     "host_managed",
 ]
 ContextPipelineMode = Literal["legacy", "observe", "enforced"]
+MemoryFormationMode = Literal["off", "observe", "enforced"]
 
 
 class Settings(BaseSettings):
@@ -46,6 +47,8 @@ class Settings(BaseSettings):
     default_plan_execution_policy: PlanExecutionPolicy = "require_confirmation"
     allow_local_auto_execute_plans: bool = False
     admin_api_token: str | None = Field(default=None)
+    admin_actor_id: str = Field(default="admin", min_length=1, max_length=128)
+    memory_identity_secret: str | None = Field(default=None)
 
     router_max_host_history_messages: int = 20
     router_max_agent_history_messages: int = 12
@@ -80,6 +83,32 @@ class Settings(BaseSettings):
     agent_http_timeout_seconds: float = 30.0
 
     memory_enabled: bool = True
+    memory_formation_mode: MemoryFormationMode = "off"
+    memory_formation_window_turns: int = Field(default=5, ge=1, le=100)
+    memory_formation_idle_seconds: float = Field(default=30.0, gt=0)
+    memory_formation_model: str = "formation-default"
+    memory_formation_model_version: str = "formation-model-v1"
+    memory_formation_prompt_version: str = "formation-prompt-v1"
+    memory_formation_policy_version: str = "formation-policy-v1"
+    memory_formation_auto_threshold: float = Field(default=0.90, ge=0, le=1)
+    memory_formation_pending_threshold: float = Field(default=0.70, ge=0, le=1)
+    memory_formation_model_timeout_seconds: float = Field(default=20.0, gt=0)
+    memory_formation_lease_seconds: float = Field(default=60.0, gt=0)
+    memory_formation_max_attempts: int = Field(default=5, ge=1)
+    memory_formation_retry_base_seconds: float = Field(default=5.0, gt=0)
+    memory_formation_retry_max_seconds: float = Field(default=300.0, gt=0)
+    memory_formation_worker_enabled: bool = False
+    memory_formation_sweeper_enabled: bool = False
+    memory_index_worker_enabled: bool = True
+    memory_ttl_sweeper_enabled: bool = True
+    memory_maintenance_interval_seconds: float = Field(default=1.0, gt=0)
+    memory_formation_sweep_interval_seconds: float = Field(default=5.0, gt=0)
+    memory_consolidation_enabled: bool = False
+    memory_consolidation_interval_seconds: float = Field(default=3600.0, gt=0)
+    memory_formation_capsule_user_chars: int = Field(default=2000, ge=1, le=20000)
+    memory_formation_capsule_assistant_chars: int = Field(default=2000, ge=1, le=20000)
+    memory_formation_capsule_summary_chars: int = Field(default=1000, ge=1, le=10000)
+    memory_formation_prompt_max_chars: int = Field(default=30000, ge=8000, le=100000)
     memory_strategy_provider: MemoryStrategyProvider = "memory"
     memory_prefetch_timeout_seconds: float = 3.0
     memory_default_max_items: int = 5
@@ -133,6 +162,22 @@ class Settings(BaseSettings):
     evidence_provider_timeout_seconds: float = 1.0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @model_validator(mode="after")
+    def validate_memory_formation_settings(self) -> "Settings":
+        if self.memory_formation_pending_threshold >= self.memory_formation_auto_threshold:
+            raise ValueError("memory formation pending threshold must be below auto threshold")
+        if self.memory_formation_retry_base_seconds > self.memory_formation_retry_max_seconds:
+            raise ValueError("memory formation retry base must not exceed retry maximum")
+        if self.memory_formation_lease_seconds <= self.memory_formation_model_timeout_seconds:
+            raise ValueError("memory formation lease must exceed model timeout")
+        minimum_prompt_chars = 4000 + (950 * self.memory_formation_window_turns)
+        if self.memory_formation_prompt_max_chars < minimum_prompt_chars:
+            raise ValueError(
+                "memory formation prompt budget is too small for the configured turn window; "
+                f"requires at least {minimum_prompt_chars} characters"
+            )
+        return self
 
     @property
     def memory_mem0_fail_closed_effective(self) -> bool:

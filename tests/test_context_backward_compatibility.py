@@ -50,6 +50,8 @@ def test_plan_and_error_public_contracts_remain_parseable() -> None:
     plan = Plan.model_validate(
         {
             "plan_id": "plan_1",
+            "user_id": "u1",
+            "tenant_id": "t1",
             "session_id": "session_1",
             "status": "pending",
             "steps": [

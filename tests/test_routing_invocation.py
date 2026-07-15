@@ -1,3 +1,7 @@
+import pytest
+
+from app.core.errors import RoutingError
+from app.schemas.events import AgentEvent
 from app.schemas.invocation import InvokeRequest
 from app.schemas.routing import (
     LLMRouteInput,
@@ -71,7 +75,11 @@ async def test_mock_router_creates_and_persists_multi_agent_plan(
         RouteRequest.model_validate(
             {
                 "session_id": "s1",
-                "user": {"id": "u1", "roles": ["operator"]},
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
                 "input": {"text": "first summarize this text, then create a task"},
             }
         )
@@ -86,7 +94,77 @@ async def test_mock_router_creates_and_persists_multi_agent_plan(
     assert response.plan.execution_policy == "require_confirmation"
     assert [step.agent_id for step in response.plan.steps] == ["summarizer", "task_creator"]
     assert response.plan.steps[1].depends_on == [response.plan.steps[0].step_id]
-    assert await repositories["plans"].get(response.plan.plan_id)
+    assert await repositories["plans"].get(response.plan.plan_id, tenant_id="t1", user_id="u1")
+
+
+async def test_router_overwrites_forged_plan_owner_requires_tenant_and_preserves_event_owner(
+    settings,
+    registry_service,
+    repositories,
+    task_creator_agent,
+) -> None:
+    await repositories["registry"].upsert(task_creator_agent)
+    await registry_service.load()
+    plan_service = PlanService(repositories["plans"])
+    service = RouterService(
+        settings=settings,
+        registry=registry_service,
+        plan_service=plan_service,
+        llm_client=ForgedMultiStepPlanLLM(),
+    )
+
+    response = await service.route(
+        RouteRequest.model_validate(
+            {
+                "session_id": "owned_session",
+                "user": {
+                    "id": "trusted_user",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "trusted_tenant"},
+                },
+                "input": {"text": "summarize this text and create a task"},
+            }
+        )
+    )
+
+    assert response.plan is not None
+    assert (response.plan.tenant_id, response.plan.user_id) == (
+        "trusted_tenant",
+        "trusted_user",
+    )
+    assert (
+        await repositories["plans"].get(
+            response.plan.plan_id,
+            tenant_id="forged_tenant",
+            user_id="forged_user",
+        )
+        is None
+    )
+    progressed = await plan_service.apply_agent_event(
+        AgentEvent(
+            event_id="owned_progress",
+            session_id="owned_session",
+            agent_id="summarizer",
+            plan_id=response.plan.plan_id,
+            step_id="step_1",
+            event_type="agent_progress",
+        ),
+        tenant_id="trusted_tenant",
+        user_id="trusted_user",
+    )
+    assert progressed is not None
+    assert (progressed.tenant_id, progressed.user_id) == ("trusted_tenant", "trusted_user")
+
+    with pytest.raises(RoutingError, match="Trusted tenant identity is required"):
+        await service.route(
+            RouteRequest.model_validate(
+                {
+                    "session_id": "missing_tenant_session",
+                    "user": {"id": "trusted_user", "roles": ["operator"]},
+                    "input": {"text": "summarize this text and create a task"},
+                }
+            )
+        )
 
 
 async def test_router_generates_assistant_message_for_legacy_llm_output(
@@ -457,13 +535,19 @@ async def test_mock_invocation_persists_run_and_result(
         InvokeRequest(
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "roles": ["operator"]},
+            user={
+                "id": "u1",
+                "roles": ["operator"],
+                "attributes": {"tenant_id": "t1"},
+            },
             input={"text": "hello"},
         )
     )
     assert result.status == "completed"
     assert await repositories["runs"].get_run(result.run_id)
-    assert (await repositories["results"].list_recent("s1"))[0].run_id == result.run_id
+    assert (await repositories["results"].list_recent("s1", tenant_id="t1", user_id="u1"))[
+        0
+    ].run_id == result.run_id
 
 
 class SingleStepPlanLLM:
@@ -485,6 +569,8 @@ class SingleStepPlanLLM:
             ),
             plan={
                 "plan_id": "plan_single_step",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "session_id": payload.request.session_id,
                 "steps": [
                     {
@@ -492,6 +578,44 @@ class SingleStepPlanLLM:
                         "agent_id": "summarizer",
                         "description": "Summarize the text.",
                     }
+                ],
+            },
+        )
+
+
+class ForgedMultiStepPlanLLM:
+    async def route(self, payload: LLMRouteInput) -> RouteResponse:
+        return RouteResponse(
+            request_id=payload.request.request_id or "req_forged_plan",
+            session_id=payload.request.session_id,
+            decision=RouteDecision(
+                status="ok",
+                action="show_plan",
+                confidence=0.99,
+                reason="multi-step request",
+                message="plan ready",
+            ),
+            context=RouteContext(
+                relation="multi_task",
+                candidate_agent_ids=[agent.agent_id for agent in payload.candidates],
+            ),
+            plan={
+                "plan_id": "plan_forged_owner",
+                "user_id": "forged_user",
+                "tenant_id": "forged_tenant",
+                "session_id": payload.request.session_id,
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "agent_id": "summarizer",
+                        "description": "Summarize the text.",
+                    },
+                    {
+                        "step_id": "step_2",
+                        "agent_id": "task_creator",
+                        "description": "Create a follow-up task.",
+                        "depends_on": ["step_1"],
+                    },
                 ],
             },
         )

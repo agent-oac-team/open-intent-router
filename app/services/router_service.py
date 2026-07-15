@@ -26,6 +26,7 @@ from app.services.invocation_service import build_invocation_input, missing_requ
 from app.services.plan_builder import build_ordered_plan_from_text
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
+from app.services.task_continuation import requests_plan_continuation
 
 
 class RouterService:
@@ -42,6 +43,7 @@ class RouterService:
         evidence_provider=None,
         plan_service: PlanService | None = None,
         agent_context_service=None,
+        plan_continuation_resolver=None,
     ) -> None:
         self.settings = settings
         self.registry = registry
@@ -54,6 +56,7 @@ class RouterService:
         self.evidence_provider = evidence_provider
         self.plan_service = plan_service
         self.agent_context_service = agent_context_service
+        self.plan_continuation_resolver = plan_continuation_resolver
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         request_id = request.request_id or f"req_{uuid4().hex}"
@@ -180,6 +183,7 @@ class RouterService:
                 ),
             )
         )
+        output = self._bind_plan_ownership(output, request)
         output = self._normalize_candidate_context(output, base_context, candidate_ids)
         output = self._ensure_plan_for_multi_task(output, request, candidates)
         output = self._collapse_single_step_plan(output, request)
@@ -188,7 +192,10 @@ class RouterService:
         output = await self._post_validate(output, request)
         output = self._clarify_on_low_confidence(output)
         response = await self._clarify_or_attach_invocation(
-            output, request, assembly_session=assembly_session
+            output,
+            request,
+            active_plan=active_plan,
+            assembly_session=assembly_session,
         )
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
@@ -273,6 +280,7 @@ class RouterService:
         output: RouteResponse,
         request: RouteRequest,
         *,
+        active_plan=None,
         assembly_session=None,
     ) -> RouteResponse:
         target = output.decision.target_agent_id
@@ -314,17 +322,26 @@ class RouterService:
             )
         metadata = {}
         context = output.context
+        execution_plan = (
+            active_plan
+            if active_plan is not None
+            and (request.plan_id or requests_plan_continuation(request.input.text))
+            else None
+        )
         if self.agent_context_service:
             runtime_context = await self.agent_context_service.assemble_for_route(
                 agent=agent,
                 request=request,
                 invocation_input=invocation_input,
+                active_plan=execution_plan,
                 assembly_session=assembly_session,
             )
             metadata = {
                 "memory_context_status": runtime_context.memory_context.status,
                 "knowledge_context_status": runtime_context.knowledge_context.status,
             }
+            if execution_plan is not None:
+                metadata["plan_id"] = execution_plan.plan_id
             context = output.context.model_copy(
                 update={
                     "metadata": {
@@ -370,7 +387,11 @@ class RouterService:
             return []
         return [
             item.model_dump()
-            for item in await self.chat_history_service.get_host_history(request.session_id)
+            for item in await self.chat_history_service.get_host_history(
+                request.session_id,
+                tenant_id=request.user.tenant_id or "",
+                user_id=request.user.id,
+            )
         ]
 
     async def _agent_history(self, request: RouteRequest) -> list[dict]:
@@ -381,6 +402,8 @@ class RouterService:
             for item in await self.chat_history_service.get_agent_history(
                 request.session_id,
                 request.current_agent.agent_id,
+                tenant_id=request.user.tenant_id or "",
+                user_id=request.user.id,
             )
         ]
 
@@ -391,6 +414,8 @@ class RouterService:
             item.model_dump()
             for item in await self.result_repository.list_recent(
                 request.session_id,
+                tenant_id=request.user.tenant_id or "",
+                user_id=request.user.id,
                 limit=self.settings.router_max_recent_results,
             )
         ]
@@ -400,10 +425,16 @@ class RouterService:
             return []
         events = await self.event_service.list_recent_events(
             request.session_id,
+            tenant_id=request.user.tenant_id or "",
+            user_id=request.user.id,
             limit=self.settings.router_max_recent_events,
         )
         if request.event_id:
-            referenced = await self.event_service.get_event(request.event_id)
+            referenced = await self.event_service.get_event(
+                request.event_id,
+                tenant_id=request.user.tenant_id,
+                user_id=request.user.id,
+            )
             if referenced is not None:
                 events = [
                     referenced,
@@ -414,9 +445,21 @@ class RouterService:
     async def _active_plan(self, request: RouteRequest):
         if not self.plan_service:
             return None
+        tenant_id = request.user.tenant_id or ""
         if request.plan_id:
-            return await self.plan_service.get_plan(request.plan_id)
-        return await self.plan_service.get_active_plan(request.session_id)
+            return await self.plan_service.get_plan(
+                request.plan_id,
+                tenant_id=tenant_id,
+                user_id=request.user.id,
+            )
+        active = await self.plan_service.get_active_plan(
+            request.session_id,
+            tenant_id=tenant_id,
+            user_id=request.user.id,
+        )
+        if active is not None or self.plan_continuation_resolver is None:
+            return active
+        return await self.plan_continuation_resolver.resolve(request)
 
     async def _evidence(self, request: RouteRequest, candidate_agent_ids: list[str]):
         if not self.evidence_provider:
@@ -507,7 +550,10 @@ class RouterService:
             }
         )
         response = await self._clarify_or_attach_invocation(
-            response, request, assembly_session=assembly_session
+            response,
+            request,
+            active_plan=active_plan,
+            assembly_session=assembly_session,
         )
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
@@ -584,6 +630,7 @@ class RouterService:
             await self.chat_history_service.record_user_input(
                 session_id=request.session_id,
                 user_id=request.user.id,
+                tenant_id=request.user.tenant_id or "",
                 content=request.input.text,
                 source=request.source,
                 request_id=response.request_id,
@@ -654,6 +701,8 @@ class RouterService:
         plan = build_ordered_plan_from_text(
             text=request.input.text,
             session_id=request.session_id,
+            user_id=request.user.id,
+            tenant_id=request.user.tenant_id or "",
             candidates=candidates,
         )
         if plan is None:
@@ -674,6 +723,25 @@ class RouterService:
                 "context": output.context.model_copy(update={"relation": "multi_task"}),
                 "plan": plan,
                 "invocation": None,
+            }
+        )
+
+    def _bind_plan_ownership(self, output: RouteResponse, request: RouteRequest) -> RouteResponse:
+        if output.plan is None:
+            return output
+        tenant_id = request.user.tenant_id
+        if not tenant_id:
+            raise RoutingError("Trusted tenant identity is required to create a Plan")
+        return output.model_copy(
+            update={
+                "plan": output.plan.model_copy(
+                    update={
+                        "user_id": request.user.id,
+                        "tenant_id": tenant_id,
+                        "last_event_id": None,
+                        "state_version": 0,
+                    }
+                )
             }
         )
 

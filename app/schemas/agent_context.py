@@ -77,6 +77,10 @@ class MemoryContextItem(StrictBaseModel):
     subject_type: str | None = None
     subject_id: str | None = None
     ttl_expires_at: datetime | None = None
+    structured_value: JsonDict = Field(default_factory=dict)
+    current_revision_id: str | None = None
+    current_revision_no: int | None = Field(default=None, ge=1)
+    canonical_refs: list[str] = Field(default_factory=list)
     metadata: JsonDict = Field(default_factory=dict)
 
 

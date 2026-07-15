@@ -73,9 +73,23 @@ def test_plan_rejects_dependency_cycles() -> None:
         Plan.model_validate(
             {
                 "plan_id": "p1",
+                "user_id": "u1",
+                "tenant_id": "t1",
                 "steps": [
                     {"step_id": "a", "agent_id": "x", "description": "a", "depends_on": ["b"]},
                     {"step_id": "b", "agent_id": "x", "description": "b", "depends_on": ["a"]},
                 ],
+            }
+        )
+
+
+def test_plan_requires_non_empty_server_ownership() -> None:
+    with pytest.raises(ValueError):
+        Plan.model_validate(
+            {
+                "plan_id": "p1",
+                "user_id": "",
+                "tenant_id": "",
+                "steps": [{"step_id": "s1", "agent_id": "x", "description": "step"}],
             }
         )

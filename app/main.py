@@ -20,6 +20,7 @@ from app.api import (
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import create_all_tables
+from app.dependencies import build_memory_formation_runtime, build_memory_maintenance_runtime
 
 
 @asynccontextmanager
@@ -27,7 +28,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     if settings.storage_backend == "database":
         await create_all_tables(settings)
-    yield
+    formation_runtime = build_memory_formation_runtime(settings=settings)
+    maintenance_runtime = build_memory_maintenance_runtime(settings=settings)
+    await formation_runtime.start()
+    await maintenance_runtime.start()
+    try:
+        yield
+    finally:
+        await maintenance_runtime.stop()
+        await formation_runtime.stop()
 
 
 def create_app() -> FastAPI:

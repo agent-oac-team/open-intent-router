@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
+from app.core.security import memory_identity_signature
 from app.dependencies import (
     get_chat_history_service,
     get_knowledge_service,
@@ -72,15 +73,34 @@ def test_append_session_message_endpoint_validates_agent_chat_agent_id() -> None
 
 def test_route_endpoint_preserves_response_contract_shape() -> None:
     app = create_app()
-    app.dependency_overrides[get_router_service] = lambda: ContractRouterService()
+    service = ContractRouterService()
+    app.dependency_overrides[get_router_service] = lambda: service
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        app_env="production",
+        memory_identity_secret="route-test-secret",
+    )
     client = TestClient(app)
 
+    headers = {
+        "X-User-ID": "trusted-user",
+        "X-Tenant-ID": "trusted-tenant",
+        "X-Memory-Identity-Signature": memory_identity_signature(
+            user_id="trusted-user",
+            tenant_id="trusted-tenant",
+            secret="route-test-secret",
+        ),
+    }
     response = client.post(
         "/api/v1/route",
+        headers=headers,
         json={
             "request_id": "req_contract",
             "session_id": "s1",
-            "user": {"id": "u1", "roles": ["operator"]},
+            "user": {
+                "id": "forged-user",
+                "roles": ["operator"],
+                "attributes": {"tenant_id": "forged-tenant"},
+            },
             "input": {"text": "summarize this text"},
         },
     )
@@ -105,6 +125,19 @@ def test_route_endpoint_preserves_response_contract_shape() -> None:
     assert body["context"]["candidate_agent_ids"] == ["summarizer"]
     assert body["invocation"]["mode"] == "deferred"
     assert body["invocation"]["agent_id"] == "summarizer"
+    assert service.last_payload.user.id == "trusted-user"
+    assert service.last_payload.user.tenant_id == "trusted-tenant"
+
+    unsigned = client.post(
+        "/api/v1/route",
+        headers={"X-User-ID": "trusted-user", "X-Tenant-ID": "trusted-tenant"},
+        json={
+            "session_id": "s1",
+            "user": {"id": "trusted-user", "attributes": {"tenant_id": "trusted-tenant"}},
+            "input": {"text": "summarize this text"},
+        },
+    )
+    assert unsigned.status_code == 401
 
 
 async def test_memory_and_knowledge_debug_endpoints_return_admin_state() -> None:
@@ -139,7 +172,10 @@ async def test_memory_and_knowledge_debug_endpoints_return_admin_state() -> None
 
 
 class ContractRouterService:
+    last_payload: RouteRequest
+
     async def route(self, payload: RouteRequest) -> RouteResponse:
+        self.last_payload = payload
         return RouteResponse(
             request_id=payload.request_id or "req_contract",
             session_id=payload.session_id,

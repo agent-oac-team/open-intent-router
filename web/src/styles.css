@@ -882,6 +882,292 @@ textarea:focus {
   gap: 12px;
 }
 
+.memory-inspector,
+.memory-inspector-section,
+.memory-record-list,
+.formation-trace-list,
+.formation-decisions {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.memory-inspector-section {
+  padding: 11px 0 2px;
+  border-top: 1px solid var(--line);
+}
+
+.memory-inspector-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.memory-section-head,
+.formation-job-head,
+.formation-decision-head,
+.formation-summary,
+.operation-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.memory-section-head > div,
+.formation-job-head > div,
+.operation-feedback > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.memory-section-head span,
+.formation-job-head span,
+.operation-feedback span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.memory-section-head strong,
+.formation-job-head strong,
+.operation-feedback strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.memory-count {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: 1px solid rgba(104, 215, 194, 0.38);
+  border-radius: 50%;
+  background: rgba(104, 215, 194, 0.08);
+  color: var(--accent-2) !important;
+  font-size: 13px !important;
+  font-weight: 900;
+}
+
+.memory-record,
+.formation-trace-card,
+.formation-decision {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.032);
+}
+
+.memory-record {
+  padding-right: 46px;
+  border-left: 3px solid var(--accent-2);
+}
+
+.memory-record-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.memory-record-main strong,
+.memory-record-main span,
+.memory-reference,
+.formation-decision p,
+.formation-job-meta dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.memory-record-main strong {
+  color: var(--accent-2);
+  font-size: 12px;
+}
+
+.memory-record-main span,
+.memory-reference,
+.formation-decision p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.memory-reference {
+  display: block;
+}
+
+.memory-row-action {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+}
+
+.memory-section-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 68px;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.memory-considered {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 8px;
+}
+
+.memory-considered summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.memory-considered[open] summary {
+  margin-bottom: 8px;
+}
+
+.formation-summary {
+  align-items: flex-start;
+}
+
+.formation-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.formation-status.completed,
+.formation-status.success {
+  border-color: rgba(131, 230, 135, 0.44);
+  color: var(--good);
+}
+
+.formation-status.pending,
+.formation-status.claimed,
+.formation-status.retry,
+.formation-status.loading {
+  border-color: rgba(255, 204, 102, 0.44);
+  color: var(--warn);
+}
+
+.formation-status.dead_letter,
+.formation-status.error {
+  border-color: rgba(255, 116, 110, 0.5);
+  color: var(--bad);
+}
+
+.formation-counts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.formation-counts span {
+  padding: 3px 6px;
+  border: 1px solid rgba(214, 255, 99, 0.25);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.formation-trace-card {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.formation-job-meta {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.formation-job-meta div {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.formation-job-meta dt,
+.formation-job-meta dd {
+  margin: 0;
+  font-size: 11px;
+}
+
+.formation-job-meta dt {
+  color: var(--muted);
+}
+
+.formation-decision {
+  border-left: 3px solid var(--accent-2);
+}
+
+.formation-decision.pending {
+  border-left-color: var(--warn);
+}
+
+.formation-decision.rejected {
+  border-left-color: var(--bad);
+}
+
+.formation-decision-head strong {
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.formation-decision-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.redacted-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn) !important;
+}
+
+.pending-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.operation-feedback {
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 204, 102, 0.42);
+  border-radius: 8px;
+  background: rgba(255, 204, 102, 0.055);
+}
+
+.operation-feedback.completed {
+  border-color: rgba(131, 230, 135, 0.4);
+  background: rgba(131, 230, 135, 0.055);
+}
+
+.operation-feedback.conflict {
+  border-color: rgba(255, 116, 110, 0.46);
+  background: rgba(255, 116, 110, 0.055);
+}
+
 .selected-turn-strip,
 .storage-boundary,
 .error-list {
@@ -1303,8 +1589,20 @@ pre {
   .context-item-row,
   .runtime-debug-summary,
   .debug-filter-form,
-  .debug-row {
+  .debug-row,
+  .formation-job-meta div {
     grid-template-columns: 1fr;
+  }
+
+  .memory-section-head,
+  .formation-summary,
+  .formation-job-head,
+  .operation-feedback {
+    align-items: flex-start;
+  }
+
+  .formation-counts {
+    justify-content: flex-start;
   }
 
   .context-item-row,

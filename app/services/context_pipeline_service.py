@@ -685,6 +685,10 @@ def _bounded_projection(value: JsonDict | None, *, source: str) -> JsonDict | No
             "importance",
             "source",
             "ttl_expires_at",
+            "structured_value",
+            "current_revision_id",
+            "current_revision_no",
+            "canonical_refs",
         },
         "knowledge": {
             "item_id",

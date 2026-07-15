@@ -12,6 +12,8 @@ class MockLLMClient:
         plan = build_ordered_plan_from_text(
             text=payload.request.input.text,
             session_id=payload.request.session_id,
+            user_id=payload.request.user.id,
+            tenant_id=payload.request.user.tenant_id or "",
             candidates=candidates,
         )
 

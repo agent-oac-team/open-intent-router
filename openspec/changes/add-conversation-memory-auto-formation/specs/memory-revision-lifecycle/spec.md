@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
-### Requirement: OIR 确定性 policy 拥有最终记忆裁决权
-系统 SHALL 只允许确定性 OIR policy 将形成模型或 projector 的候选转换为 ADD、UPDATE、DELETE、NOOP、REJECT 或 CONFLICT_PENDING，模型输出本身 MUST NOT 执行 side effect。
+### Requirement: OIR 确定性 policy 拥有最终 side-effect 裁决权
+系统 SHALL 只允许 OIR policy 在确定性硬规则与结构化语义校验均通过后，将形成模型或 projector 的候选转换为 ADD、UPDATE、DELETE、NOOP、REJECT 或 CONFLICT_PENDING；formation/verifier 模型输出本身 MUST NOT 执行 side effect。
 
 #### Scenario: 高置信低风险新候选
 - **WHEN** 候选 evidence、scope、subject、tenant 和 sensitivity 均通过且 confidence >= 0.90，并且不存在同 memory key current projection
@@ -18,6 +18,36 @@
 #### Scenario: 模型提供跨租户目标
 - **WHEN** 候选 subject、target memory 或 tenant 与 job/canonical identity 不一致
 - **THEN** policy 从可信上下文重建 identity 或拒绝候选，且 MUST NOT 访问其他 tenant 的 memory
+
+### Requirement: 候选策略分离确定性硬规则与结构化语义校验
+系统 SHALL 将不可委托的身份、安全和生命周期硬规则，与 formation model 输出的结构化语义一致性校验实现为独立组件；policy orchestration MUST NOT 使用开放式自然语言正则作为 ADD、UPDATE 或 DELETE 的授权依据。
+
+#### Scenario: 硬规则校验候选
+- **WHEN** 任一候选进入 policy
+- **THEN** hard-rule 层验证 tenant/user/subject、scope、frozen source evidence refs、DLP、target memory ownership/uniqueness、TTL/lifecycle reason、memory key、idempotency、去重和删除授权，且这些检查不能被模型或 verifier 覆盖
+
+#### Scenario: 结构化语义字段一致
+- **WHEN** 候选的 `target/slot/value/temporal_scope/polarity/certainty/change_intent` 与 operation、scope、current projection 和 evidence role 一致
+- **THEN** semantic validator 返回结构化 confirmed outcome 供 policy 继续阈值/current-state 裁决，而不是重新解析 evidence 的自然语言含义
+
+#### Scenario: 结构化语义含糊或冲突
+- **WHEN** semantic fields 缺失、unknown、互相冲突，或无法确定与 current value 的关系
+- **THEN** policy 产生 PENDING/CONFLICT_PENDING，且 MUST NOT 自动执行 lifecycle side effect
+
+#### Scenario: 临时语言安全拦截存在
+- **WHEN** 为兼容已知事故暂时保留范围明确的语言安全拦截
+- **THEN** 该拦截只能降低为 PENDING/REJECT，MUST NOT 授权 ADD/UPDATE/DELETE，并应与结构化 semantic validator 隔离以便后续删除
+
+### Requirement: 可选语义 verifier 只能提供只读复核信号
+系统 MAY 对 PENDING 候选调用独立 `MemorySemanticVerifier`，但 verifier SHALL 只返回 confirmed、contradicted 或 uncertain 的 bounded verdict，且 MUST NOT 直接访问 lifecycle/provider side-effect 接口。
+
+#### Scenario: Verifier 未配置或失败
+- **WHEN** 候选需要语义复核但 verifier 未配置、超时、输出无效或返回 uncertain
+- **THEN** 候选保持 PENDING，不得自动升级为 accepted operation
+
+#### Scenario: Verifier 确认语义
+- **WHEN** verifier 对 bounded candidate/evidence 返回 confirmed
+- **THEN** policy 仍重新执行全部 hard rules、current revision precondition 和阈值检查，verifier verdict 本身不能绕过身份、DLP、删除授权或幂等边界
 
 ### Requirement: 长期记忆必须有可验证证据和敏感信息治理
 系统 SHALL 要求普通对话候选引用本批次用户 evidence 或 canonical event，并在写入前执行 DLP/sensitivity policy。

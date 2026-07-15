@@ -52,11 +52,11 @@ The system SHALL use mem0 behind a memory adapter for storing, updating, deletin
 The system SHALL own formation evidence, memory keys, policy decisions, current projections, revisions, conflicts, TTL, user deletion, and provider index status even when mem0 performs storage and retrieval operations.
 
 #### Scenario: Low-risk memory is written automatically
-- **WHEN** the OIR formation model or structured projector produces a user preference, confirmed stable fact, task projection, result reference, or summary with valid evidence and confidence >= 0.90
-- **THEN** deterministic OIR policy can accept it without a normal chat confirmation prompt and records the lifecycle decision
+- **WHEN** the OIR formation model or structured projector produces a user preference, confirmed stable fact, task projection, result reference, or summary with complete and consistent structured semantics, valid evidence, and confidence >= 0.90
+- **THEN** deterministic OIR hard rules and structured semantic validation can accept it without a normal chat confirmation prompt and record the lifecycle decision
 
 #### Scenario: Medium-risk memory is formed
-- **WHEN** candidate confidence is between 0.70 and 0.90 or the candidate conflicts ambiguously with current memory
+- **WHEN** candidate confidence is between 0.70 and 0.90, structured semantic fields are unknown/inconsistent, verifier is unavailable/uncertain, or the candidate conflicts ambiguously with current memory
 - **THEN** the system records PENDING/CONFLICT_PENDING and does not change current long-term memory
 
 #### Scenario: High-risk memory is formed

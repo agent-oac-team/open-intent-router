@@ -130,6 +130,8 @@ async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
         payload=AppendChatMessageRequest(
             source="agent_chat",
             role="agent",
+            user_id="u1",
+            tenant_id="t1",
             agent_id="summarizer",
             agent_session_id="child_session",
             content="child agent reply " * 120,
@@ -142,6 +144,8 @@ async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
             run_id="run_1",
             session_id="s1",
             agent_id="summarizer",
+            user_id="u1",
+            tenant_id="t1",
             status="completed",
             output={"summary": "recent result"},
             artifact_refs=[{"artifact_id": "a1", "uri": "memory://a1"}],
@@ -162,7 +166,11 @@ async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
             {
                 "session_id": "s1",
                 "source": "agent_chat",
-                "user": {"id": "u1", "roles": ["operator"]},
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
                 "input": {"text": "continue summary"},
                 "current_agent": {"agent_id": "summarizer", "agent_session_id": "child_session"},
                 "context_budget": {"max_tokens": 80, "per_item_token_limit": 12},
@@ -182,7 +190,9 @@ async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
         for item in context_pack["selection"]
     )
 
-    stored_agent_history = await chat_history.get_agent_history("s1", "summarizer")
+    stored_agent_history = await chat_history.get_agent_history(
+        "s1", "summarizer", tenant_id="t1", user_id="u1"
+    )
     assert [item.role for item in stored_agent_history] == ["agent", "user"]
 
     route_log = repositories["route_logs"].logs[-1]

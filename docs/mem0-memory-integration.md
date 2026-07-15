@@ -4,8 +4,10 @@
 
 ## 目标边界
 
-- OIR 继续拥有记忆治理事实：`memory_items` 保存 accepted memory，`memory_events` 保存 policy、mem0 add/search/delete history、外部 ID 映射和错误事件。
-- mem0 作为策略层，负责 extraction、semantic search、merge/update 和 memory vector index。
+- PostgreSQL 是唯一 canonical store：`memory_items` 保存 current projection，`memory_revisions` 保存版本链，`memory_events` 保存无敏感正文审计，formation job/outbox 保存可恢复工作状态。
+- OIR 的 formation model/projector 只提出候选，确定性 policy 和 lifecycle service 负责 evidence、DLP、ADD/UPDATE/DELETE/NOOP/PENDING/REJECT、revision 与硬删除。
+- mem0/Milvus 只负责已治理 memory 的派生向量写入、原位更新、删除和 semantic search；索引可从 PostgreSQL active projection 完整重建。
+- 普通自然语言先由 formation model 输出严格 semantic contract；hard rules 和 structured semantic validator 独立通过后才可进入 lifecycle。临时语言正则和 verifier 都不能直接授权 provider side effect。
 - 下游 Agent 只接收稳定的 `memory_context`，不直接感知 mem0、Milvus 或 PostgreSQL ledger。
 
 ## Collection 职责
@@ -104,6 +106,8 @@ DATABASE_URL=postgresql+asyncpg://oir:replace-with-password@localhost:5432/oir
 - `GET /api/v1/memories/debug`：查看当前记忆项、事件、mem0 degraded 状态、最近错误和 `memory_id` 到 `mem0_memory_id` 的映射。
 - 响应不会暴露 API key、Milvus token 或数据库密码，只显示 `*_configured` 类布尔状态或非敏感 collection/URI。
 
+自动形成的运行配置和上线步骤见 [`conversation-memory-formation-rollout.md`](conversation-memory-formation-rollout.md)。`/runtime/config` 还会暴露非敏感的 formation mode/version、worker 开关、queue depth、oldest pending、dead-letter、index out-of-sync 和 deletion pending 状态；完整指标由管理员接口 `GET /api/v1/admin/memories/metrics` 提供。
+
 ## 端到端流程
 
 ```mermaid
@@ -168,14 +172,22 @@ MEMORY_MEM0_FAIL_CLOSED=true \
 - mem0 client 可由 `Memory.from_config()` 初始化。
 - Milvus Lite 文件 URI 可用，collection 为 `oir_memory_vectors`。
 - 阿里 OpenAI-compatible embedding 配置可用，模型为 `text-embedding-v4`，维度为 1024。
-- 写入候选经过 OIR policy 后进入 mem0，并在 `memory_items` 与 `memory_events` 中保存 OIR ID、mem0 ID、collection、embedding model、status。
-- 后续 recall 能把 mem0 search 结果映射到既有 `memory_context`。
+- preference 经 policy 形成 revision 1，真实 recall 命中后以同一 OIR ID 和 mem0 external ID 原位更新为 revision 2。
+- 用户删除后 current/revision 正文和 provider vector 均被硬删除，只保留无正文 tombstone。
+- `infer=False` ADD 只形成一个 provider vector；rebuild 只从 PostgreSQL active projection 恢复索引。
+- owned 未完成 Plan 可由“继续上次任务”定位，同用户无关新任务不会被旧 task memory 强制续接。
 
 2026-07-09 本地真实 smoke 记录：
 
 - 配置：真实 PostgreSQL `oir` role + `oir` database、mem0 SDK、Milvus Lite `.data/oir_memory_milvus.db`、`oir_memory_vectors`、DashScope/OpenAI-compatible `text-embedding-v4`、1024 维、当前 DeepSeek router LLM。
 - 结果：`SMOKE_OK`，mem0 写入、PostgreSQL/OIR ledger、Milvus Lite collection、`memory_context` 召回闭环通过，`events=6`。
 - 非阻塞提示：未安装 `mem0ai[nlp]` 时 spaCy lemma/full model 会提示缺失，当前闭环仍通过；如后续需要更强 BM25/实体处理，可再安装 NLP extra 并单独回归。
+
+2026-07-14 扩展闭环 smoke 记录：
+
+- 配置：真实 PostgreSQL、mem0ai `2.0.11`、Milvus Lite `oir_memory_vectors`、真实 OpenAI-compatible embedding；使用随机隔离 tenant/user/Plan，脚本结束时清理 active smoke 数据。
+- 结果：`SMOKE_OK`；preference ADD/recall/revision UPDATE/delete、stable external-ID update、`infer=False` 单 vector、canonical rebuild、owned Plan continuation 和无关新任务隔离全部通过。
+- 非阻塞噪音：PostHog 提示、gRPC fork warning、未安装 `mem0ai[nlp]` 的 spaCy 提示不影响闭环结果。
 
 ### Knowledge 侧 Milvus 真实向量检索 Smoke
 

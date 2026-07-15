@@ -38,6 +38,21 @@ The system SHALL treat required Plan ownership as the only supported development
 - **WHEN** the Plan table schema is initialized for this change
 - **THEN** `plans.user_id` and `plans.tenant_id` are both NOT NULL and indexed for authorized lookup
 
+### Requirement: Plan execution retries expose a stable idempotency contract
+The system SHALL treat external Agent execution as at-least-once, SHALL renew the canonical Plan claim while an invocation is active, and SHALL provide the same stable execution idempotency key when an expired claim for the same attempt is recovered. HTTP Agents MUST honor the `Idempotency-Key` header and local-function Agents MUST transactionally deduplicate `invocation.context.plan_execution_idempotency_key` before committing external side effects. The claim token alone MUST NOT be described as an exactly-once guarantee.
+
+#### Scenario: Long-running Agent keeps its claim
+- **WHEN** an Agent invocation runs longer than the original Plan claim lease
+- **THEN** OIR renews the lease while the invocation is active so another executor cannot normally reclaim the same step
+
+#### Scenario: Executor crashes after an external side effect
+- **WHEN** the executor loses its claim or crashes before persisting Result after the Agent committed a side effect
+- **THEN** a recovered execution uses the same stable idempotency key and the Agent deduplicates the repeated request before applying another side effect
+
+#### Scenario: Blocked step is explicitly resumed
+- **WHEN** a blocked step is resumed with new user input after the prior claim was invalidated
+- **THEN** OIR creates a new execution attempt and a different idempotency key
+
 ## MODIFIED Requirements
 
 ### Requirement: Router can create multi-step plans
@@ -50,4 +65,3 @@ The system SHALL persist structured plans returned by routing when the decision 
 #### Scenario: Invalid plan is returned
 - **WHEN** routing returns a plan with missing step IDs, invalid dependencies, unavailable Agents, or the request lacks trusted ownership
 - **THEN** the system rejects or safely falls back from the route decision and MUST NOT persist the Plan
-

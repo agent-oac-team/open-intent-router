@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.security import MemoryActor, bind_trusted_user_context, require_memory_actor
 from app.dependencies import get_plan_executor, get_plan_service
-from app.schemas.common import UserContext
 from app.schemas.plans import (
     Plan,
     PlanActionRequest,
@@ -9,7 +9,7 @@ from app.schemas.plans import (
     PlanExecutionRequest,
     PlanExecutionResponse,
 )
-from app.services.plan_executor import PlanExecutor
+from app.services.plan_executor import PlanExecutor, plan_execution_prohibits_memory
 from app.services.plan_service import PlanService
 
 router = APIRouter(prefix="/api/v1", tags=["plans"])
@@ -18,9 +18,14 @@ router = APIRouter(prefix="/api/v1", tags=["plans"])
 @router.get("/plans/{plan_id}", response_model=Plan)
 async def get_plan(
     plan_id: str,
+    actor: MemoryActor = Depends(require_memory_actor),
     plan_service: PlanService = Depends(get_plan_service),
 ) -> Plan:
-    plan = await plan_service.get_plan(plan_id)
+    plan = await plan_service.get_plan(
+        plan_id,
+        tenant_id=actor.tenant_id,
+        user_id=actor.user_id,
+    )
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan
@@ -30,12 +35,21 @@ async def get_plan(
 async def plan_action(
     plan_id: str,
     payload: PlanActionRequest,
+    actor: MemoryActor = Depends(require_memory_actor),
     plan_service: PlanService = Depends(get_plan_service),
 ) -> PlanActionResponse:
     try:
         if payload.action == "confirm":
-            return await plan_service.confirm(plan_id)
-        return await plan_service.cancel(plan_id)
+            return await plan_service.confirm(
+                plan_id,
+                tenant_id=actor.tenant_id,
+                user_id=actor.user_id,
+            )
+        return await plan_service.cancel(
+            plan_id,
+            tenant_id=actor.tenant_id,
+            user_id=actor.user_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -44,12 +58,13 @@ async def plan_action(
 async def execute_plan(
     plan_id: str,
     payload: PlanExecutionRequest,
+    actor: MemoryActor = Depends(require_memory_actor),
     executor: PlanExecutor = Depends(get_plan_executor),
 ) -> PlanExecutionResponse:
     try:
         return await executor.execute(
             plan_id,
-            user=payload.user or UserContext(id="system"),
+            user=bind_trusted_user_context(payload.user, actor),
             input_values=payload.input,
             context=payload.context,
             max_steps=payload.max_steps,
@@ -62,14 +77,20 @@ async def execute_plan(
 async def confirm_and_execute_plan(
     plan_id: str,
     payload: PlanExecutionRequest,
+    actor: MemoryActor = Depends(require_memory_actor),
     plan_service: PlanService = Depends(get_plan_service),
     executor: PlanExecutor = Depends(get_plan_executor),
 ) -> PlanExecutionResponse:
     try:
-        await plan_service.confirm(plan_id)
+        await plan_service.confirm(
+            plan_id,
+            tenant_id=actor.tenant_id,
+            user_id=actor.user_id,
+            publish=not plan_execution_prohibits_memory(payload.input, payload.context),
+        )
         return await executor.execute(
             plan_id,
-            user=payload.user or UserContext(id="system"),
+            user=bind_trusted_user_context(payload.user, actor),
             input_values=payload.input,
             context=payload.context,
             max_steps=payload.max_steps,
@@ -82,12 +103,13 @@ async def confirm_and_execute_plan(
 async def resume_plan(
     plan_id: str,
     payload: PlanExecutionRequest,
+    actor: MemoryActor = Depends(require_memory_actor),
     executor: PlanExecutor = Depends(get_plan_executor),
 ) -> PlanExecutionResponse:
     try:
         return await executor.execute(
             plan_id,
-            user=payload.user or UserContext(id="system"),
+            user=bind_trusted_user_context(payload.user, actor),
             input_values=payload.input,
             context=payload.context,
             max_steps=payload.max_steps,

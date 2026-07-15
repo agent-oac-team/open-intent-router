@@ -10,12 +10,18 @@ class AgentRun(StrictBaseModel):
     request_id: str | None = None
     session_id: str
     agent_id: str
+    user_id: str | None = None
+    tenant_id: str | None = None
+    plan_id: str | None = None
+    step_id: str | None = None
     status: str
     invoker_type: str
     input: JsonDict = Field(default_factory=dict)
     output: JsonDict | None = None
     error: JsonDict | None = None
     latency_ms: int | None = None
+    formation_suppressed: bool = False
+    used_memory_ids: list[str] = Field(default_factory=list, max_length=50)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -25,9 +31,14 @@ class AgentResult(StrictBaseModel):
     run_id: str
     session_id: str
     agent_id: str
+    user_id: str | None = None
+    tenant_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
     status: str
+    message: str = ""
+    formation_suppressed: bool = False
+    formation_skip_audit_required: bool = False
     output: JsonDict | None = None
     artifact_refs: list[JsonDict] = Field(default_factory=list)
     error: JsonDict | None = None

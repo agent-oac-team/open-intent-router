@@ -12,6 +12,7 @@ from app.schemas.context import ContextCandidate
 from app.schemas.knowledge import KnowledgeSearchRequest
 from app.schemas.memory import MemoryRecallRequest
 from app.schemas.routing import RouteRequest
+from app.services.task_continuation import requests_plan_continuation
 
 
 @dataclass(frozen=True)
@@ -472,12 +473,17 @@ class MemoryRetrievalProvider(BaseContextProvider):
         return bool(context.agent and context.agent.context.memory.mode == "prefetch")
 
     def cache_key(self, context: ContextProviderContext) -> str:
+        active_plan = _active_plan_value(context)
         signature = {
             "provider": "memory_retrieval",
+            "stage": self.stage,
+            "agent_id": context.agent.agent_id if context.agent else None,
             "user_id": context.request.user.id,
             "tenant_id": context.request.user.tenant_id,
             "query": context.request.input.text,
             "scopes": self._scopes(context),
+            "active_plan_id": active_plan.get("plan_id") if active_plan else None,
+            "active_plan_status": active_plan.get("status") if active_plan else None,
             "policy_version": self.settings.context_policy_version,
         }
         return _retrieval_key(signature)
@@ -503,9 +509,21 @@ class MemoryRetrievalProvider(BaseContextProvider):
                 agent_id=agent_id,
                 subject_id=context.request.user.id,
                 max_items=max_items,
+                metadata_filters={"defer_usage_event": True},
             )
         )
         runtime = response.context
+        runtime_items = []
+        for item in runtime.items:
+            if str(item.scope) != "task_memory":
+                runtime_items.append(item)
+                continue
+            if not _matches_active_plan_pointer(item, context):
+                continue
+            if self.stage == "route":
+                # PlanProvider supplies the authoritative canonical projection.
+                continue
+            runtime_items.append(_canonicalize_task_pointer(item, context))
         candidates = [
             ContextCandidate(
                 candidate_id=f"memory:{item.memory_id}",
@@ -534,7 +552,7 @@ class MemoryRetrievalProvider(BaseContextProvider):
                     "status": runtime.status,
                 },
             )
-            for item in runtime.items
+            for item in runtime_items
         ]
         return ProviderCollection(
             candidates=candidates,
@@ -791,6 +809,94 @@ def _bind_candidate(
 def _memory_conflict_key(metadata: JsonDict) -> str | None:
     value = metadata.get("conflict_key")
     return str(value) if value else None
+
+
+def _active_plan_value(context: ContextProviderContext) -> JsonDict | None:
+    value = context.sources.get("active_plan")
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    if not isinstance(value, dict):
+        return None
+    if value.get("status") not in {"pending", "running", "blocked"}:
+        return None
+    if value.get("tenant_id") != context.request.user.tenant_id:
+        return None
+    if value.get("user_id") != context.request.user.id:
+        return None
+    return value
+
+
+def _matches_active_plan_pointer(item, context: ContextProviderContext) -> bool:
+    active_plan = _active_plan_value(context)
+    if active_plan is None:
+        return False
+    if context.purpose == "route_decision" and not requests_plan_continuation(
+        context.request.input.text
+    ):
+        return False
+    structured = item.structured_value
+    return bool(
+        structured.get("object_type") == "plan"
+        and structured.get("plan_id") == active_plan.get("plan_id")
+        and structured.get("tenant_id", active_plan.get("tenant_id"))
+        == active_plan.get("tenant_id")
+        and structured.get("user_id", active_plan.get("user_id")) == active_plan.get("user_id")
+    )
+
+
+def _canonicalize_task_pointer(item, context: ContextProviderContext):
+    active_plan = _active_plan_value(context) or {}
+    current_step_id = active_plan.get("current_step_id")
+    steps = active_plan.get("steps") if isinstance(active_plan.get("steps"), list) else []
+    current_step = next(
+        (
+            value
+            for value in steps
+            if isinstance(value, dict) and value.get("step_id") == current_step_id
+        ),
+        None,
+    )
+    completed = {
+        value.get("step_id")
+        for value in steps
+        if isinstance(value, dict) and value.get("status") == "completed"
+    }
+    next_step = next(
+        (
+            value
+            for value in steps
+            if isinstance(value, dict)
+            and value.get("status") == "pending"
+            and all(parent in completed for parent in value.get("depends_on", []))
+        ),
+        None,
+    )
+    structured = {
+        "object_type": "plan",
+        "plan_id": active_plan.get("plan_id"),
+        "tenant_id": active_plan.get("tenant_id"),
+        "user_id": active_plan.get("user_id"),
+        "session_id": active_plan.get("session_id"),
+        "status": active_plan.get("status"),
+        "current_step_id": current_step_id,
+        "current_step": current_step,
+        "next_step": next_step,
+    }
+    return item.model_copy(
+        update={
+            "content": (
+                f"Canonical active Plan {active_plan.get('plan_id')} is "
+                f"{active_plan.get('status')}; current step: {current_step_id or 'none'}."
+            ),
+            "structured_value": structured,
+            "metadata": {
+                **item.metadata,
+                "plan_id": active_plan.get("plan_id"),
+                "canonical_status": active_plan.get("status"),
+                "canonical_current_step_id": current_step_id,
+            },
+        }
+    )
 
 
 def _provider_status(status: str) -> str:

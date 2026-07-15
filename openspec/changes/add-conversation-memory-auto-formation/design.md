@@ -31,7 +31,7 @@ OIR 当前已经具备：
 
 - 建立一个可由 turn window、idle、structured event、sweeper 和 manual command 复用的 `MemoryFormationPipeline`。
 - 普通形成不阻塞主对话响应，结构化任务 projection 在事件持久化后立即产生。
-- 使用严格候选 schema 和确定性 policy 完成证据、DLP、阈值、key、幂等、去重、冲突和删除权限治理。
+- 使用严格结构化语义候选、确定性硬规则和保守 pending/verifier 边界完成证据、DLP、阈值、key、幂等、去重、冲突和删除权限治理；策略层不承担开放式自然语言理解。
 - 建立 current projection、revision/superseded、formation job、index state 和安全审计数据模型。
 - 让 mem0 只负责已治理 canonical memory 的向量存储、更新、删除和检索。
 - 让未完成 Plan 可通过低权威 task projection 跨会话定位，同时不污染无关新任务。
@@ -119,35 +119,44 @@ Plan、Run、Result、Artifact repository 在 canonical 变更成功后发布内
 - proposed operation：ADD/UPDATE/DELETE/IGNORE
 - scope、subject、memory key hint
 - canonical content/structured value
+- semantic target：`target`、`slot`、strict JSON `value`
+- `temporal_scope`：current turn、session、long term 或 unknown
+- `polarity`：affirmed、negated 或 unknown
+- `certainty` 与 change/delete intent
 - confidence、importance、sensitivity
 - evidence turn/role/bounded quote
 - optional target memory IDs 和 reason
 
-解析失败、timeout 或 schema violation 使 job 可重试或 dead-letter，不产生 partially accepted memory。模型自检是一个信号，最终 policy 不信任模型提供的 tenant、subject、target 或 sensitivity。
+解析失败、timeout 或 schema violation 使 job 可重试或 dead-letter，不产生 partially accepted memory。普通对话候选缺少结构化语义字段时不得进入自动 lifecycle。模型自检是一个信号，最终 policy 不信任模型提供的 tenant、subject identity、target memory ID 或 sensitivity。
 
-自然语言“记住/忘记/以后/这次”等通过模型语义和 evidence 处理，不建设关键词即写入的旁路。Request-level temporary/private flag 仍在进入 buffer 前确定性禁写。
+自然语言“记住/忘记/以后/这次”、语言偏好、文档引用与多语言同义表达由 formation model 解释并投影为结构化语义；policy 只验证字段间一致性、证据引用真实性和硬规则，不使用持续扩张的关键词/正则充当开放式语义解析器。Request-level temporary/private flag 仍在进入 buffer 前确定性禁写。
 
 替代方案：调用 mem0 `infer=True` 再把结果抄回 ledger。该方案让 provider prompt 绕过 OIR schema/policy，而且锁定版本不能提供所需 revision 和可靠 update/delete。
 
-### Decision 6: Policy 以 PostgreSQL current projection 为准
+### Decision 6: Policy 拆成硬规则、结构化语义校验和不确定性处理三层
 
-`MemoryCandidatePolicy` 按固定顺序执行：
+`MemoryCandidatePolicy` 只负责编排三个独立边界，最终仍以 PostgreSQL current projection 为准：
 
-1. 从 job/request/canonical event 重建 tenant/user/subject，拒绝模型跨主体目标。
-2. 验证 evidence、source authority、scope 和 bounded content。
-3. 执行 DLP/sensitivity policy。
-4. 计算 deterministic `memory_key`、candidate hash 和 idempotency key。
-5. 查询同 tenant/subject/scope/key 的 current projection。
-6. exact replay/hash/same value -> NOOP。
-7. 无 current 且 confidence >= 0.90 -> ADD。
-8. 明确新值且 confidence >= 0.90 -> UPDATE。
-9. `0.70 <= confidence < 0.90` 或含糊冲突 -> CONFLICT_PENDING。
-10. `<0.70` -> REJECT。
-11. DELETE 仅在 explicit user evidence + unique target，或 TTL/canonical lifecycle 原因成立时执行。
+1. `MemoryCandidateHardRules` 执行不可委托给模型的确定性检查：从 job/request/canonical event 重建 tenant/user/subject，验证 scope、证据 ref 是否真实属于 frozen source、bounded content、DLP/sensitivity、target memory ID ownership/uniqueness、TTL/canonical lifecycle reason、memory key、candidate hash、幂等、去重和删除授权。
+2. `MemoryCandidateSemanticValidator` 只消费 formation model/projector 已输出的结构化字段，验证 `target/slot/value/temporal_scope/polarity/certainty/change_intent` 与 proposed operation、scope、current projection 和 evidence role 是否一致。它不重新解析 evidence 自然语言，不维护多语言关键词或正则语义表。
+3. `MemoryCandidatePolicy` 根据 hard-rule outcome、semantic validation、current projection 和配置阈值产生 NOOP/ADD/UPDATE/DELETE/REJECT/PENDING。语义字段缺失、unknown、互相冲突、与 current state 无法确定关系，或 verifier 没有给出确定结论时，一律 PENDING，不得自动 side effect。
+
+固定决策顺序：
+
+1. hard rules reject/noop/authorized lifecycle outcome。
+2. structured semantic consistency outcome。
+3. exact replay/hash/same value -> NOOP。
+4. low confidence 或 hard policy violation -> REJECT。
+5. medium confidence、unknown/ambiguous semantics 或 unresolved conflict -> PENDING。
+6. 无 current 且 high-confidence long-term affirmed value -> ADD。
+7. 有 current 且 high-confidence explicit long-term replacement -> UPDATE。
+8. DELETE 仅在 hard rules 确认 explicit-user unique target，或 TTL/canonical lifecycle reason 成立时执行。
+
+可选 `MemorySemanticVerifier` 是独立只读模型接口，只能对候选和 bounded evidence 返回 confirmed/contradicted/uncertain verdict；它不能调用 repository、lifecycle 或 provider。verifier 未配置、失败或返回 uncertain 时保持 PENDING，不能因 verifier 置信度直接越过 hard rules 自动写入。
 
 mem0 semantic search 只可发现 potential duplicate，不能成为 current state 或最终裁决来源。阈值全部配置化，首版统一保守值，后续按 scope 评估校准。
 
-替代方案：让形成模型直接 tool-call ADD/UPDATE/DELETE。该方案无法保证 tenant、删除权限和可重复测试。
+替代方案：在 policy 内用不断增加的多语言正则重新解释 evidence。该方案会形成第二个不完整的自然语言模型，容易同时产生误写和正确路径回归，因此只允许保留范围明确、可删除的临时安全拦截，不能作为 ADD/UPDATE/DELETE 的授权依据。另一替代方案是让 formation/verifier 模型直接 tool-call lifecycle；该方案无法保证 tenant、删除权限和可重复测试。
 
 ### Decision 7: memory_key 和 revision 分离逻辑身份与内容
 
@@ -211,6 +220,8 @@ ownership 规则：
 - repository `get/get_active_by_session` 和 Plan service `confirm/cancel/execute` 使用 `tenant_id + user_id` 过滤。
 - Agent event 本身不重新指定 owner；系统先通过受信 run/session 关联找到已有 Plan，并继承 stored ownership 后更新。
 - 当前范围只支持个人 Plan。相同 tenant 的其他用户默认无权读取、确认、取消、执行或形成该 Plan 的 task memory。
+
+Plan-linked Agent execution 使用两层身份：短期 claim token 负责 repository CAS/lease fencing，稳定 execution idempotency key 负责下游副作用去重。OIR 在调用期间续租；lease 过期恢复同一 attempt 时复用 execution key，blocked 后显式恢复则创建新 attempt/key。外部调用语义是 at-least-once，不宣称 exactly-once；HTTP Agent 必须事务性处理 `Idempotency-Key`，local function 必须事务性处理 `invocation.context.plan_execution_idempotency_key`。进程内 single-flight 只降低同实例重复调用，不替代 Agent 的 durable 去重。
 
 替代方案：新增独立 `PlanRecord/PlanOwnership`，保持公共 Plan 不变。当前项目尚未正式使用，直接强化现有 Plan 更简单，也能避免 DTO 与持久化 owner 漂移。
 
@@ -309,6 +320,7 @@ formation turn/job payload 只保存执行所需 bounded 文本并使用短 TTL�
 - [Risk] active task memory 污染无关新任务 → derived authority、current input priority、relevance/budget selection、执行前回读 canonical Plan。
 - [Risk] LLM、Host 或前端伪造 Plan ownership → 最终 Plan validation/persistence 前从受信 UserContext 强制覆盖，所有 repository/service 操作按 stored tenant/user 授权。
 - [Risk] 多实例 sweeper 重复 claim → 数据库唯一约束、行锁/skip-locked、lease 和 frozen turn range。
+- [Risk] Agent 在副作用后、Result 提交前遇到 executor/数据库故障 → OIR 续租并在同一 recovered attempt 复用稳定 idempotency key；Agent 必须按该 key 事务性去重，因为 claim fencing 本身不能提供跨系统 exactly-once。
 - [Risk] PENDING 数量积压 → scope-specific metrics、过期策略、批量管理和保守自动 NOOP，不能自动升级为 UPDATE/DELETE。
 - [Trade-off] 普通新记忆不会在下一轮必然可用 → 接受 eventual consistency，换取不阻塞主回复和更好的跨轮判断。
 - [Trade-off] revision 增加存储成本 → revision 是纠错和审计必要成本；consolidation 不删除用户要求保留的历史，用户/TTL 删除时全部清理。

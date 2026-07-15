@@ -257,6 +257,9 @@ const mockMemoryDebug = {
       created_at: "2026-07-09T00:00:00Z",
     },
   ],
+  revisions: [],
+  formation_traces: [],
+  context_trace_links: [],
   metadata: {
     memory_enabled: true,
     strategy_provider: "mem0",
@@ -269,6 +272,162 @@ const mockMemoryDebug = {
     },
   },
 };
+
+type TurnTraceScenario =
+  | "recall_only"
+  | "delayed"
+  | "out_of_order"
+  | "pending_update"
+  | "shared_multi_turn"
+  | "completed_sensitive"
+  | "dead_letter";
+
+function turnMemoryDebug(
+  requestId: string,
+  scenario: TurnTraceScenario,
+  requestCount: number,
+) {
+  const second = requestId === "req_2";
+  const memoryId = second ? "mem_second_turn" : "mem_pref_language";
+  const content = second ? "第二轮使用的记忆。" : "用户偏好专业、稳健的表达。";
+  const includeFormation =
+    scenario === "pending_update" ||
+    scenario === "shared_multi_turn" ||
+    scenario === "completed_sensitive" ||
+    scenario === "dead_letter" ||
+    (scenario === "delayed" && requestCount > 1) ||
+    (scenario === "out_of_order" && requestCount > 2);
+  const pending = scenario === "pending_update";
+  const sensitive = scenario === "completed_sensitive";
+  const deadLetter = scenario === "dead_letter";
+  const formationTrace = includeFormation
+    ? {
+        job: {
+          job_id: "job_window_1",
+          trigger: scenario === "delayed" ? "idle" : "turn_window",
+          status: deadLetter ? "dead_letter" : pending ? "pending" : "completed",
+          mode: "enforced",
+          first_turn_id: "turn_source_1",
+          last_turn_id: "turn_source_5",
+          source_refs: ["turn_source_1", "turn_source_5"],
+          model_version: "formation-v1",
+          prompt_version: "prompt-v1",
+          policy_version: "policy-v1",
+          attempt_count: deadLetter ? 5 : 1,
+          max_attempts: 5,
+          last_error_code: deadLetter ? "provider_timeout" : null,
+          created_at: "2026-07-14T00:00:00Z",
+          updated_at: "2026-07-14T00:00:01Z",
+        },
+        links: {
+          request_ids: scenario === "shared_multi_turn" ? ["req_1", "req_2"] : [requestId],
+          session_id: "demo_session",
+          turn_ids: ["turn_source_1", "turn_source_5"],
+          run_ids: [second ? "run_2" : "run_1"],
+          memory_ids: [memoryId],
+          consumer: null,
+          projection_outcome: null,
+        },
+        scopes: ["user_preference"],
+        decisions: [
+          {
+            decision_id: pending ? "decision_pending_update" : "decision_completed",
+            operation_id: pending ? "operation_pending_update" : "operation_completed",
+            operation: pending ? "pending" : sensitive ? "reject" : "add",
+            proposed_operation: pending ? "update" : null,
+            decision_status: pending ? "pending" : sensitive ? "rejected" : "accepted",
+            reason_code: pending ? "confidence_pending" : sensitive ? "sensitive_content" : "accepted_add",
+            scope: "user_preference",
+            memory_key: "tenant:tenant_a:user:u1:preference:language",
+            memory_id: memoryId,
+            revision_id: "revision_1",
+            canonical_refs: [`canonical_${requestId}`],
+            content_preview: sensitive ? "alice@example.com 123-45-6789" : "Use concise answers",
+            content_redacted: sensitive,
+            index_status: pending ? null : "ready",
+            provider_status: pending ? null : "completed",
+          },
+        ],
+        candidate_count: 1,
+        decision_counts: { [pending ? "pending" : sensitive ? "reject" : "add"]: 1 },
+        semantic_contract_version: "v1",
+        semantic_validation_counts: { [pending ? "pending" : "confirmed"]: 1 },
+        semantic_verifier_counts: pending ? { not_configured: 1 } : {},
+        revision_ids: pending ? [] : ["revision_1"],
+        model_latency_ms: 12,
+        provider_latency_ms: 8,
+        usage: { input_tokens: 20 },
+      }
+    : null;
+  return {
+    items: [
+      {
+        memory_id: memoryId,
+        scope: "user_preference",
+        subject_type: "user",
+        subject_id: "u1",
+        user_id: "u1",
+        tenant_id: "tenant_a",
+        content,
+        source: "mem0",
+        confidence: 0.86,
+        importance: 0.7,
+        visibility: "user",
+        memory_key: "tenant:tenant_a:user:u1:preference:language",
+        current_revision_id: "revision_1",
+        current_revision_no: 1,
+        lifecycle_status: "active",
+        index_status: "ready",
+        canonical_refs: [requestId],
+        metadata: {},
+      },
+    ],
+    revisions: [],
+    events: sensitive
+      ? [
+          {
+            event_id: "event_sensitive",
+            event_type: "memory_decision_reject",
+            tenant_id: "tenant_a",
+            user_id: "u1",
+            payload: {
+              supporting_quote: "alice@example.com 123-45-6789",
+              provider_error: "postgresql://admin:supersecret@localhost/db",
+            },
+            created_at: "2026-07-14T00:00:01Z",
+          },
+        ]
+      : [],
+    formation_traces: formationTrace
+      ? scenario === "shared_multi_turn"
+        ? [formationTrace, formationTrace]
+        : [formationTrace]
+      : [],
+    context_trace_links: [
+      {
+        request_ids: [requestId],
+        session_id: "demo_session",
+        turn_ids: [second ? "turn_2" : "turn_1"],
+        run_ids: [second ? "run_2" : "run_1"],
+        memory_ids: [memoryId],
+        consumer: "agent",
+        projection_outcome: "included",
+        relevance: 0.91,
+        confidence: 0.86,
+      },
+      {
+        request_ids: [requestId],
+        session_id: "demo_session",
+        turn_ids: [second ? "turn_2" : "turn_1"],
+        run_ids: [second ? "run_2" : "run_1"],
+        memory_ids: ["mem_without_included_outcome"],
+        consumer: "router",
+        projection_outcome: null,
+      },
+    ],
+    metadata: { item_count: 1, event_count: sensitive ? 1 : 0 },
+  };
+}
 
 const mockKnowledgeDebug = {
   sources: [
@@ -327,11 +486,21 @@ const mockKnowledgeDebug = {
 describe("意图路由测试台", () => {
   let failMemoryDebug = false;
   let failRouteAndInvoke = false;
+  let denyMemoryOperation = false;
+  let conflictMemoryOperation = false;
+  let turnTraceScenario: TurnTraceScenario = "recall_only";
+  let turnTraceRequests = new Map<string, number>();
+  let resolveSlowMemoryTrace: ((response: Response) => void) | null = null;
 
   beforeEach(() => {
     vi.restoreAllMocks();
     failMemoryDebug = false;
     failRouteAndInvoke = false;
+    denyMemoryOperation = false;
+    conflictMemoryOperation = false;
+    turnTraceScenario = "recall_only";
+    turnTraceRequests = new Map();
+    resolveSlowMemoryTrace = null;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -380,7 +549,55 @@ describe("意图路由测试台", () => {
         if (url.endsWith("/api/v1/agents")) return json({ agents: [mockAgent] });
         if (url.includes("/api/v1/memories/debug")) {
           if (failMemoryDebug) return json({ detail: "memory debug down" }, 500);
+          const requestId = new URL(url, "http://test.local").searchParams.get("request_id");
+          if (requestId) {
+            const requestCount = (turnTraceRequests.get(requestId) || 0) + 1;
+            turnTraceRequests.set(requestId, requestCount);
+            if (turnTraceScenario === "out_of_order" && requestCount === 2) {
+              return new Promise<Response>((resolve) => {
+                resolveSlowMemoryTrace = resolve;
+              });
+            }
+            return json(turnMemoryDebug(requestId, turnTraceScenario, requestCount));
+          }
           return json(mockMemoryDebug);
+        }
+        if (url.includes("/api/v1/memories/pending/") && init?.method === "POST") {
+          if (denyMemoryOperation) return json({ detail: "Memory operation target not found" }, 404);
+          const action = url.endsWith("/reject") ? "reject" : "confirm";
+          return json({
+            operation_id: `operation_${action}`,
+            operation: action,
+            status: "completed",
+            memory_id: "mem_pref_language",
+            decision_id: "decision_pending_update",
+            index_operation_id: action === "confirm" ? "index_update_1" : null,
+            provider_status: action === "confirm" ? "pending" : null,
+            idempotent_replay: false,
+          });
+        }
+        if (/\/api\/v1\/memories\/operations\//.test(url)) {
+          return json({
+            operation_id: "index_update_1",
+            operation: "update",
+            status: conflictMemoryOperation ? "conflict" : "completed",
+            memory_id: "mem_pref_language",
+            index_operation_id: "index_update_1",
+            provider_status: conflictMemoryOperation ? null : "completed",
+            idempotent_replay: false,
+          });
+        }
+        if (/\/api\/v1\/memories\/[^/]+$/.test(url) && init?.method === "DELETE") {
+          if (denyMemoryOperation) return json({ detail: "Memory operation target not found" }, 404);
+          return json({
+            operation_id: "operation_delete",
+            operation: "delete",
+            status: "pending",
+            memory_id: "mem_pref_language",
+            index_operation_id: "index_delete_1",
+            provider_status: "pending",
+            idempotent_replay: false,
+          });
         }
         if (url.includes("/api/v1/knowledge/debug")) return json(mockKnowledgeDebug);
         if (url.endsWith("/api/v1/route-and-invoke") && init?.method === "POST") {
@@ -494,7 +711,8 @@ describe("意图路由测试台", () => {
     const transcript = screen.getByLabelText("聊天记录");
     expect(within(transcript).getByText("帮我生成一段客户邀约话术，语气专业一点。")).toBeInTheDocument();
     expect(await within(transcript).findByText("我会交给话术生成处理。")).toBeInTheDocument();
-    expect(within(transcript).getByText("Memory 1 / ok")).toBeInTheDocument();
+    expect(await within(transcript).findByText("Recall Used 1")).toBeInTheDocument();
+    expect(within(transcript).getByText("Memory considered 1")).toBeInTheDocument();
     expect(within(transcript).getByText("Knowledge 1 / ok")).toBeInTheDocument();
     expect(within(transcript).getByText("Citations 1")).toBeInTheDocument();
     expect(within(transcript).getByText("Denied 1")).toBeInTheDocument();
@@ -578,6 +796,8 @@ describe("意图路由测试台", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "选择第 1 轮对话" }));
     expect(await within(inspector).findByText("mem_pref_language")).toBeInTheDocument();
+    expect(within(inspector).getByText(/relevance 0\.91/)).toBeInTheDocument();
+    expect(within(inspector).getAllByText(/confidence 0\.86/).length).toBeGreaterThan(0);
 
     await userEvent.click(within(statusTabs).getByRole("tab", { name: /Knowledge/i }));
     expect(within(inspector).getByText("风险等级说明")).toBeInTheDocument();
@@ -599,7 +819,8 @@ describe("意图路由测试台", () => {
 
     await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
     const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
-    expect(within(inspector).getByText("本轮没有可用 Memory Context")).toBeInTheDocument();
+    expect(within(inspector).getByText("本轮没有实际进入 Router / Agent 的记忆")).toBeInTheDocument();
+    expect(within(inspector).getByText("本轮请求失败，未生成可关联的 Memory Trace。")).toBeInTheDocument();
     expect(within(inspector).queryByText("mem_pref_language")).not.toBeInTheDocument();
   });
 
@@ -632,6 +853,178 @@ describe("意图路由测试台", () => {
     await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
     const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
     expect(within(inspector).getByText("mem_pref_language")).toBeInTheDocument();
+  });
+
+  it("异步 idle formation 可在原回复后自动轮询并挂回本轮", async () => {
+    turnTraceScenario = "delayed";
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(await within(inspector).findByText("等待五轮窗口或空闲形成")).toBeInTheDocument();
+
+    expect(
+      await within(inspector).findByText("job_window_1", {}, { timeout: 3500 }),
+    ).toBeInTheDocument();
+    expect(within(inspector).getByText(/idle · enforced/)).toBeInTheDocument();
+    expect(within(inspector).getByText(/v1 · validation confirmed 1 · verifier -/)).toBeInTheDocument();
+    expect(within(screen.getByLabelText("聊天记录")).getByText("ADD 1")).toBeInTheDocument();
+  });
+
+  it("较早的慢轮询响应不会覆盖较新的 completed trace", async () => {
+    turnTraceScenario = "out_of_order";
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    const refresh = await within(inspector).findByRole("button", { name: "刷新本轮 Memory Trace" });
+
+    await userEvent.click(refresh);
+    await userEvent.click(refresh);
+    expect(await within(inspector).findByText("job_window_1")).toBeInTheDocument();
+    expect(resolveSlowMemoryTrace).not.toBeNull();
+    resolveSlowMemoryTrace!(await json(turnMemoryDebug("req_1", "recall_only", 1)));
+
+    await waitFor(() => expect(within(inspector).getByText("job_window_1")).toBeInTheDocument());
+    expect(within(inspector).getByText("已完成")).toBeInTheDocument();
+  });
+
+  it("五轮 job 展示完整 source range 并提供 pending 更新控制", async () => {
+    turnTraceScenario = "pending_update";
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(await within(inspector).findByText("turn_source_1 → turn_source_5")).toBeInTheDocument();
+    expect(within(inspector).getByText("confidence_pending")).toBeInTheDocument();
+    expect(within(inspector).getByText("turn_source_1 · turn_source_5")).toBeInTheDocument();
+    expect(within(inspector).getByText("run_1")).toBeInTheDocument();
+    expect(within(inspector).getByText("canonical_req_1")).toBeInTheDocument();
+    expect(within(inspector).getByText("PENDING 1")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("聊天记录")).getByText("PENDING 1")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("聊天记录")).queryByText("UPDATE 1")).not.toBeInTheDocument();
+
+    await userEvent.click(within(inspector).getByRole("button", { name: "确认" }));
+    expect(await within(inspector).findByText("confirm")).toBeInTheDocument();
+    expect(within(inspector).getByText("completed / pending")).toBeInTheDocument();
+    const confirmCall = vi.mocked(fetch).mock.calls.find(([input]) =>
+      String(input).endsWith("/api/v1/memories/pending/decision_pending_update/confirm"),
+    );
+    expect(JSON.parse(String(confirmCall?.[1]?.body))).toEqual({
+      idempotency_key: "console:confirm:decision_pending_update",
+      reason: "confirmed_in_conversation_console",
+      expected_revision_id: "revision_1",
+    });
+    expect(new Headers(confirmCall?.[1]?.headers).get("X-User-ID")).toBe("u1");
+    expect(new Headers(confirmCall?.[1]?.headers).get("X-Tenant-ID")).toBe("tenant_a");
+    await userEvent.click(within(inspector).getByRole("button", { name: "刷新 Memory Operation 状态" }));
+    expect(await within(inspector).findByText("completed / completed")).toBeInTheDocument();
+  });
+
+  it("operation precondition 冲突显示 conflict 状态", async () => {
+    turnTraceScenario = "pending_update";
+    conflictMemoryOperation = true;
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    await userEvent.click(await within(inspector).findByRole("button", { name: "确认" }));
+    await userEvent.click(await within(inspector).findByRole("button", { name: "刷新 Memory Operation 状态" }));
+
+    const feedback = await within(inspector).findByRole("status");
+    expect(within(feedback).getByText("conflict / canonical")).toBeInTheDocument();
+    expect(feedback).toHaveClass("conflict");
+  });
+
+  it("同一 multi-turn job 在参与轮次中共享且不重复 decision", async () => {
+    turnTraceScenario = "shared_multi_turn";
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.type(screen.getByLabelText("用户消息"), "第二轮问题");
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+
+    expect(await within(inspector).findAllByText("job_window_1")).toHaveLength(1);
+    expect(within(inspector).getAllByText("accepted_add")).toHaveLength(1);
+    expect(within(screen.getByLabelText("聊天记录")).getAllByText("ADD 1")).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "选择第 1 轮对话" }));
+    expect(within(inspector).getAllByText("job_window_1")).toHaveLength(1);
+    expect(within(inspector).getAllByText("accepted_add")).toHaveLength(1);
+  });
+
+  it("pending 操作被拒绝时只显示有界 denial", async () => {
+    turnTraceScenario = "pending_update";
+    denyMemoryOperation = true;
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    await userEvent.click(await within(inspector).findByRole("button", { name: "拒绝" }));
+    expect(await within(inspector).findByText(/404.*Memory operation target not found/)).toBeInTheDocument();
+  });
+
+  it("删除实际使用的记忆需要破坏性确认并显示 pending", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    await userEvent.click(await within(inspector).findByRole("button", { name: "删除记忆 mem_pref_language" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(await within(inspector).findByText("delete")).toBeInTheDocument();
+    expect(within(inspector).getByText("pending / pending")).toBeInTheDocument();
+    const deleteCall = vi.mocked(fetch).mock.calls.find(
+      ([input, init]) => String(input).endsWith("/api/v1/memories/mem_pref_language") && init?.method === "DELETE",
+    );
+    expect(JSON.parse(String(deleteCall?.[1]?.body))).toEqual({
+      idempotency_key: "console:delete:mem_pref_language",
+      reason: "deleted_in_conversation_console",
+      expected_revision_id: "revision_1",
+    });
+  });
+
+  it("敏感 rejection 与 raw trace 都不会展示原值", async () => {
+    turnTraceScenario = "completed_sensitive";
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(await within(inspector).findByText("sensitive_content")).toBeInTheDocument();
+    expect(within(inspector).getByText("[redacted]")).toBeInTheDocument();
+    expect(within(inspector).queryByText(/alice@example\.com/)).not.toBeInTheDocument();
+    expect(within(inspector).queryByText(/123-45-6789/)).not.toBeInTheDocument();
+    expect(within(inspector).queryByText(/supersecret/)).not.toBeInTheDocument();
+  });
+
+  it("dead-letter formation 显示安全错误且不标记写入成功", async () => {
+    turnTraceScenario = "dead_letter";
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(await within(inspector).findByText("dead_letter")).toBeInTheDocument();
+    expect(within(inspector).getByText("provider_timeout")).toBeInTheDocument();
+    expect(within(inspector).queryByText("已完成")).not.toBeInTheDocument();
   });
 });
 

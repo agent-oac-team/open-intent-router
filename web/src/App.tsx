@@ -25,7 +25,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, isApiError } from "./api";
 import type {
@@ -39,6 +39,10 @@ import type {
   KnowledgeDebugResponse,
   MemoryDebugFilters,
   MemoryDebugResponse,
+  MemoryFormationDecisionView,
+  MemoryFormationTraceView,
+  MemoryManagementOperationResponse,
+  MemoryTraceLink,
   JsonRecord,
   JsonValue,
   RouteAndInvokeResponse,
@@ -207,6 +211,7 @@ function App() {
   const [invokeResponse, setInvokeResponse] = useState<RouteAndInvokeResponse["result"] | null>(null);
   const [conversationTurns, setConversationTurns] = useState<ConversationTurn[]>([]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  const memoryTraceRequestVersions = useRef(new Map<string, number>());
   const [plan, setPlan] = useState<JsonRecord | null>(null);
   const [eventResponse, setEventResponse] = useState<JsonRecord | null>(null);
   const [busy, setBusy] = useState(false);
@@ -237,6 +242,17 @@ function App() {
   );
   const inspectedTurn = selectedTurn || latestTurn;
 
+  const pendingMemoryPolls = useMemo(
+    () =>
+      conversationTurns.filter(
+        (turn) =>
+          turn.requestId &&
+          turn.memoryTrace.status === "pending" &&
+          turn.memoryTrace.pollCount < 20,
+      ),
+    [conversationTurns],
+  );
+
   useEffect(() => {
     void bootstrap();
   }, []);
@@ -254,6 +270,14 @@ function App() {
       setForm(agentToForm(selectedAgent));
     }
   }, [selectedAgent]);
+
+  useEffect(() => {
+    if (!pendingMemoryPolls.length) return undefined;
+    const timer = window.setTimeout(() => {
+      pendingMemoryPolls.forEach((turn) => void refreshTurnMemoryTrace(turn));
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [pendingMemoryPolls]);
 
   async function bootstrap() {
     setBusy(true);
@@ -421,6 +445,8 @@ function App() {
     const userMessageId = `msg_user_${timestamp}`;
     const assistantMessageId = `msg_assistant_${timestamp}`;
     const createdAt = new Date().toISOString();
+    const turnUserId = userId.trim();
+    const turnTenantId = tenantId.trim();
     const pendingTurn: ConversationTurn = {
       id: turnId,
       mode: executionMode,
@@ -437,6 +463,9 @@ function App() {
       memoryContext: null,
       knowledgeContext: null,
       agentContext: null,
+      userId: turnUserId,
+      tenantId: turnTenantId,
+      memoryTrace: { status: "loading", data: null, pollCount: 0 },
     };
     setConversationTurns((current) => [
       ...current,
@@ -475,6 +504,14 @@ function App() {
           ),
         );
         setSelectedTurnId(turnId);
+        void loadTurnMemoryTrace({
+          turnId,
+          requestId: result.request_id,
+          mode: executionMode,
+          userId: turnUserId,
+          tenantId: turnTenantId,
+          pollCount: 0,
+        });
       } else {
         const result = await api.routeAndInvoke(payload);
         const trace = traceFromRoute(result.route);
@@ -503,6 +540,14 @@ function App() {
           ),
         );
         setSelectedTurnId(turnId);
+        void loadTurnMemoryTrace({
+          turnId,
+          requestId: result.route.request_id,
+          mode: executionMode,
+          userId: turnUserId,
+          tenantId: turnTenantId,
+          pollCount: 0,
+        });
       }
     } catch (error) {
       setNotice(formatError(error));
@@ -519,6 +564,12 @@ function App() {
                 memoryContext: null,
                 knowledgeContext: null,
                 agentContext: null,
+                memoryTrace: {
+                  status: "error",
+                  data: null,
+                  error: "本轮请求失败，未生成可关联的 Memory Trace。",
+                  pollCount: 0,
+                },
                 assistantMessage: {
                   ...turn.assistantMessage,
                   content: "请求失败，请查看页面提示或右侧调试信息。",
@@ -534,11 +585,104 @@ function App() {
     }
   }
 
+  async function refreshTurnMemoryTrace(turn: ConversationTurn) {
+    if (!turn.requestId) return;
+    await loadTurnMemoryTrace({
+      turnId: turn.id,
+      requestId: turn.requestId,
+      mode: turn.mode,
+      userId: turn.userId,
+      tenantId: turn.tenantId,
+      pollCount: turn.memoryTrace.pollCount,
+    });
+  }
+
+  async function loadTurnMemoryTrace(target: {
+    turnId: string;
+    requestId: string;
+    mode: ExecutionMode;
+    userId: string;
+    tenantId: string;
+    pollCount: number;
+  }) {
+    const requestVersion = (memoryTraceRequestVersions.current.get(target.turnId) || 0) + 1;
+    memoryTraceRequestVersions.current.set(target.turnId, requestVersion);
+    if (!target.userId || !target.tenantId) {
+      setConversationTurns((current) =>
+        current.map((turn) =>
+          turn.id === target.turnId
+            ? {
+                ...turn,
+                memoryTrace: {
+                  status: "error",
+                  data: null,
+                  error: "Memory Trace 需要可信用户与租户身份。",
+                  pollCount: target.pollCount,
+                },
+              }
+            : turn,
+        ),
+      );
+      return;
+    }
+    try {
+      const data = await api.memoryDebug(
+        {
+          user_id: target.userId,
+          tenant_id: target.tenantId,
+          request_id: target.requestId,
+          limit: 100,
+        },
+        { userId: target.userId, tenantId: target.tenantId },
+      );
+      if (memoryTraceRequestVersions.current.get(target.turnId) !== requestVersion) return;
+      const nextPollCount = target.pollCount + 1;
+      setConversationTurns((current) =>
+        current.map((turn) =>
+          turn.id === target.turnId && turn.requestId === target.requestId
+            ? {
+                ...turn,
+                memoryTrace: {
+                  status: memoryTraceStatus(
+                    data,
+                    target.mode,
+                    nextPollCount,
+                    runtime?.memory_formation_mode,
+                  ),
+                  data,
+                  pollCount: nextPollCount,
+                  updatedAt: new Date().toISOString(),
+                },
+              }
+            : turn,
+        ),
+      );
+    } catch (error) {
+      if (memoryTraceRequestVersions.current.get(target.turnId) !== requestVersion) return;
+      setConversationTurns((current) =>
+        current.map((turn) =>
+          turn.id === target.turnId && turn.requestId === target.requestId
+            ? {
+                ...turn,
+                memoryTrace: {
+                  status: "error",
+                  data: null,
+                  error: formatError(error),
+                  pollCount: target.pollCount + 1,
+                },
+              }
+            : turn,
+        ),
+      );
+    }
+  }
+
   function startNewConversation() {
     const nextSessionId = `demo_${Date.now()}`;
     setSessionId(nextSessionId);
     setMessage("");
     setConversationTurns([]);
+    memoryTraceRequestVersions.current.clear();
     setSelectedTurnId(null);
     setRouteResponse(null);
     setInvokeResponse(null);
@@ -561,7 +705,7 @@ function App() {
       return;
     }
     try {
-      setPlan(await api.getPlan(targetPlanId));
+      setPlan(await api.getPlan(targetPlanId, { userId: userId.trim(), tenantId: tenantId.trim() }));
     } catch (error) {
       setNotice(formatError(error));
     }
@@ -598,17 +742,19 @@ function App() {
     setNotice("");
     try {
       if (action === "cancel") {
-        await api.planAction(targetPlanId, "cancel");
-        setPlan(await api.getPlan(targetPlanId));
+        const identity = { userId: userId.trim(), tenantId: tenantId.trim() };
+        await api.planAction(targetPlanId, "cancel", identity);
+        setPlan(await api.getPlan(targetPlanId, identity));
         return;
       }
       const payload = buildPlanExecutionPayload();
+      const identity = { userId: userId.trim(), tenantId: tenantId.trim() };
       const response =
         action === "confirm-and-execute"
-          ? await api.confirmAndExecutePlan(targetPlanId, payload)
+          ? await api.confirmAndExecutePlan(targetPlanId, payload, identity)
           : action === "resume"
-            ? await api.resumePlan(targetPlanId, payload)
-            : await api.executePlan(targetPlanId, payload);
+            ? await api.resumePlan(targetPlanId, payload, identity)
+            : await api.executePlan(targetPlanId, payload, identity);
       setPlan(response.plan);
       if (response.results[0]) {
         const first = response.results[0];
@@ -757,6 +903,7 @@ function App() {
             onRefreshPlan={refreshPlan}
             onPlanAction={runPlanAction}
             onSubmitEvent={submitEvent}
+            onRefreshMemoryTrace={refreshTurnMemoryTrace}
           />
         </aside>
       </section>
@@ -1281,9 +1428,19 @@ function TurnTraceBadges({ turn }: { turn: ConversationTurn }) {
   const memory = contextTraceSummary(turn.memoryContext ?? null);
   const knowledge = contextTraceSummary(turn.knowledgeContext ?? null);
   const deniedCount = deniedSourceCount(turn.knowledgeContext ?? null);
+  const recallUsed = actualRecallRecords(turn.memoryTrace.data).length;
+  const formationCounts = formationDecisionCounts(
+    uniqueFormationTraces(turn.memoryTrace.data?.formation_traces || []),
+  );
   return (
     <div className="turn-trace-badges">
-      <span>Memory {memory.label}</span>
+      <span>Recall Used {turn.memoryTrace.status === "loading" ? "…" : recallUsed}</span>
+      <span>Memory considered {memory.itemCount}</span>
+      {Object.entries(formationCounts).map(([operation, count]) => (
+        <span key={operation}>{operation.toUpperCase()} {count}</span>
+      ))}
+      {turn.memoryTrace.status === "pending" ? <span>Formation pending</span> : null}
+      {turn.memoryTrace.status === "error" ? <span>Formation error</span> : null}
       <span>Knowledge {knowledge.label}</span>
       <span>Citations {knowledge.citationCount}</span>
       <span>Denied {deniedCount}</span>
@@ -1303,6 +1460,7 @@ function StatusInspector({
   onRefreshPlan,
   onPlanAction,
   onSubmitEvent,
+  onRefreshMemoryTrace,
 }: {
   turn: ConversationTurn | null;
   plan: JsonRecord | null;
@@ -1314,6 +1472,7 @@ function StatusInspector({
   onRefreshPlan: () => void;
   onPlanAction: (action: "confirm-and-execute" | "execute" | "resume" | "cancel") => void;
   onSubmitEvent: () => void;
+  onRefreshMemoryTrace: (turn: ConversationTurn) => void;
 }) {
   const [activeTab, setActiveTab] = useState<StatusTab>("route");
   const routeResponse = turn?.routeResponse || null;
@@ -1366,7 +1525,11 @@ function StatusInspector({
         ) : null}
         {activeTab === "context" ? <ContextTab routeResponse={routeResponse} /> : null}
         {activeTab === "memory" ? (
-          <MemoryTab memoryContext={turn?.memoryContext || null} agentContext={turn?.agentContext || null} routeResponse={routeResponse} />
+          <MemoryTab
+            turn={turn}
+            routeResponse={routeResponse}
+            onRefresh={() => turn && onRefreshMemoryTrace(turn)}
+          />
         ) : null}
         {activeTab === "knowledge" ? (
           <KnowledgeTab knowledgeContext={turn?.knowledgeContext || null} routeResponse={routeResponse} />
@@ -1592,50 +1755,377 @@ function ContextTab({ routeResponse }: { routeResponse: RouteResponse | null }) 
 }
 
 function MemoryTab({
-  memoryContext,
-  agentContext,
+  turn,
   routeResponse,
+  onRefresh,
 }: {
-  memoryContext: JsonRecord | null;
-  agentContext: JsonRecord | null;
+  turn: ConversationTurn | null;
   routeResponse: RouteResponse | null;
+  onRefresh: () => void;
 }) {
+  const [operation, setOperation] = useState<MemoryManagementOperationResponse | null>(null);
+  const [operationBusy, setOperationBusy] = useState("");
+  const [operationError, setOperationError] = useState("");
+  const memoryContext = turn?.memoryContext || null;
+  const agentContext = turn?.agentContext || null;
   const legacyMemory = contextValue(routeResponse, "memory") || metadataValue(routeResponse, "memory");
-  if (!memoryContext && !agentContext && !legacyMemory) {
-    return <EmptyState icon={<Database size={20} />} label="本轮没有可用 Memory Context" />;
-  }
-  const summary = contextTraceSummary(memoryContext);
-  const items = contextItems(memoryContext);
+  const traceState = turn?.memoryTrace;
+  const traceData = traceState?.data;
+  const recall = actualRecallRecords(traceData);
+  const actualIds = new Set(recall.map((item) => item.memoryId));
+  const considered = contextItems(memoryContext).filter(
+    (item) => !actualIds.has(String(item.memory_id || item.item_id || "")),
+  );
+  const traces = uniqueFormationTraces(traceData?.formation_traces || []);
+  const formationCounts = formationDecisionCounts(traces);
   const errors = stringArrayValue(memoryContext?.errors);
+
+  useEffect(() => {
+    setOperation(null);
+    setOperationError("");
+    setOperationBusy("");
+  }, [turn?.id]);
+
+  async function resolveDecision(
+    decision: MemoryFormationDecisionView,
+    action: "confirm" | "reject",
+  ) {
+    if (!turn || !decision.decision_id) return;
+    if (
+      action === "confirm" &&
+      decision.proposed_operation === "delete" &&
+      !window.confirm("确认删除这条记忆？删除完成后正文与派生索引不可恢复。")
+    ) {
+      return;
+    }
+    const actionKey = `${action}:${decision.decision_id}`;
+    setOperationBusy(actionKey);
+    setOperationError("");
+    try {
+      const result = await api.resolvePendingMemory(
+        decision.decision_id,
+        action,
+        {
+          idempotency_key: `console:${action}:${decision.decision_id}`,
+          reason: action === "confirm" ? "confirmed_in_conversation_console" : "rejected_in_conversation_console",
+          expected_revision_id: decision.revision_id || null,
+        },
+        { userId: turn.userId, tenantId: turn.tenantId },
+      );
+      setOperation(result);
+      onRefresh();
+    } catch (error) {
+      setOperationError(formatError(error));
+    } finally {
+      setOperationBusy("");
+    }
+  }
+
+  async function deleteMemory(memoryId: string, revisionId?: string | null) {
+    if (!turn) return;
+    if (!window.confirm("确认删除这条记忆？删除完成后正文与派生索引不可恢复。")) return;
+    const actionKey = `delete:${memoryId}`;
+    setOperationBusy(actionKey);
+    setOperationError("");
+    try {
+      const result = await api.deleteMemory(
+        memoryId,
+        {
+          idempotency_key: `console:delete:${memoryId}`,
+          reason: "deleted_in_conversation_console",
+          expected_revision_id: revisionId || null,
+        },
+        { userId: turn.userId, tenantId: turn.tenantId },
+      );
+      setOperation(result);
+      onRefresh();
+    } catch (error) {
+      setOperationError(formatError(error));
+    } finally {
+      setOperationBusy("");
+    }
+  }
+
+  async function refreshOperation() {
+    if (!turn || !operation?.index_operation_id) return;
+    setOperationBusy("operation-status");
+    setOperationError("");
+    try {
+      setOperation(
+        await api.memoryOperation(operation.index_operation_id, {
+          userId: turn.userId,
+          tenantId: turn.tenantId,
+        }),
+      );
+      onRefresh();
+    } catch (error) {
+      setOperationError(formatError(error));
+    } finally {
+      setOperationBusy("");
+    }
+  }
+
+  if (!turn) {
+    return <EmptyState icon={<Database size={20} />} label="选择一轮对话查看 Memory Trace" />;
+  }
+
   return (
-    <div className="status-section">
-      <ContextResultHeader title="Memory Context" status={summary.status} itemCount={summary.itemCount} />
-      {memoryContext?.summary ? <p className="context-summary-text">{String(memoryContext.summary)}</p> : null}
-      {items.length ? (
-        <div className="debug-list">
-          {items.map((item, index) => (
-            <article className="debug-row" key={String(item.memory_id || item.item_id || index)}>
-              <div>
-                <strong>{String(item.memory_id || item.item_id || `memory_${index + 1}`)}</strong>
-                <span>{String(item.content || "")}</span>
-              </div>
-              <div className="context-item-meta">
-                {item.scope ? <span>{String(item.scope)}</span> : null}
-                {numberValue(item.relevance) !== null ? <span>relevance {numberValue(item.relevance)?.toFixed(2)}</span> : null}
-                {numberValue(item.confidence) !== null ? <span>confidence {numberValue(item.confidence)?.toFixed(2)}</span> : null}
-                {item.source ? <span>{String(item.source)}</span> : null}
-                {item.ttl_expires_at ? <span>TTL {String(item.ttl_expires_at)}</span> : null}
-              </div>
-            </article>
-          ))}
+    <div className="memory-inspector">
+      <section className="memory-inspector-section" aria-label="Recall Used">
+        <div className="memory-section-head">
+          <div>
+            <span>Context Trace</span>
+            <strong>Recall Used</strong>
+          </div>
+          <span className="memory-count">{recall.length}</span>
+        </div>
+        {traceState?.status === "loading" && !traceData ? (
+          <MemorySectionState icon={<Loader2 className="spin" size={17} />} label="正在读取本轮 Recall Trace" />
+        ) : recall.length ? (
+          <div className="memory-record-list">
+            {recall.map((record) => (
+              <article className="memory-record" key={record.memoryId}>
+                <div className="memory-record-main">
+                  <strong>{record.memoryId}</strong>
+                  <span>{record.item?.content || "正文不可用或已删除"}</span>
+                </div>
+                <div className="context-item-meta">
+                  {record.item?.current_revision_id ? <span>{record.item.current_revision_id}</span> : null}
+                  {record.item?.scope ? <span>{record.item.scope}</span> : null}
+                  {record.item?.source ? <span>{record.item.source}</span> : null}
+                  {typeof record.item?.confidence === "number" ? (
+                    <span>confidence {record.item.confidence.toFixed(2)}</span>
+                  ) : null}
+                  {record.links.map((link) => (
+                    <span key={`${link.consumer || "unknown"}:${link.projection_outcome || "included"}`}>
+                      {link.consumer || "unknown"} / {link.projection_outcome || "included"}
+                      {typeof link.relevance === "number" ? ` / relevance ${link.relevance.toFixed(2)}` : ""}
+                      {typeof link.confidence === "number" ? ` / confidence ${link.confidence.toFixed(2)}` : ""}
+                    </span>
+                  ))}
+                </div>
+                {record.item?.canonical_refs?.length ? (
+                  <span className="memory-reference">{record.item.canonical_refs.join(" · ")}</span>
+                ) : null}
+                {record.item?.memory_id ? (
+                  <button
+                    type="button"
+                    className="icon-button small danger memory-row-action"
+                    aria-label={`删除记忆 ${record.item.memory_id}`}
+                    title="删除记忆"
+                    disabled={operationBusy === `delete:${record.item.memory_id}`}
+                    onClick={() => void deleteMemory(record.item!.memory_id, record.item!.current_revision_id)}
+                  >
+                    {operationBusy === `delete:${record.item.memory_id}` ? (
+                      <Loader2 className="spin" size={15} />
+                    ) : (
+                      <Trash2 size={15} />
+                    )}
+                  </button>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <MemorySectionState icon={<Database size={17} />} label="本轮没有实际进入 Router / Agent 的记忆" />
+        )}
+        {considered.length ? (
+          <details className="memory-considered">
+            <summary>Considered / dropped ({considered.length})</summary>
+            <div className="debug-list compact">
+              {considered.map((item, index) => (
+                <article className="debug-row" key={String(item.memory_id || item.item_id || index)}>
+                  <div>
+                    <strong>{String(item.memory_id || item.item_id || `memory_${index + 1}`)}</strong>
+                    <span>{String(item.content || "")}</span>
+                  </div>
+                  <div className="context-item-meta">
+                    <span>{String(item.projection_outcome || "considered")}</span>
+                    {item.scope ? <span>{String(item.scope)}</span> : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </section>
+
+      <section className="memory-inspector-section" aria-label="Formation Write Decisions">
+        <div className="memory-section-head">
+          <div>
+            <span>Formation Trace</span>
+            <strong>Formation / Write Decisions</strong>
+          </div>
+          <button
+            type="button"
+            className="icon-button small"
+            aria-label="刷新本轮 Memory Trace"
+            title="刷新本轮 Memory Trace"
+            onClick={onRefresh}
+          >
+            <RefreshCcw size={15} />
+          </button>
+        </div>
+        <FormationStatus state={traceState?.status || "idle"} counts={formationCounts} />
+        {traceState?.error ? <div className="inline-error"><XCircle size={15} />{traceState.error}</div> : null}
+        {traces.length ? (
+          <div className="formation-trace-list">
+            {traces.map((trace) => (
+              <FormationTraceCard
+                key={trace.job.job_id}
+                trace={trace}
+                busyKey={operationBusy}
+                onResolve={resolveDecision}
+              />
+            ))}
+          </div>
+        ) : traceState?.status === "pending" ? (
+          <MemorySectionState icon={<Loader2 className="spin" size={17} />} label="等待五轮窗口或空闲形成" />
+        ) : traceState?.status === "not_triggered" ? (
+          <MemorySectionState icon={<CircleDot size={17} />} label="本轮未触发 Formation Job" />
+        ) : traceState?.status === "error" ? null : (
+          <MemorySectionState icon={<Activity size={17} />} label="暂无 Formation Decision" />
+        )}
+        {operation ? (
+          <div className={`operation-feedback ${operation.status}`} role="status">
+            <div>
+              <strong>{operation.operation}</strong>
+              <span>{operation.status} / {operation.provider_status || "canonical"}</span>
+            </div>
+            {operation.index_operation_id ? (
+              <button
+                type="button"
+                className="icon-button small"
+                aria-label="刷新 Memory Operation 状态"
+                onClick={() => void refreshOperation()}
+              >
+                {operationBusy === "operation-status" ? <Loader2 className="spin" size={15} /> : <RefreshCcw size={15} />}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {operationError ? <div className="inline-error"><XCircle size={15} />{operationError}</div> : null}
+      </section>
+
+      {errors.length ? <ErrorList title="Memory Errors" errors={errors} /> : null}
+      {traceData ? <JsonBlock title="Turn Memory Trace JSON" value={redactTurnMemoryTrace(traceData)} defaultOpen={false} /> : null}
+      {agentContext ? <JsonBlock title="Agent Context Metadata" value={redactSensitive(agentContext)} defaultOpen={false} /> : null}
+      {legacyMemory ? <JsonBlock title="Legacy Memory Metadata" value={redactSensitive(legacyMemory)} defaultOpen={false} /> : null}
+    </div>
+  );
+}
+
+function FormationTraceCard({
+  trace,
+  busyKey,
+  onResolve,
+}: {
+  trace: MemoryFormationTraceView;
+  busyKey: string;
+  onResolve: (decision: MemoryFormationDecisionView, action: "confirm" | "reject") => void;
+}) {
+  return (
+    <article className="formation-trace-card">
+      <div className="formation-job-head">
+        <div>
+          <strong>{trace.job.job_id}</strong>
+          <span>{trace.job.trigger} · {trace.job.mode}</span>
+        </div>
+        <span className={`formation-status ${trace.job.status}`}>{trace.job.status}</span>
+      </div>
+      <dl className="formation-job-meta">
+        <div><dt>Source range</dt><dd>{trace.job.first_turn_id || "-"} → {trace.job.last_turn_id || "-"}</dd></div>
+        <div><dt>Source refs</dt><dd>{trace.job.source_refs.length ? trace.job.source_refs.join(" · ") : "-"}</dd></div>
+        <div><dt>Requests</dt><dd>{trace.links.request_ids.length ? trace.links.request_ids.join(" · ") : "-"}</dd></div>
+        <div><dt>Runs</dt><dd>{trace.links.run_ids.length ? trace.links.run_ids.join(" · ") : "-"}</dd></div>
+        <div><dt>Attempts</dt><dd>{trace.job.attempt_count}/{trace.job.max_attempts}</dd></div>
+        <div><dt>Versions</dt><dd>{trace.job.model_version} · {trace.job.prompt_version} · {trace.job.policy_version}</dd></div>
+        <div>
+          <dt>Semantic</dt>
+          <dd>
+            {trace.semantic_contract_version || "-"} · validation {formatCountMap(trace.semantic_validation_counts)} · verifier {formatCountMap(trace.semantic_verifier_counts)}
+          </dd>
+        </div>
+        <div><dt>Latency</dt><dd>{trace.model_latency_ms ?? "-"}ms model · {trace.provider_latency_ms ?? "-"}ms provider</dd></div>
+      </dl>
+      {trace.job.last_error_code ? <div className="inline-error"><AlertTriangle size={14} />{trace.job.last_error_code}</div> : null}
+      {trace.decisions.length ? (
+        <div className="formation-decisions">
+          {trace.decisions.map((decision) => {
+            const pending = decision.decision_status === "pending" && Boolean(decision.decision_id);
+            const confirmable = pending && ["update", "delete"].includes(String(decision.proposed_operation));
+            const contentRedacted = isSensitiveDecision(decision);
+            return (
+              <article className={`formation-decision ${decision.decision_status}`} key={decision.operation_id}>
+                <div className="formation-decision-head">
+                  <strong>{decision.proposed_operation || decision.operation}</strong>
+                  <span>{decision.decision_status}</span>
+                </div>
+                <span className="memory-reference">{decision.reason_code}</span>
+                <span className="memory-reference">{decision.memory_key}</span>
+                {decision.canonical_refs.length ? (
+                  <span className="memory-reference">{decision.canonical_refs.join(" · ")}</span>
+                ) : null}
+                {contentRedacted ? (
+                  <p className="redacted-preview"><Shield size={14} />[redacted]</p>
+                ) : decision.content_preview ? (
+                  <p>{decision.content_preview.slice(0, 320)}</p>
+                ) : null}
+                <div className="context-item-meta">
+                  {decision.scope ? <span>{decision.scope}</span> : null}
+                  {decision.memory_id ? <span>{decision.memory_id}</span> : null}
+                  {decision.revision_id ? <span>{decision.revision_id}</span> : null}
+                  {decision.index_status ? <span>index {decision.index_status}</span> : null}
+                  {decision.provider_status ? <span>provider {decision.provider_status}</span> : null}
+                </div>
+                {pending ? (
+                  <div className="pending-actions">
+                    {confirmable ? (
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        disabled={busyKey === `confirm:${decision.decision_id}`}
+                        onClick={() => onResolve(decision, "confirm")}
+                      >
+                        {busyKey === `confirm:${decision.decision_id}` ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                        确认
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      disabled={busyKey === `reject:${decision.decision_id}`}
+                      onClick={() => onResolve(decision, "reject")}
+                    >
+                      {busyKey === `reject:${decision.decision_id}` ? <Loader2 className="spin" size={15} /> : <XCircle size={15} />}
+                      拒绝
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
         </div>
       ) : (
-        <EmptyState icon={<Database size={20} />} label={memoryContext ? "Memory Context 为空" : "本轮未返回 Memory Context"} />
+        <MemorySectionState icon={<CircleDot size={16} />} label="Job 尚未产生决策" />
       )}
-      {errors.length ? <ErrorList title="Memory Errors" errors={errors} /> : null}
-      {agentContext ? <JsonBlock title="Agent Context Metadata" value={agentContext} defaultOpen={false} /> : null}
-      {memoryContext ? <JsonBlock title="Memory Context JSON" value={memoryContext} defaultOpen={false} /> : null}
-      {legacyMemory ? <JsonBlock title="Legacy Memory Metadata" value={legacyMemory} defaultOpen={false} /> : null}
+    </article>
+  );
+}
+
+function MemorySectionState({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return <div className="memory-section-state">{icon}<span>{label}</span></div>;
+}
+
+function FormationStatus({ state, counts }: { state: string; counts: Record<string, number> }) {
+  return (
+    <div className="formation-summary">
+      <span className={`formation-status ${state}`}>{formationStatusLabel(state)}</span>
+      <div className="formation-counts">
+        {Object.entries(counts).map(([operation, count]) => (
+          <span key={operation}>{operation.toUpperCase()} {count}</span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1781,6 +2271,14 @@ function DebugManagementPanel({ runtime }: { runtime: RuntimeConfig | null }) {
     tenant_id: "",
     agent_id: "",
     scopes: "",
+    memory_id: "",
+    request_id: "",
+    session_id: "",
+    turn_id: "",
+    run_id: "",
+    formation_job_id: "",
+    memory_key: "",
+    decision_status: "",
     limit: "50",
   });
   const [knowledgeFilters, setKnowledgeFilters] = useState<KnowledgeDebugFilters>({
@@ -1888,6 +2386,9 @@ function RuntimeDebugSummary({ runtime }: { runtime: RuntimeConfig | null }) {
       <Metric label="mem0 Collection" value={runtime?.memory_mem0_collection || "-"} />
       <Metric label="mem0 History" value={runtime?.memory_mem0_history_backend || "-"} />
       <Metric label="mem0 Health" value={runtime?.memory_mem0_health_status || (runtime?.memory_mem0_degraded ? "degraded" : "-")} />
+      <Metric label="Formation Mode" value={runtime?.memory_formation_mode || "-"} />
+      <Metric label="Formation Queue" value={runtime?.memory_formation_queue_status || "-"} />
+      <Metric label="Formation Worker" value={runtime ? `${runtime.memory_formation_worker_enabled ? "on" : "off"} / ${runtime.memory_formation_sweeper_enabled ? "sweeper" : "no sweeper"}` : "-"} />
       <Metric label="Knowledge Backend" value={runtime ? `${runtime.knowledge_enabled ? "on" : "off"} / ${runtime.knowledge_vector_backend}` : "-"} />
       <Metric label="Knowledge Index" value={runtime?.knowledge_milvus_collection || "-"} />
       <Metric label="Milvus Lite URI" value={runtime?.knowledge_milvus_uri || runtime?.memory_mem0_milvus_uri || "-"} />
@@ -1918,6 +2419,19 @@ function MemoryDebugView({
         <TextField label="tenant_id" value={String(filters.tenant_id || "")} onChange={(value) => update("tenant_id", value)} />
         <TextField label="agent_id" value={String(filters.agent_id || "")} onChange={(value) => update("agent_id", value)} />
         <TextField label="scopes" value={String(filters.scopes || "")} onChange={(value) => update("scopes", value)} />
+        <TextField label="memory_id" value={String(filters.memory_id || "")} onChange={(value) => update("memory_id", value)} />
+        <TextField label="request_id" value={String(filters.request_id || "")} onChange={(value) => update("request_id", value)} />
+        <TextField label="session_id" value={String(filters.session_id || "")} onChange={(value) => update("session_id", value)} />
+        <TextField label="turn_id" value={String(filters.turn_id || "")} onChange={(value) => update("turn_id", value)} />
+        <TextField label="run_id" value={String(filters.run_id || "")} onChange={(value) => update("run_id", value)} />
+        <TextField label="formation_job_id" value={String(filters.formation_job_id || "")} onChange={(value) => update("formation_job_id", value)} />
+        <TextField label="memory_key" value={String(filters.memory_key || "")} onChange={(value) => update("memory_key", value)} />
+        <SelectField
+          label="decision_status"
+          value={String(filters.decision_status || "")}
+          onChange={(value) => update("decision_status", value)}
+          options={["", "pending", "resolved", "accepted", "rejected"]}
+        />
         <TextField label="limit" value={String(filters.limit || "")} onChange={(value) => update("limit", value)} />
         <button type="submit" className="secondary-button" disabled={loading}>
           {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
@@ -1931,6 +2445,8 @@ function MemoryDebugView({
           <div className="context-pack-summary">
             <Metric label="Items" value={String(data.items.length)} />
             <Metric label="Events" value={String(data.events.length)} />
+            <Metric label="Revisions" value={String((data.revisions || []).length)} />
+            <Metric label="Formation Jobs" value={String((data.formation_traces || []).length)} />
             <Metric label="Provider" value={String(data.metadata.strategy_provider || data.metadata.memory_provider || "-")} />
             <Metric label="Status" value={String(recordValue(data.metadata.mem0)?.status || data.metadata.mem0_status || "-")} />
           </div>
@@ -1957,6 +2473,52 @@ function MemoryDebugView({
               </div>
             ) : (
               <EmptyState icon={<Database size={20} />} label="当前过滤条件下没有 Memory Item" />
+            )}
+          </section>
+          <section className="debug-section">
+            <h3>Formation Traces</h3>
+            {(data.formation_traces || []).length ? (
+              <div className="debug-list compact">
+                {uniqueFormationTraces(data.formation_traces || []).map((trace) => (
+                  <article className="debug-row" key={trace.job.job_id}>
+                    <div>
+                      <strong>{trace.job.job_id}</strong>
+                      <span>{trace.job.trigger} / {trace.job.status} / {trace.job.mode}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      <span>{trace.decisions.length} decisions</span>
+                      <span>{trace.job.attempt_count}/{trace.job.max_attempts} attempts</span>
+                      <span>semantic {trace.semantic_contract_version || "-"}</span>
+                      <span>validation {formatCountMap(trace.semantic_validation_counts)}</span>
+                      <span>verifier {formatCountMap(trace.semantic_verifier_counts)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<Activity size={20} />} label="当前过滤条件下没有 Formation Trace" />
+            )}
+          </section>
+          <section className="debug-section">
+            <h3>Memory Revisions</h3>
+            {(data.revisions || []).length ? (
+              <div className="debug-list compact">
+                {(data.revisions || []).map((revision) => (
+                  <article className="debug-row" key={revision.revision_id}>
+                    <div>
+                      <strong>{revision.revision_id}</strong>
+                      <span>{revision.content_redacted ? "[redacted]" : revision.content_preview || "-"}</span>
+                    </div>
+                    <div className="context-item-meta">
+                      <span>{revision.memory_id}</span>
+                      <span>rev {revision.revision_no}</span>
+                      <span>{revision.operation}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={<GitBranch size={20} />} label="当前过滤条件下没有 Memory Revision" />
             )}
           </section>
           <section className="debug-section">
@@ -2209,10 +2771,118 @@ function numberValue(value: unknown): number | null {
   return null;
 }
 
-function redactSensitive(value: unknown): JsonValue {
-  if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
-    return value as JsonValue;
+function memoryTraceStatus(
+  data: MemoryDebugResponse,
+  mode: ExecutionMode,
+  pollCount: number,
+  formationMode?: string,
+): ConversationTurn["memoryTrace"]["status"] {
+  const traces = uniqueFormationTraces(data.formation_traces || []);
+  if (traces.some((trace) => trace.job.status === "dead_letter")) return "error";
+  if (traces.some((trace) => ["pending", "claimed", "retry"].includes(trace.job.status))) {
+    return "pending";
   }
+  if (traces.length) return "success";
+  if (formationMode === "off" || mode === "route" || pollCount >= 20) return "not_triggered";
+  return "pending";
+}
+
+function actualRecallRecords(data: MemoryDebugResponse | null | undefined): Array<{
+  memoryId: string;
+  links: MemoryTraceLink[];
+  item?: MemoryDebugResponse["items"][number];
+}> {
+  const grouped = new Map<string, MemoryTraceLink[]>();
+  for (const link of data?.context_trace_links || []) {
+    if (link.projection_outcome !== "included") continue;
+    for (const memoryId of link.memory_ids || []) {
+      const links = grouped.get(memoryId) || [];
+      if (!links.some((current) => current.consumer === link.consumer)) links.push(link);
+      grouped.set(memoryId, links);
+    }
+  }
+  return Array.from(grouped.entries()).map(([memoryId, links]) => ({
+    memoryId,
+    links,
+    item: (data?.items || []).find((item) => item.memory_id === memoryId),
+  }));
+}
+
+function formatCountMap(value: Record<string, number> | undefined): string {
+  const entries = Object.entries(value || {}).sort(([left], [right]) => left.localeCompare(right));
+  return entries.length ? entries.map(([key, count]) => `${key} ${count}`).join(" · ") : "-";
+}
+
+function uniqueFormationTraces(traces: MemoryFormationTraceView[]): MemoryFormationTraceView[] {
+  const grouped = new Map<string, MemoryFormationTraceView>();
+  for (const trace of traces) {
+    const existing = grouped.get(trace.job.job_id);
+    if (!existing) {
+      grouped.set(trace.job.job_id, trace);
+      continue;
+    }
+    const decisions = new Map(
+      [...existing.decisions, ...trace.decisions].map((decision) => [decision.operation_id, decision]),
+    );
+    grouped.set(trace.job.job_id, {
+      ...existing,
+      ...trace,
+      decisions: Array.from(decisions.values()),
+      revision_ids: Array.from(new Set([...existing.revision_ids, ...trace.revision_ids])),
+    });
+  }
+  return Array.from(grouped.values());
+}
+
+function formationDecisionCounts(traces: MemoryFormationTraceView[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const seen = new Set<string>();
+  for (const trace of traces) {
+    for (const decision of trace.decisions || []) {
+      if (seen.has(decision.operation_id)) continue;
+      seen.add(decision.operation_id);
+      const operation = String(decision.operation || "unknown").toLowerCase();
+      counts[operation] = (counts[operation] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function formationStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    idle: "未加载",
+    loading: "加载中",
+    pending: "等待中",
+    success: "已完成",
+    not_triggered: "未触发",
+    error: "异常",
+  };
+  return labels[status] || status;
+}
+
+function isSensitiveDecision(decision: MemoryFormationDecisionView): boolean {
+  return decision.content_redacted || String(decision.reason_code).toLowerCase().includes("sensitive");
+}
+
+function redactTurnMemoryTrace(data: MemoryDebugResponse): JsonValue {
+  return redactSensitive({
+    ...data,
+    formation_traces: (data.formation_traces || []).map((trace) => ({
+      ...trace,
+      decisions: trace.decisions.map((decision) => ({
+        ...decision,
+        content_preview: isSensitiveDecision(decision)
+          ? "[redacted]"
+          : decision.content_preview?.slice(0, 320),
+        content_redacted: isSensitiveDecision(decision),
+      })),
+    })),
+  });
+}
+
+function redactSensitive(value: unknown): JsonValue {
+  if (typeof value === "string") return redactClientText(value);
+  if (value === null || ["number", "boolean"].includes(typeof value)) return value as JsonValue;
   if (Array.isArray(value)) {
     return value.map((item) => redactSensitive(item));
   }
@@ -2235,10 +2905,20 @@ function isSensitiveKey(key: string): boolean {
     normalized.includes("secret") ||
     normalized.includes("token") ||
     normalized.includes("credential") ||
+    normalized.includes("prompt") ||
+    normalized.includes("quote") ||
     normalized === "database_url" ||
     normalized.includes("connection_string") ||
     normalized.endsWith("_dsn")
   );
+}
+
+function redactClientText(value: string): string {
+  return value
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted-email]")
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[redacted-identifier]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*\b/gi, "Bearer [redacted]");
 }
 
 function contextValue(routeResponse: RouteResponse | null, key: string): unknown {

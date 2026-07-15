@@ -777,3 +777,15 @@ flowchart TD
 OIR 应采用“一个形成 pipeline、三类触发、两层事实边界”：结构化任务/结果事件立即投影，普通对话 5 轮或空闲 30 秒形成，后台执行 consolidation 和硬生命周期治理；PostgreSQL 保存 current + revisions + events，mem0/Milvus 只保存可重建的派生向量。
 
 这解决了两个容易混淆的问题：第一，普通 turn 进入形成窗口不代表每轮都被记住；第二，未完成任务可以跨会话被定位，但 `task_memory` 只是 canonical Plan 的软上下文指针，不会成为新任务的意图覆盖规则。
+
+## 18. 最终实现与上线契约
+
+截至 2026-07-14，首版实现已统一为 `FormationJob -> CandidatePolicy -> MemoryLifecycleService -> durable index outbox`。PostgreSQL 是 current、revision、event、job 和 operation 的唯一事实源；mem0/Milvus 是 `infer=False` 的可重建派生索引。Plan 强制使用服务端绑定的 `tenant_id + user_id`，task projection 不新增 Router intent，执行前必须回读 owner-scoped canonical Plan。
+
+默认配置保持 `MEMORY_FORMATION_MODE=off`，上线顺序固定为 off、observe、隔离 tenant 的 enforced、逐步扩展。formation worker/sweeper 与 index/TTL maintenance 分开控制；紧急回退关闭自动 formation 时，不应停止已有 provider delete、index repair 和 TTL 硬删除。具体环境变量、健康/质量/成本 gate、真实 smoke 与 emergency-off 演练见 [`conversation-memory-formation-rollout.md`](conversation-memory-formation-rollout.md)。
+
+### 三层候选治理边界
+
+普通对话自然语言只由 `ConversationFormationModel` 投影为 `target/slot/value/temporal_scope/polarity/certainty/change_intent`。`MemoryCandidateHardRules` 负责 identity、scope、frozen evidence、DLP、target ownership、TTL、key/hash、去重和删除授权；`MemoryCandidateSemanticValidator` 只校验结构化字段与 operation/current projection 一致性；`MemoryCandidatePolicy` 只编排阈值、current state 和可选 verifier。
+
+语义缺失、unknown、字段冲突或 verifier 无确定结论时保持 PENDING。verifier 只接收 bounded candidate/evidence，confirmed 后仍重新执行 hard rules 和 current-state 检查。回答语言正则仅作为独立临时安全过滤器，只能降级为 PENDING，不能授权 ADD、UPDATE 或 DELETE；不得继续扩展为通用多语言解析器。

@@ -24,6 +24,7 @@ class ChatHistoryService:
                 message_id=f"msg_{uuid4().hex}",
                 session_id=session_id,
                 user_id=payload.user_id,
+                tenant_id=payload.tenant_id,
                 source=payload.source,
                 role=payload.role,
                 content=payload.content,
@@ -40,6 +41,7 @@ class ChatHistoryService:
         *,
         session_id: str,
         user_id: str,
+        tenant_id: str,
         content: str,
         source: MessageSource = "host_chat",
         request_id: str | None = None,
@@ -52,6 +54,7 @@ class ChatHistoryService:
                 message_id=f"msg_{uuid4().hex}",
                 session_id=session_id,
                 user_id=user_id,
+                tenant_id=tenant_id,
                 source=source,
                 role="user",
                 content=content,
@@ -62,14 +65,24 @@ class ChatHistoryService:
             )
         )
 
-    async def get_host_history(self, session_id: str) -> list[ChatMessage]:
-        return await self.repository.list_by_session(
-            session_id, source="host_chat", limit=self.host_limit
-        )
-
-    async def get_agent_history(self, session_id: str, agent_id: str) -> list[ChatMessage]:
+    async def get_host_history(
+        self, session_id: str, *, tenant_id: str, user_id: str
+    ) -> list[ChatMessage]:
         return await self.repository.list_by_session(
             session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            source="host_chat",
+            limit=self.host_limit,
+        )
+
+    async def get_agent_history(
+        self, session_id: str, agent_id: str, *, tenant_id: str, user_id: str
+    ) -> list[ChatMessage]:
+        return await self.repository.list_by_session(
+            session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             source="agent_chat",
             agent_id=agent_id,
             limit=self.agent_limit,

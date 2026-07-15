@@ -23,6 +23,7 @@ from app.services.context_pipeline_service import ContextPipelineService
 from app.services.context_providers import (
     KnowledgeRetrievalProvider,
     MemoryRetrievalProvider,
+    PlanProvider,
     StaticCandidatesProvider,
 )
 from app.services.knowledge_service import KnowledgeService
@@ -47,6 +48,7 @@ class AgentContextAssemblyService:
         agent: AgentDefinition,
         request: RouteRequest,
         invocation_input: JsonDict,
+        active_plan=None,
         assembly_session=None,
     ) -> AgentRuntimeContext:
         return await self.assemble(
@@ -59,6 +61,7 @@ class AgentContextAssemblyService:
             caller_id=agent.agent_id,
             purpose="agent_execution",
             request=request,
+            active_plan=active_plan,
             assembly_session=assembly_session,
         )
 
@@ -74,13 +77,21 @@ class AgentContextAssemblyService:
         caller_id: str | None = None,
         purpose: str = "agent_execution",
         request: RouteRequest | None = None,
+        request_id: str | None = None,
+        run_id: str | None = None,
+        turn_id: str | None = None,
+        active_plan=None,
         assembly_session: ContextAssemblySession | None = None,
     ) -> AgentRuntimeContext:
-        existing_memory_context = self._memory_context_from_input(invocation_input)
+        existing_memory_context = self._filter_task_memory_context(
+            self._memory_context_from_input(invocation_input),
+            active_plan=active_plan,
+            user=user,
+        )
         existing_knowledge_context = self._knowledge_context_from_input(invocation_input)
         route_request = request or RouteRequest.model_validate(
             {
-                "request_id": f"invoke_{uuid4().hex}",
+                "request_id": request_id or f"invoke_{uuid4().hex}",
                 "session_id": session_id,
                 "user": user.model_dump(mode="json"),
                 "input": {"text": query or " "},
@@ -93,6 +104,8 @@ class AgentContextAssemblyService:
             tenant_id=user.tenant_id,
         )
         providers = []
+        if active_plan is not None:
+            providers.append(PlanProvider())
         if existing_memory_context is not None:
             providers.append(
                 StaticCandidatesProvider(
@@ -136,6 +149,7 @@ class AgentContextAssemblyService:
             consumer=f"agent:{agent.agent_id}",
             providers=providers,
             agent=agent,
+            sources={"active_plan": active_plan},
             budget=ContextBudget(
                 max_tokens=available_tokens,
                 source_budgets={
@@ -164,6 +178,19 @@ class AgentContextAssemblyService:
             max_tokens=self.settings.context_agent_token_budget,
             chars_per_token=self.settings.context_chars_per_token,
         )
+        record_recall_usage = getattr(self.memory_service, "record_recall_usage", None)
+        if run_id is not None and callable(record_recall_usage):
+            await record_recall_usage(
+                memory_context.items,
+                user_id=user.id,
+                tenant_id=user.tenant_id,
+                agent_id=agent.agent_id,
+                consumer=f"agent:{agent.agent_id}",
+                request_id=route_request.request_id,
+                session_id=route_request.session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+            )
         runtime = AgentRuntimeContext(
             memory_context=memory_context,
             knowledge_context=knowledge_context,
@@ -316,6 +343,94 @@ class AgentContextAssemblyService:
             return None
         return value if isinstance(value, MemoryContext) else MemoryContext.model_validate(value)
 
+    def _filter_task_memory_context(
+        self,
+        context: MemoryContext | None,
+        *,
+        active_plan,
+        user: UserContext,
+    ) -> MemoryContext | None:
+        if context is None:
+            return None
+        value = (
+            active_plan.model_dump(mode="json")
+            if hasattr(active_plan, "model_dump")
+            else active_plan
+        )
+        if not isinstance(value, dict) or value.get("status") not in {
+            "pending",
+            "running",
+            "blocked",
+        }:
+            value = None
+        elif value.get("user_id") != user.id or value.get("tenant_id") != user.tenant_id:
+            value = None
+        items = []
+        removed_task_memory = False
+        for item in context.items:
+            if str(item.scope) != "task_memory":
+                items.append(item)
+                continue
+            structured = item.structured_value
+            if (
+                value is None
+                or structured.get("object_type") != "plan"
+                or structured.get("plan_id") != value.get("plan_id")
+            ):
+                removed_task_memory = True
+                continue
+            steps = value.get("steps") if isinstance(value.get("steps"), list) else []
+            current_step_id = value.get("current_step_id")
+            current_step = next(
+                (
+                    candidate
+                    for candidate in steps
+                    if isinstance(candidate, dict) and candidate.get("step_id") == current_step_id
+                ),
+                None,
+            )
+            completed = {
+                candidate.get("step_id")
+                for candidate in steps
+                if isinstance(candidate, dict) and candidate.get("status") == "completed"
+            }
+            next_step = next(
+                (
+                    candidate
+                    for candidate in steps
+                    if isinstance(candidate, dict)
+                    and candidate.get("status") == "pending"
+                    and all(parent in completed for parent in candidate.get("depends_on", []))
+                ),
+                None,
+            )
+            items.append(
+                item.model_copy(
+                    update={
+                        "content": (
+                            f"Canonical active Plan {value.get('plan_id')} is "
+                            f"{value.get('status')}; current step: "
+                            f"{value.get('current_step_id') or 'none'}."
+                        ),
+                        "structured_value": {
+                            "object_type": "plan",
+                            "plan_id": value.get("plan_id"),
+                            "tenant_id": value.get("tenant_id"),
+                            "user_id": value.get("user_id"),
+                            "session_id": value.get("session_id"),
+                            "status": value.get("status"),
+                            "current_step_id": current_step_id,
+                            "current_step": current_step,
+                            "next_step": next_step,
+                        },
+                    }
+                )
+            )
+        status = context.status
+        if status == "ok" and removed_task_memory and not items:
+            status = "empty"
+        return context.model_copy(update={"items": items, "status": status})
+
     def _knowledge_context_from_input(self, invocation_input: JsonDict) -> KnowledgeContext | None:
         value = invocation_input.get("knowledge_context")
         if value is None:
@@ -445,6 +560,10 @@ def _memory_context_from_result(result, *, existing: MemoryContext | None) -> Me
                 subject_type=value.get("subject_type"),
                 subject_id=value.get("subject_id"),
                 ttl_expires_at=value.get("ttl_expires_at"),
+                structured_value=value.get("structured_value") or {},
+                current_revision_id=value.get("current_revision_id"),
+                current_revision_no=value.get("current_revision_no"),
+                canonical_refs=value.get("canonical_refs") or [],
                 metadata=item.metadata,
             )
         )

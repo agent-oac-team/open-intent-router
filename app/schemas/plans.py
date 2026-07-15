@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from pydantic import Field, model_validator
 
 from app.schemas.common import (
@@ -34,11 +36,17 @@ class NextAction(StrictBaseModel):
 
 class Plan(StrictBaseModel):
     plan_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    tenant_id: str = Field(min_length=1)
     session_id: str | None = None
     status: PlanStatus = "pending"
     current_step_id: str | None = None
     execution_policy: ExecutionPolicy | None = None
     next_action: NextAction | None = None
+    last_event_id: str | None = None
+    state_version: int = Field(default=0, ge=0)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    formation_event_type: str = Field(default="update", max_length=32)
     steps: list[PlanStep] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -55,13 +63,16 @@ class Plan(StrictBaseModel):
         _validate_no_cycles(graph)
         if self.current_step_id and self.current_step_id not in known:
             raise ValueError("current_step_id must reference a step_id in steps")
-        if not self.current_step_id:
+        if not self.current_step_id and self.status in {"pending", "running", "blocked"}:
             self.current_step_id = self.steps[0].step_id
+        if self.status in {"completed", "failed", "cancelled"}:
+            self.current_step_id = None
         return self
 
 
 class PlanActionRequest(StrictBaseModel):
     action: str = Field(pattern="^(confirm|cancel)$")
+    user: UserContext
 
 
 class PlanActionResponse(StrictBaseModel):
@@ -72,7 +83,7 @@ class PlanActionResponse(StrictBaseModel):
 
 
 class PlanExecutionRequest(StrictBaseModel):
-    user: UserContext | None = None
+    user: UserContext
     input: JsonDict = Field(default_factory=dict)
     context: JsonDict = Field(default_factory=dict)
     max_steps: int = Field(default=10, ge=1, le=50)

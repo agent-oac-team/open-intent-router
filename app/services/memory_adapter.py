@@ -1,20 +1,97 @@
+import hashlib
 import inspect
 import logging
-from datetime import datetime
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol
 
 from app.core.config import Settings
 from app.repositories.context_stores import MemoryItemRepository
-from app.schemas.memory import MemoryEvent, MemoryItem, MemoryRecallRequest, MemoryWriteCandidate
+from app.schemas.memory import (
+    MemoryEvent,
+    MemoryIndexOperation,
+    MemoryIndexOperationType,
+    MemoryIndexStatus,
+    MemoryItem,
+    MemoryRecallRequest,
+    MemoryWriteCandidate,
+)
 from app.services.mem0_config import build_mem0_config, mem0_health_check, mem0_static_metadata
 
 logger = logging.getLogger(__name__)
+
+
+class MemoryProviderOperationStatus(StrEnum):
+    SUCCESS = "success"
+    NOT_FOUND = "not_found"
+    SUPERSEDED = "superseded"
+    RETRYABLE_ERROR = "retryable_error"
+    DEGRADED = "degraded"
+
+
+@dataclass(frozen=True)
+class MemoryProviderRecord:
+    external_memory_id: str
+    memory_id: str | None
+    revision_id: str | None
+    tenant_id: str | None
+    content: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemoryProviderScanResult:
+    status: MemoryProviderOperationStatus
+    records: tuple[MemoryProviderRecord, ...] = ()
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class MemoryIndexOperationResult:
+    operation: MemoryIndexOperationType
+    status: MemoryProviderOperationStatus
+    memory_id: str
+    external_memory_id: str | None = None
+    adopted: bool = False
+    duplicate_external_ids: tuple[str, ...] = ()
+    error_code: str | None = None
+
+    @property
+    def completed(self) -> bool:
+        return self.status in {
+            MemoryProviderOperationStatus.SUCCESS,
+            MemoryProviderOperationStatus.NOT_FOUND,
+            MemoryProviderOperationStatus.SUPERSEDED,
+        }
 
 
 class MemoryStrategyAdapter(Protocol):
     async def search(self, request: MemoryRecallRequest) -> list[MemoryItem]: ...
 
     async def add(self, item: MemoryItem) -> MemoryItem: ...
+
+    async def update(self, item: MemoryItem, *, external_memory_id: str) -> MemoryItem: ...
+
+    async def execute_index_operation(
+        self,
+        operation: MemoryIndexOperation,
+        *,
+        item: MemoryItem | None,
+    ) -> MemoryIndexOperationResult: ...
+
+    async def scan_provider_records(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None = None,
+        memory_id: str | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> MemoryProviderScanResult: ...
+
+    async def delete_provider_record(
+        self, *, memory_id: str, external_memory_id: str
+    ) -> MemoryIndexOperationResult: ...
 
     async def extract(
         self, candidates: list[MemoryWriteCandidate]
@@ -43,7 +120,7 @@ class RepositoryMemoryAdapter:
         self.repository = repository
 
     async def search(self, request: MemoryRecallRequest) -> list[MemoryItem]:
-        return await self.repository.list_active(
+        items = await self.repository.list_active(
             user_id=request.user.id,
             tenant_id=request.user.tenant_id,
             scopes=[str(scope) for scope in request.scopes],
@@ -52,9 +129,52 @@ class RepositoryMemoryAdapter:
             agent_id=request.agent_id,
             limit=request.max_items,
         )
+        return [item for item in items if _agent_visible(item, request.agent_id)]
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         return await self.repository.add(item)
+
+    async def update(self, item: MemoryItem, *, external_memory_id: str) -> MemoryItem:
+        return await self.repository.add(item)
+
+    async def execute_index_operation(
+        self,
+        operation: MemoryIndexOperation,
+        *,
+        item: MemoryItem | None,
+    ) -> MemoryIndexOperationResult:
+        return MemoryIndexOperationResult(
+            operation=operation.operation,
+            status=MemoryProviderOperationStatus.DEGRADED,
+            memory_id=operation.memory_id,
+            external_memory_id=operation.external_memory_id,
+            error_code="repository_fallback",
+        )
+
+    async def scan_provider_records(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None = None,
+        memory_id: str | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> MemoryProviderScanResult:
+        return MemoryProviderScanResult(
+            status=MemoryProviderOperationStatus.DEGRADED,
+            error_code="repository_fallback",
+        )
+
+    async def delete_provider_record(
+        self, *, memory_id: str, external_memory_id: str
+    ) -> MemoryIndexOperationResult:
+        return MemoryIndexOperationResult(
+            operation=MemoryIndexOperationType.DELETE,
+            status=MemoryProviderOperationStatus.DEGRADED,
+            memory_id=memory_id,
+            external_memory_id=external_memory_id,
+            error_code="repository_fallback",
+        )
 
     async def extract(self, candidates: list[MemoryWriteCandidate]) -> list[MemoryWriteCandidate]:
         return candidates
@@ -110,7 +230,7 @@ class Mem0MemoryAdapter:
         try:
             client = self._memory()
             filter_sets = _search_filter_sets(request)
-            items: list[MemoryItem] = []
+            candidates: list[tuple[str, str | None]] = []
             for filters in filter_sets:
                 raw = await _call_mem0_search(
                     client,
@@ -118,14 +238,31 @@ class Mem0MemoryAdapter:
                     filters=filters,
                     limit=request.max_items,
                 )
-                items.extend(
-                    _items_from_mem0_results(
-                        raw,
-                        request=request,
-                        collection=self.settings.memory_mem0_milvus_collection,
-                    )
-                )
-            items = _dedupe_items(items)[: request.max_items]
+                candidates.extend(_canonical_refs_from_mem0_results(raw))
+            candidates = _dedupe_provider_refs(candidates)
+            canonical = await self.repository.get_active_by_ids(
+                [memory_id for memory_id, _external_id in candidates],
+                tenant_id=request.user.tenant_id,
+                user_id=request.user.id,
+                subject_type=request.subject_type,
+                subject_id=request.subject_id or request.user.id,
+                scopes=[str(scope) for scope in request.scopes] or None,
+            )
+            by_id = {item.memory_id: item for item in canonical}
+            items = []
+            for memory_id, external_id in candidates:
+                item = by_id.get(memory_id)
+                if item is None or not _agent_visible(item, request.agent_id):
+                    continue
+                metadata = {
+                    **item.metadata,
+                    "memory_provider": "mem0",
+                    "mem0_collection": self.settings.memory_mem0_milvus_collection,
+                }
+                if external_id:
+                    metadata["mem0_memory_id"] = external_id
+                items.append(item.model_copy(update={"metadata": metadata}))
+            items = items[: request.max_items]
             await self._record_history(
                 "search",
                 status="ok",
@@ -133,9 +270,10 @@ class Mem0MemoryAdapter:
                 tenant_id=request.user.tenant_id,
                 agent_id=request.agent_id,
                 payload={
-                    "query": request.query,
+                    "query_hash": _hash_ref(request.query),
                     "filters": filter_sets[0] if len(filter_sets) == 1 else filter_sets,
                     "hit_count": len(items),
+                    "stale_or_orphan_count": max(0, len(candidates) - len(items)),
                     "subject_type": request.subject_type,
                     "subject_id": request.subject_id or request.user.id,
                 },
@@ -144,20 +282,26 @@ class Mem0MemoryAdapter:
         except Exception as exc:
             await self._record_error("search", exc, request=request)
             if self.settings.memory_mem0_fail_closed_effective:
-                raise Mem0AdapterError("search", str(exc)) from exc
+                raise Mem0AdapterError("search", _safe_exception(exc)) from exc
             return await RepositoryMemoryAdapter(self.repository).search(request)
 
     async def add(self, item: MemoryItem) -> MemoryItem:
         try:
             raw = await _call_mem0_add(
                 self._memory(),
-                payload=_mem0_payload_for_item(item),
+                payload=item.content,
                 user_id=item.user_id or item.subject_id,
                 metadata=_mem0_metadata_for_item(item, self.settings),
             )
             mem0_memory_id = _extract_mem0_memory_id(raw)
+            if not mem0_memory_id:
+                raise RuntimeError("mem0 add did not return an external memory ID")
             metadata = _stored_mem0_metadata(item, self.settings, mem0_memory_id)
-            stored = await self.repository.add(item.model_copy(update={"metadata": metadata}))
+            stored = await self.repository.add(
+                item.model_copy(
+                    update={"metadata": metadata, "index_status": MemoryIndexStatus.READY}
+                )
+            )
             await self._record_history(
                 "add",
                 status="ok",
@@ -167,24 +311,296 @@ class Mem0MemoryAdapter:
             )
             return stored
         except Exception as exc:
+            safe_error = _safe_exception(exc)
             await self._record_error("add", exc, item=item)
             if self.settings.memory_mem0_fail_closed_effective:
-                raise Mem0AdapterError("add", str(exc)) from exc
+                raise Mem0AdapterError("add", safe_error) from exc
             metadata = {
                 **item.metadata,
                 "memory_provider": "repository_fallback",
                 "mem0_status": "degraded",
-                "mem0_error": str(exc),
+                "mem0_error": safe_error,
                 "mem0_collection": self.settings.memory_mem0_milvus_collection,
             }
-            stored = await self.repository.add(item.model_copy(update={"metadata": metadata}))
+            stored = await self.repository.add(
+                item.model_copy(
+                    update={
+                        "metadata": metadata,
+                        "index_status": MemoryIndexStatus.OUT_OF_SYNC,
+                    }
+                )
+            )
             await self._record_history(
                 "add",
                 status="fallback",
                 item=stored,
-                error=str(exc),
+                error=safe_error,
             )
             return stored
+
+    async def update(self, item: MemoryItem, *, external_memory_id: str) -> MemoryItem:
+        try:
+            await _call_mem0_update(
+                self._memory(),
+                memory_id=external_memory_id,
+                data=item.content,
+                metadata=_mem0_metadata_for_item(item, self.settings),
+            )
+            metadata = _stored_mem0_metadata(item, self.settings, external_memory_id)
+            stored = await self.repository.add(
+                item.model_copy(
+                    update={"metadata": metadata, "index_status": MemoryIndexStatus.READY}
+                )
+            )
+            await self._record_history(
+                "update",
+                status="ok",
+                item=stored,
+                mem0_memory_id=external_memory_id,
+            )
+            return stored
+        except Exception as exc:
+            safe_error = _safe_exception(exc)
+            await self._record_error("update", exc, item=item)
+            if self.settings.memory_mem0_fail_closed_effective:
+                raise Mem0AdapterError("update", safe_error) from exc
+            metadata = {
+                **item.metadata,
+                "memory_provider": "repository_fallback",
+                "mem0_status": "degraded",
+                "mem0_error": safe_error,
+                "mem0_collection": self.settings.memory_mem0_milvus_collection,
+            }
+            stored = await self.repository.add(
+                item.model_copy(
+                    update={
+                        "metadata": metadata,
+                        "index_status": MemoryIndexStatus.OUT_OF_SYNC,
+                    }
+                )
+            )
+            await self._record_history("update", status="fallback", item=stored, error=safe_error)
+            return stored
+
+    async def execute_index_operation(
+        self,
+        operation: MemoryIndexOperation,
+        *,
+        item: MemoryItem | None,
+    ) -> MemoryIndexOperationResult:
+        if operation.operation != MemoryIndexOperationType.DELETE and item is None:
+            return _provider_error_result(operation, "canonical_memory_not_found")
+        try:
+            if operation.operation == MemoryIndexOperationType.ADD:
+                return await self._execute_add(operation, item)
+            if operation.operation == MemoryIndexOperationType.UPDATE:
+                return await self._execute_update(operation, item)
+            return await self._execute_delete(operation, item)
+        except Exception as exc:
+            await self._record_error("index", exc, item=item, memory_id=operation.memory_id)
+            return _provider_error_result(operation, _safe_error_code(exc))
+
+    async def scan_provider_records(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str | None = None,
+        memory_id: str | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> MemoryProviderScanResult:
+        filters: dict[str, Any] = {"tenant_id": tenant_id}
+        if user_id:
+            filters["user_id"] = user_id
+        if memory_id:
+            filters["memory_id"] = memory_id
+        try:
+            raw = await _call_mem0_get_all(
+                self._memory(), filters=filters, limit=limit, offset=offset
+            )
+            return MemoryProviderScanResult(
+                status=MemoryProviderOperationStatus.SUCCESS,
+                records=tuple(_provider_records_from_raw(raw)),
+            )
+        except Exception as exc:
+            await self._record_error("scan", exc)
+            return MemoryProviderScanResult(
+                status=MemoryProviderOperationStatus.RETRYABLE_ERROR,
+                error_code=_safe_error_code(exc),
+            )
+
+    async def delete_provider_record(
+        self, *, memory_id: str, external_memory_id: str
+    ) -> MemoryIndexOperationResult:
+        try:
+            await _call_mem0_delete(self._memory(), external_memory_id)
+            return MemoryIndexOperationResult(
+                operation=MemoryIndexOperationType.DELETE,
+                status=MemoryProviderOperationStatus.SUCCESS,
+                memory_id=memory_id,
+                external_memory_id=external_memory_id,
+            )
+        except Exception as exc:
+            if _is_not_found_error(exc):
+                return MemoryIndexOperationResult(
+                    operation=MemoryIndexOperationType.DELETE,
+                    status=MemoryProviderOperationStatus.NOT_FOUND,
+                    memory_id=memory_id,
+                    external_memory_id=external_memory_id,
+                )
+            await self._record_error("delete", exc, memory_id=memory_id)
+            return MemoryIndexOperationResult(
+                operation=MemoryIndexOperationType.DELETE,
+                status=MemoryProviderOperationStatus.RETRYABLE_ERROR,
+                memory_id=memory_id,
+                external_memory_id=external_memory_id,
+                error_code=_safe_error_code(exc),
+            )
+
+    async def _execute_add(
+        self, operation: MemoryIndexOperation, item: MemoryItem
+    ) -> MemoryIndexOperationResult:
+        scan = await self.scan_provider_records(
+            tenant_id=operation.tenant_id,
+            user_id=item.user_id or item.subject_id,
+            memory_id=operation.memory_id,
+        )
+        if scan.status != MemoryProviderOperationStatus.SUCCESS:
+            return _provider_error_result(operation, scan.error_code or "provider_scan_failed")
+        records = _matching_provider_records(scan.records, item)
+        if records:
+            keeper = _preferred_provider_record(records, item)
+            duplicate_ids = tuple(
+                record.external_memory_id
+                for record in records
+                if record.external_memory_id != keeper.external_memory_id
+            )
+            for external_id in duplicate_ids:
+                deleted = await self.delete_provider_record(
+                    memory_id=item.memory_id, external_memory_id=external_id
+                )
+                if not deleted.completed:
+                    return _provider_error_result(
+                        operation, deleted.error_code or "duplicate_delete_failed"
+                    )
+            if keeper.revision_id != item.current_revision_id or keeper.content != item.content:
+                await _call_mem0_update(
+                    self._memory(),
+                    memory_id=keeper.external_memory_id,
+                    data=item.content,
+                    metadata=_mem0_metadata_for_item(item, self.settings),
+                )
+            return MemoryIndexOperationResult(
+                operation=operation.operation,
+                status=MemoryProviderOperationStatus.SUCCESS,
+                memory_id=operation.memory_id,
+                external_memory_id=keeper.external_memory_id,
+                adopted=True,
+                duplicate_external_ids=duplicate_ids,
+            )
+        raw = await _call_mem0_add(
+            self._memory(),
+            payload=item.content,
+            user_id=item.user_id or item.subject_id,
+            metadata=_mem0_metadata_for_item(item, self.settings),
+        )
+        external_id = _extract_mem0_memory_id(raw)
+        if not external_id:
+            return _provider_error_result(operation, "provider_id_missing")
+        return MemoryIndexOperationResult(
+            operation=operation.operation,
+            status=MemoryProviderOperationStatus.SUCCESS,
+            memory_id=operation.memory_id,
+            external_memory_id=external_id,
+        )
+
+    async def _execute_update(
+        self, operation: MemoryIndexOperation, item: MemoryItem
+    ) -> MemoryIndexOperationResult:
+        external_id = operation.external_memory_id or _mapped_external_id(item)
+        adopted = False
+        if not external_id:
+            scan = await self.scan_provider_records(
+                tenant_id=operation.tenant_id,
+                user_id=item.user_id or item.subject_id,
+                memory_id=operation.memory_id,
+            )
+            if scan.status != MemoryProviderOperationStatus.SUCCESS:
+                return _provider_error_result(operation, scan.error_code or "provider_scan_failed")
+            records = _matching_provider_records(scan.records, item)
+            if not records:
+                return _provider_error_result(operation, "external_mapping_missing")
+            keeper = _preferred_provider_record(records, item)
+            external_id = keeper.external_memory_id
+            adopted = True
+            for duplicate in records:
+                if duplicate.external_memory_id == external_id:
+                    continue
+                deleted = await self.delete_provider_record(
+                    memory_id=item.memory_id,
+                    external_memory_id=duplicate.external_memory_id,
+                )
+                if not deleted.completed:
+                    return _provider_error_result(
+                        operation, deleted.error_code or "duplicate_delete_failed"
+                    )
+        await _call_mem0_update(
+            self._memory(),
+            memory_id=external_id,
+            data=item.content,
+            metadata=_mem0_metadata_for_item(item, self.settings),
+        )
+        return MemoryIndexOperationResult(
+            operation=operation.operation,
+            status=MemoryProviderOperationStatus.SUCCESS,
+            memory_id=operation.memory_id,
+            external_memory_id=external_id,
+            adopted=adopted,
+        )
+
+    async def _execute_delete(
+        self, operation: MemoryIndexOperation, item: MemoryItem | None
+    ) -> MemoryIndexOperationResult:
+        external_ids: list[str] = []
+        mapped = operation.external_memory_id or _mapped_external_id(item)
+        if mapped:
+            external_ids.append(mapped)
+        scan = await self.scan_provider_records(
+            tenant_id=operation.tenant_id,
+            user_id=(item.user_id or item.subject_id) if item is not None else None,
+            memory_id=operation.memory_id,
+        )
+        if scan.status != MemoryProviderOperationStatus.SUCCESS:
+            return _provider_error_result(operation, scan.error_code or "provider_scan_failed")
+        external_ids.extend(record.external_memory_id for record in scan.records)
+        external_ids = list(dict.fromkeys(external_ids))
+        if not external_ids:
+            return MemoryIndexOperationResult(
+                operation=operation.operation,
+                status=MemoryProviderOperationStatus.NOT_FOUND,
+                memory_id=operation.memory_id,
+            )
+        saw_success = False
+        for external_id in external_ids:
+            result = await self.delete_provider_record(
+                memory_id=operation.memory_id, external_memory_id=external_id
+            )
+            if not result.completed:
+                return _provider_error_result(
+                    operation, result.error_code or "provider_delete_failed"
+                )
+            saw_success = saw_success or result.status == MemoryProviderOperationStatus.SUCCESS
+        return MemoryIndexOperationResult(
+            operation=operation.operation,
+            status=(
+                MemoryProviderOperationStatus.SUCCESS
+                if saw_success
+                else MemoryProviderOperationStatus.NOT_FOUND
+            ),
+            memory_id=operation.memory_id,
+            external_memory_id=external_ids[0],
+            duplicate_external_ids=tuple(external_ids[1:]),
+        )
 
     async def extract(self, candidates: list[MemoryWriteCandidate]) -> list[MemoryWriteCandidate]:
         return candidates
@@ -203,7 +619,7 @@ class Mem0MemoryAdapter:
         except Exception as exc:
             await self._record_error("delete", exc)
             if self.settings.memory_mem0_fail_closed_effective:
-                raise Mem0AdapterError("delete", str(exc)) from exc
+                raise Mem0AdapterError("delete", _safe_exception(exc)) from exc
             return None
         for memory_id in memory_ids:
             item = items_by_id.get(memory_id)
@@ -220,7 +636,7 @@ class Mem0MemoryAdapter:
             except Exception as exc:
                 await self._record_error("delete", exc, item=item, memory_id=memory_id)
                 if self.settings.memory_mem0_fail_closed_effective:
-                    raise Mem0AdapterError("delete", str(exc)) from exc
+                    raise Mem0AdapterError("delete", _safe_exception(exc)) from exc
         return None
 
     async def _record_error(
@@ -232,10 +648,11 @@ class Mem0MemoryAdapter:
         request: MemoryRecallRequest | None = None,
         memory_id: str | None = None,
     ) -> None:
+        safe_error = _safe_exception(exc)
         self._degraded = True
-        self._last_error = str(exc)
+        self._last_error = safe_error
         self._last_error_operation = operation
-        logger.warning("mem0 %s failed: %s", operation, exc)
+        logger.warning("mem0 %s failed: %s", operation, safe_error)
         await self._record_history(
             operation,
             status="error",
@@ -244,7 +661,7 @@ class Mem0MemoryAdapter:
             user_id=request.user.id if request else None,
             tenant_id=request.user.tenant_id if request else None,
             agent_id=request.agent_id if request else None,
-            error=str(exc),
+            error=safe_error,
         )
 
     async def _record_history(
@@ -369,7 +786,52 @@ async def _call_mem0_add(
     add = getattr(client, "add", None)
     if not callable(add):
         raise RuntimeError("mem0 client does not expose add()")
-    return await _maybe_await(add(payload, user_id=user_id, metadata=metadata))
+    return await _maybe_await(add(payload, user_id=user_id, metadata=metadata, infer=False))
+
+
+async def _call_mem0_update(
+    client: Any,
+    *,
+    memory_id: str,
+    data: str,
+    metadata: dict[str, Any],
+) -> Any:
+    update_memory = getattr(client, "update", None)
+    if not callable(update_memory):
+        raise RuntimeError("mem0 client does not expose update()")
+    return await _maybe_await(update_memory(memory_id=memory_id, data=data, metadata=metadata))
+
+
+async def _call_mem0_get_all(
+    client: Any,
+    *,
+    filters: dict[str, Any],
+    limit: int,
+    offset: int = 0,
+) -> Any:
+    get_all = getattr(client, "get_all", None)
+    if not callable(get_all):
+        raise RuntimeError("mem0 client does not expose get_all()")
+    if not any(key in filters for key in ("user_id", "agent_id", "run_id")):
+        vector_store = getattr(client, "vector_store", None)
+        milvus_client = getattr(vector_store, "client", None)
+        query = getattr(milvus_client, "query", None)
+        create_filter = getattr(vector_store, "_create_filter", None)
+        if callable(query) and callable(create_filter):
+            return await _maybe_await(
+                query(
+                    collection_name=vector_store.collection_name,
+                    filter=create_filter(filters),
+                    limit=limit,
+                    offset=offset,
+                    output_fields=["id", "metadata"],
+                )
+            )
+        list_records = getattr(vector_store, "list", None)
+        if callable(list_records) and offset == 0:
+            return await _maybe_await(list_records(filters=filters, top_k=limit))
+    raw = await _maybe_await(get_all(filters=filters, top_k=limit + offset))
+    return _slice_provider_results(raw, offset=offset, limit=limit)
 
 
 async def _call_mem0_delete(client: Any, memory_id: str) -> None:
@@ -392,8 +854,10 @@ def _search_filters(request: MemoryRecallRequest) -> dict[str, Any]:
     for key, value in metadata_filters.items():
         if value is not None:
             filters[key] = value
+    reserved = {"agent_id", "scope", "subject_id", "subject_type", "tenant_id", "user_id"}
     for key, value in request.metadata_filters.items():
-        filters[key] = value
+        if key not in reserved:
+            filters[key] = value
     scopes = [str(scope) for scope in request.scopes]
     if len(scopes) == 1:
         filters["scope"] = scopes[0]
@@ -407,28 +871,25 @@ def _search_filter_sets(request: MemoryRecallRequest) -> list[dict[str, Any]]:
     return [_search_filters(request.model_copy(update={"scopes": [scope]})) for scope in scopes]
 
 
-def _dedupe_items(items: list[MemoryItem]) -> list[MemoryItem]:
-    deduped = []
-    seen = set()
+def _dedupe_provider_refs(items: list[tuple[str, str | None]]) -> list[tuple[str, str | None]]:
+    deduped: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
     for item in items:
-        if item.memory_id in seen:
+        if item[0] in seen:
             continue
-        seen.add(item.memory_id)
+        seen.add(item[0])
         deduped.append(item)
     return deduped
 
 
-def _mem0_payload_for_item(item: MemoryItem) -> Any:
-    messages = item.structured_value.get("messages") or item.metadata.get("messages")
-    if isinstance(messages, list) and messages:
-        return messages
-    return item.content
-
-
 def _mem0_metadata_for_item(item: MemoryItem, settings: Settings) -> dict[str, Any]:
     metadata = {
-        **item.metadata,
+        **_safe_provider_metadata(item.metadata),
         "memory_id": item.memory_id,
+        "revision_id": item.current_revision_id,
+        "revision_no": item.current_revision_no,
+        "memory_key": item.memory_key,
+        "candidate_hash": item.candidate_hash,
         "scope": str(item.scope),
         "subject_type": item.subject_type,
         "subject_id": item.subject_id,
@@ -440,6 +901,10 @@ def _mem0_metadata_for_item(item: MemoryItem, settings: Settings) -> dict[str, A
         "confidence": item.confidence,
         "importance": item.importance,
         "ttl_expires_at": item.ttl_expires_at.isoformat() if item.ttl_expires_at else None,
+        "lifecycle_status": str(item.lifecycle_status),
+        "index_status": str(item.index_status) if item.index_status is not None else None,
+        "formation_job_id": item.formation_job_id,
+        "canonical_refs": list(item.canonical_refs[:50]),
         "memory_provider": "mem0",
         "mem0_collection": settings.memory_mem0_milvus_collection,
     }
@@ -457,60 +922,40 @@ def _stored_mem0_metadata(
     return metadata
 
 
-def _items_from_mem0_results(
-    raw: Any,
-    *,
-    request: MemoryRecallRequest,
-    collection: str,
-) -> list[MemoryItem]:
-    results = _normalise_results(raw)
-    items: list[MemoryItem] = []
-    for index, result in enumerate(results):
+def _canonical_refs_from_mem0_results(raw: Any) -> list[tuple[str, str | None]]:
+    refs: list[tuple[str, str | None]] = []
+    for result in _normalise_results(raw):
         if not isinstance(result, dict):
             continue
-        content = result.get("memory") or result.get("content") or result.get("text") or ""
-        if not content:
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        memory_id = metadata.get("memory_id")
+        if isinstance(memory_id, str) and memory_id:
+            refs.append((memory_id, _result_mem0_id(result)))
+    return refs
+
+
+def _provider_records_from_raw(raw: Any) -> list[MemoryProviderRecord]:
+    records = []
+    for result in _normalise_results(raw):
+        if not isinstance(result, dict):
+            continue
+        external_id = _result_mem0_id(result)
+        if not external_id:
             continue
         metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-        mem0_memory_id = _result_mem0_id(result)
-        memory_id = str(
-            metadata.get("memory_id")
-            or result.get("memory_id")
-            or mem0_memory_id
-            or f"mem0:{index}"
-        )
-        item_metadata = {
-            **metadata,
-            "memory_provider": "mem0",
-            "mem0_collection": collection,
-        }
-        if mem0_memory_id:
-            item_metadata["mem0_memory_id"] = mem0_memory_id
-        items.append(
-            MemoryItem(
-                memory_id=memory_id,
-                scope=str(
-                    metadata.get("scope")
-                    or (request.scopes[0] if request.scopes else "user_preference")
+        records.append(
+            MemoryProviderRecord(
+                external_memory_id=external_id,
+                memory_id=_optional_string(metadata.get("memory_id")),
+                revision_id=_optional_string(metadata.get("revision_id")),
+                tenant_id=_optional_string(metadata.get("tenant_id")),
+                content=str(
+                    result.get("memory") or result.get("content") or metadata.get("data") or ""
                 ),
-                subject_type=str(metadata.get("subject_type") or request.subject_type),
-                subject_id=str(metadata.get("subject_id") or request.subject_id or request.user.id),
-                user_id=str(metadata.get("user_id") or request.user.id),
-                tenant_id=metadata.get("tenant_id") or request.user.tenant_id,
-                agent_id=metadata.get("agent_id") or request.agent_id,
-                content=str(content),
-                source=str(metadata.get("source") or "mem0"),
-                confidence=_safe_float(
-                    result.get("confidence") or metadata.get("confidence") or result.get("score"),
-                    0.8,
-                ),
-                importance=_safe_float(metadata.get("importance"), 0.5),
-                visibility=str(metadata.get("visibility") or "user"),
-                ttl_expires_at=_parse_datetime(metadata.get("ttl_expires_at")),
-                metadata=item_metadata,
+                metadata=dict(metadata),
             )
         )
-    return items
+    return records
 
 
 def _normalise_results(raw: Any) -> list[Any]:
@@ -523,8 +968,37 @@ def _normalise_results(raw: Any) -> list[Any]:
             return memories
         return [raw]
     if isinstance(raw, list):
-        return raw
+        if len(raw) == 1 and isinstance(raw[0], (list, tuple)):
+            return [_normalise_provider_result(value) for value in raw[0]]
+        return [_normalise_provider_result(value) for value in raw]
     return []
+
+
+def _slice_provider_results(raw: Any, *, offset: int, limit: int) -> Any:
+    if offset == 0:
+        return raw
+    if isinstance(raw, dict):
+        for key in ("results", "memories"):
+            values = raw.get(key)
+            if isinstance(values, list):
+                return {**raw, key: values[offset : offset + limit]}
+    if isinstance(raw, list):
+        return raw[offset : offset + limit]
+    return raw
+
+
+def _normalise_provider_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if not callable(model_dump):
+        return value
+    dumped = model_dump()
+    payload = dumped.get("payload")
+    if isinstance(payload, dict):
+        dumped["metadata"] = payload
+        dumped["memory"] = payload.get("data", "")
+    return dumped
 
 
 def _extract_mem0_memory_id(raw: Any) -> str | None:
@@ -549,23 +1023,99 @@ def _delete_target(memory_id: str, item: MemoryItem | None) -> str:
     return memory_id
 
 
-def _safe_float(value: Any, default: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return min(max(parsed, 0.0), 1.0)
+def _mapped_external_id(item: MemoryItem | None) -> str | None:
+    if item is None:
+        return None
+    return _optional_string(item.metadata.get("mem0_memory_id"))
 
 
-def _parse_datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+def _matching_provider_records(
+    records: tuple[MemoryProviderRecord, ...], item: MemoryItem
+) -> list[MemoryProviderRecord]:
+    return [
+        record
+        for record in records
+        if record.memory_id == item.memory_id and record.tenant_id == item.tenant_id
+    ]
+
+
+def _preferred_provider_record(
+    records: list[MemoryProviderRecord], item: MemoryItem
+) -> MemoryProviderRecord:
+    mapped = _mapped_external_id(item)
+    return sorted(
+        records,
+        key=lambda record: (
+            record.external_memory_id != mapped,
+            record.revision_id != item.current_revision_id,
+            record.external_memory_id,
+        ),
+    )[0]
+
+
+def _safe_provider_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "authority",
+        "artifact_id",
+        "plan_id",
+        "request_id",
+        "result_id",
+        "run_id",
+        "session_id",
+        "slot",
+        "source_trace",
+        "structured_event_version",
+        "turn_id",
+    }
+    safe: dict[str, Any] = {}
+    for key in allowed:
+        value = metadata.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+    return safe
+
+
+def _provider_error_result(
+    operation: MemoryIndexOperation, error_code: str
+) -> MemoryIndexOperationResult:
+    return MemoryIndexOperationResult(
+        operation=operation.operation,
+        status=MemoryProviderOperationStatus.RETRYABLE_ERROR,
+        memory_id=operation.memory_id,
+        external_memory_id=operation.external_memory_id,
+        error_code=error_code[:128],
+    )
+
+
+def _safe_error_code(exc: Exception) -> str:
+    name = type(exc).__name__.lower()
+    return f"provider_{name}"[:128]
+
+
+def _safe_exception(exc: Exception) -> str:
+    return _safe_error_code(exc)
+
+
+def _hash_ref(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
+
+
+def _is_not_found_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 404:
+        return True
+    text = str(exc).casefold()
+    return "not found" in text or "does not exist" in text
+
+
+def _optional_string(value: Any) -> str | None:
+    return str(value) if value is not None and str(value) else None
+
+
+def _agent_visible(item: MemoryItem, agent_id: str | None) -> bool:
+    if agent_id is None:
+        return item.agent_id is None
+    return item.agent_id in {None, agent_id}
 
 
 def build_memory_adapter(
@@ -575,3 +1125,16 @@ def build_memory_adapter(
     if settings.memory_strategy_provider == "mem0":
         return Mem0MemoryAdapter(settings, repository)
     return RepositoryMemoryAdapter(repository)
+
+
+__all__ = [
+    "Mem0AdapterError",
+    "Mem0MemoryAdapter",
+    "MemoryIndexOperationResult",
+    "MemoryProviderOperationStatus",
+    "MemoryProviderRecord",
+    "MemoryProviderScanResult",
+    "MemoryStrategyAdapter",
+    "RepositoryMemoryAdapter",
+    "build_memory_adapter",
+]

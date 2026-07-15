@@ -1,4 +1,6 @@
+import asyncio
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from inspect import isawaitable
 from typing import Any
 
@@ -23,6 +25,8 @@ class LocalFunctionRegistry:
 class LocalFunctionInvoker:
     def __init__(self, registry: LocalFunctionRegistry | None = None) -> None:
         self.registry = registry or LocalFunctionRegistry()
+        self._inflight: dict[str, asyncio.Task] = {}
+        self._completed: dict[str, dict[str, Any]] = {}
 
     async def invoke(
         self,
@@ -35,9 +39,11 @@ class LocalFunctionInvoker:
         func = self.registry.get(str(function_name))
         if func is None:
             raise InvocationError(f"Local function is not registered: {function_name}")
-        result = func(invocation)
-        if isawaitable(result):
-            result = await result
+        execution_key = invocation.context.get("plan_execution_idempotency_key")
+        if isinstance(execution_key, str) and execution_key:
+            result = await self._invoke_idempotent(execution_key, func, invocation)
+        else:
+            result = await self._call(func, invocation)
         return AgentInvocationResult(
             run_id=invocation.run_id,
             agent_id=definition.agent_id,
@@ -46,3 +52,30 @@ class LocalFunctionInvoker:
             output=result.get("output", result),
             usage=result.get("usage", {}),
         )
+
+    async def _invoke_idempotent(self, execution_key: str, func, invocation) -> dict[str, Any]:
+        completed = self._completed.get(execution_key)
+        if completed is not None:
+            return deepcopy(completed)
+        task = self._inflight.get(execution_key)
+        if task is None:
+            task = asyncio.create_task(self._call(func, invocation))
+            self._inflight[execution_key] = task
+        try:
+            result = await asyncio.shield(task)
+        finally:
+            if task.done():
+                self._inflight.pop(execution_key, None)
+        self._completed[execution_key] = deepcopy(result)
+        while len(self._completed) > 1000:
+            self._completed.pop(next(iter(self._completed)))
+        return deepcopy(result)
+
+    async def _call(self, func, invocation) -> dict[str, Any]:
+        if asyncio.iscoroutinefunction(func):
+            result = func(invocation)
+        else:
+            result = await asyncio.to_thread(func, invocation)
+        if isawaitable(result):
+            result = await result
+        return result

@@ -80,7 +80,15 @@
 
 #### Scenario: 模型输出有效候选
 - **WHEN** 形成模型识别到可长期复用的偏好、事实、任务引用或 summary
-- **THEN** 每个候选包含 proposed operation、scope、content、subject hint、memory key hint、confidence、importance、sensitivity、evidence refs 和 reason
+- **THEN** 每个候选包含 proposed operation、scope、content、subject hint、memory key hint、`target/slot/value/temporal_scope/polarity/certainty/change_intent`、confidence、importance、sensitivity、evidence refs 和 reason
+
+#### Scenario: 开放式自然语言由形成模型解释
+- **WHEN** 用户用任意自然语言、同义表达、引述、否定、临时指令或多意图句表达可能的长期记忆
+- **THEN** formation model 负责把语义投影为严格结构化字段，policy MUST NOT 通过持续增加语言关键词或正则重新承担开放式自然语言理解
+
+#### Scenario: 结构化语义缺失或不确定
+- **WHEN** 普通对话候选缺少 target、slot、value、temporal scope 或 polarity，字段为 unknown，或字段之间冲突
+- **THEN** 候选 MUST NOT 自动产生 ADD、UPDATE 或 DELETE；系统将其标记为 schema error/retry 或 PENDING，具体取决于候选是否仍满足严格 response schema
 
 #### Scenario: 模型输出无效 JSON
 - **WHEN** 模型返回无法解析或不符合候选 schema 的输出
@@ -88,7 +96,7 @@
 
 #### Scenario: 自然语言记忆请求不依赖关键词旁路
 - **WHEN** 用户以不同自然语言表达“记住”“以后”“忘记”或同等语义
-- **THEN** 系统在普通形成批次中根据完整 turn evidence 识别候选，且 MUST NOT 因单一关键词直接写入或删除 memory
+- **THEN** formation model 在普通形成批次中根据完整 turn evidence 输出结构化语义候选，且系统 MUST NOT 因单一关键词、正则命中或 verifier 模型输出直接写入或删除 memory
 
 #### Scenario: Temporary mode 在缓冲前禁写
 - **WHEN** 请求级 temporary/private policy 禁止记忆形成

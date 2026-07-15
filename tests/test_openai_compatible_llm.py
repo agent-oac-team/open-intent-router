@@ -111,6 +111,8 @@ def test_openai_compatible_llm_normalizes_incomplete_plan() -> None:
             },
             "context": {"relation": "multi_task"},
             "plan": {
+                "user_id": "forged-user",
+                "tenant_id": "forged-tenant",
                 "steps": [
                     {
                         "agent_id": "summarizer",
@@ -121,7 +123,7 @@ def test_openai_compatible_llm_normalizes_incomplete_plan() -> None:
                         "description": "Create a task.",
                         "depends_on": ["step_1"],
                     },
-                ]
+                ],
             },
         },
         payload,
@@ -131,6 +133,8 @@ def test_openai_compatible_llm_normalizes_incomplete_plan() -> None:
     assert normalized["decision"]["target_agent_id"] is None
     assert normalized["plan"]["plan_id"].startswith("plan_")
     assert normalized["plan"]["session_id"] == "s1"
+    assert normalized["plan"]["user_id"] == "u1"
+    assert normalized["plan"]["tenant_id"] == "t1"
     assert normalized["plan"]["current_step_id"] == "step_1"
     assert normalized["plan"]["steps"][0]["status"] == "pending"
 
@@ -197,7 +201,11 @@ def _payload() -> LLMRouteInput:
         request=RouteRequest.model_validate(
             {
                 "session_id": "s1",
-                "user": {"id": "u1", "roles": ["operator"]},
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
                 "input": {"text": "summarize this text"},
             }
         ),
@@ -262,7 +270,11 @@ def _multi_agent_payload() -> LLMRouteInput:
         request=RouteRequest.model_validate(
             {
                 "session_id": "s1",
-                "user": {"id": "u1", "roles": ["operator"]},
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
                 "input": {"text": "first summarize this text, then create a task"},
             }
         ),

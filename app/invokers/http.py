@@ -25,6 +25,9 @@ class HttpAgentInvoker:
         if not url:
             raise InvocationError("HTTP Agent requires invocation.config.url")
         headers = config.get("headers") or {}
+        execution_key = invocation.context.get("plan_execution_idempotency_key")
+        if isinstance(execution_key, str) and execution_key:
+            headers = {**headers, "Idempotency-Key": execution_key}
         timeout = float(config.get("timeout_seconds") or self.settings.agent_http_timeout_seconds)
         started = time.perf_counter()
         try:

@@ -23,6 +23,13 @@ def test_runtime_config_exposes_safe_status() -> None:
         context_policy_version="policy-test",
         context_budget_version="budget-test",
         context_projection_version="projection-test",
+        memory_formation_mode="observe",
+        memory_formation_model="private-provider-model-name",
+        memory_formation_model_version="formation-model-test",
+        memory_formation_prompt_version="formation-prompt-test",
+        memory_formation_policy_version="formation-policy-test",
+        memory_formation_worker_enabled=True,
+        memory_formation_sweeper_enabled=True,
     )
     repository = MemoryAgentDefinitionRepository()
     app = create_app()
@@ -46,6 +53,13 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert body["registry_mutation_mode"] == "token_required"
     assert body["memory_enabled"] is True
     assert body["memory_strategy_provider"] == "memory"
+    assert body["memory_formation_mode"] == "observe"
+    assert body["memory_formation_model_version"] == "formation-model-test"
+    assert body["memory_formation_prompt_version"] == "formation-prompt-test"
+    assert body["memory_formation_policy_version"] == "formation-policy-test"
+    assert body["memory_formation_worker_enabled"] is True
+    assert body["memory_formation_sweeper_enabled"] is True
+    assert body["memory_formation_queue_depth"] == 0
     assert body["knowledge_enabled"] is True
     assert body["knowledge_vector_backend"] == "memory"
     assert body["context_pipeline_mode"] == "observe"
@@ -57,6 +71,7 @@ def test_runtime_config_exposes_safe_status() -> None:
     serialized = str(body)
     assert "secret-key" not in serialized
     assert "admin-secret" not in serialized
+    assert "private-provider-model-name" not in serialized
 
 
 async def test_runtime_config_reports_registry_agent_count(settings, summarizer_agent) -> None:
@@ -103,3 +118,30 @@ def test_runtime_config_reports_local_dev_write_mode() -> None:
     assert body["admin_api_token_configured"] is False
     assert body["admin_auth_mode"] == "local_loopback_open"
     assert body["registry_mutation_mode"] == "local_dev_write_enabled"
+
+
+def test_runtime_config_redacts_connection_credentials() -> None:
+    settings = Settings(
+        storage_backend="memory",
+        registry_backend="database",
+        router_llm_base_url="https://router-user:router-pass@example.test/v1?token=secret",
+        memory_mem0_milvus_uri="https://milvus-user:milvus-pass@milvus.test:19530/db?token=secret",
+        knowledge_milvus_uri="https://knowledge-user:knowledge-pass@knowledge.test/vector",
+    )
+    repository = MemoryAgentDefinitionRepository()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
+        settings=settings,
+        repository=repository,
+    )
+    response = TestClient(app).get("/api/v1/runtime/config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["router_llm_base_url"] == "https://example.test/v1"
+    assert body["memory_mem0_milvus_uri"] == "https://milvus.test:19530/db"
+    assert body["knowledge_milvus_uri"] == "https://knowledge.test/vector"
+    serialized = str(body)
+    assert "router-pass" not in serialized
+    assert "milvus-pass" not in serialized
+    assert "knowledge-pass" not in serialized
