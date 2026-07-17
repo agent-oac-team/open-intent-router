@@ -10,6 +10,7 @@ RouteMode = Literal["route_only", "route_and_invoke"]
 LLMProvider = Literal["mock", "openai_compatible"]
 MemoryStrategyProvider = Literal["memory", "mem0"]
 KnowledgeVectorBackend = Literal["memory", "milvus"]
+KnowledgeEmbeddingProvider = Literal["openai_compatible", "deterministic_hash"]
 Mem0VectorProvider = Literal["milvus"]
 Mem0HistoryBackend = Literal["postgresql", "sqlite", "none"]
 PlanExecutionPolicy = Literal[
@@ -158,6 +159,7 @@ class Settings(BaseSettings):
     knowledge_milvus_uri: str | None = ".data/oir_knowledge_milvus.db"
     knowledge_milvus_token: str | None = None
     knowledge_milvus_db_name: str | None = None
+    knowledge_embedding_provider: KnowledgeEmbeddingProvider = "openai_compatible"
     knowledge_embedding_base_url: str | None = None
     knowledge_embedding_api_key: str | None = Field(default=None)
     knowledge_embedding_model: str = "text-embedding-v4"
@@ -186,6 +188,11 @@ class Settings(BaseSettings):
             )
         if self.knowledge_milvus_collection == self.memory_milvus_collection:
             raise ValueError("knowledge and memory Milvus collections must be distinct")
+        if self.knowledge_embedding_provider == "deterministic_hash" and self.app_env not in {
+            "local",
+            "test",
+        }:
+            raise ValueError("deterministic Knowledge embeddings are limited to local/test")
         if self.memory_import_legacy_history_enabled:
             raise ValueError("legacy history import is not supported")
         if self.memory_execution_mode == "state_rehearsal":

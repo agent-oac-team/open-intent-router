@@ -1,3 +1,7 @@
+import hashlib
+import math
+import re
+import unicodedata
 from typing import Any, Protocol
 
 import httpx
@@ -15,6 +19,12 @@ class KnowledgeVectorStore(Protocol):
         source_ids: list[str],
         limit: int,
     ) -> list[tuple[KnowledgeChunk, float]]: ...
+
+
+class KnowledgeEmbeddingClient(Protocol):
+    dimension: int
+
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
 class RepositoryKnowledgeVectorStore:
@@ -38,12 +48,12 @@ class MilvusKnowledgeVectorStore:
         repository: KnowledgeRepository,
         *,
         client: Any | None = None,
-        embedding_client: "OpenAICompatibleEmbeddingClient | None" = None,
+        embedding_client: KnowledgeEmbeddingClient | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self._client = client
-        self.embedding_client = embedding_client or OpenAICompatibleEmbeddingClient(settings)
+        self.embedding_client = embedding_client or build_knowledge_embedding_client(settings)
 
     async def upsert_chunks(self, chunks: list[KnowledgeChunk]) -> int:
         if not chunks:
@@ -199,6 +209,46 @@ class OpenAICompatibleEmbeddingClient:
                     f"expected {self.dimension}, got {len(vector)}"
                 )
         return embeddings
+
+
+class DeterministicHashEmbeddingClient:
+    def __init__(self, settings: Settings) -> None:
+        self.dimension = settings.knowledge_embedding_dim or settings.embedding_dim
+        if not self.dimension or self.dimension <= 0:
+            raise ValueError("Knowledge embedding dimension must be positive")
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_text(text) for text in texts]
+
+    def _embed_text(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimension
+        for token in _lexical_tokens(text):
+            digest = hashlib.blake2b(token.encode(), digest_size=16).digest()
+            index = int.from_bytes(digest[:8], "big") % self.dimension
+            vector[index] += 1.0 if digest[8] & 1 else -1.0
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            vector[0] = 1.0
+            return vector
+        return [value / norm for value in vector]
+
+
+def build_knowledge_embedding_client(settings: Settings) -> KnowledgeEmbeddingClient:
+    if settings.knowledge_embedding_provider == "deterministic_hash":
+        return DeterministicHashEmbeddingClient(settings)
+    return OpenAICompatibleEmbeddingClient(settings)
+
+
+def _lexical_tokens(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    words = re.findall(r"[a-z0-9_]+", normalized)
+    compact = "".join(character for character in normalized if not character.isspace())
+    grams = [
+        compact[index : index + size]
+        for size in (1, 2, 3)
+        for index in range(max(0, len(compact) - size + 1))
+    ]
+    return words + grams
 
 
 def _source_filter(source_ids: list[str]) -> str:

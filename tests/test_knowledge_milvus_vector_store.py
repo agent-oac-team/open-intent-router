@@ -1,9 +1,34 @@
+import math
+
+import pytest
+
 from app.core.config import Settings
 from app.repositories.context_stores import KnowledgeRepository
 from app.schemas.common import UserContext
 from app.schemas.knowledge import KnowledgeChunk, KnowledgeSearchRequest, KnowledgeSource
 from app.services.knowledge_service import KnowledgeService
-from app.services.knowledge_vector_store import MilvusKnowledgeVectorStore
+from app.services.knowledge_vector_store import (
+    DeterministicHashEmbeddingClient,
+    MilvusKnowledgeVectorStore,
+)
+
+
+async def test_deterministic_hash_embeddings_are_repeatable_and_normalized() -> None:
+    client = DeterministicHashEmbeddingClient(
+        Settings(knowledge_embedding_provider="deterministic_hash", knowledge_embedding_dim=32)
+    )
+
+    first, second, related = await client.embed(["活动权益", "活动权益", "活动领取权益"])
+
+    assert first == second
+    assert first != related
+    assert len(first) == 32
+    assert math.isclose(math.sqrt(sum(value * value for value in first)), 1.0)
+
+
+def test_deterministic_hash_embeddings_are_rejected_outside_local_or_test() -> None:
+    with pytest.raises(ValueError, match="limited to local/test"):
+        Settings(app_env="production", knowledge_embedding_provider="deterministic_hash")
 
 
 async def test_milvus_knowledge_vector_store_hydrates_canonical_chunks() -> None:
