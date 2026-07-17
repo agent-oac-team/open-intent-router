@@ -1,0 +1,44 @@
+{
+  "name": "central-route",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/central/route",
+    "headers": {},
+    "query": {},
+    "body": {
+      "request_id": "req_fixture_route",
+      "session_id": "sess_fixture",
+      "user_id": "user_fixture",
+      "user_tags": [
+        "运营版"
+      ],
+      "source": "central_chat",
+      "user_query": "帮我写一条企微文案",
+      "central_chat_history": [],
+      "agent_chat_history": []
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_001",
+      "session_id": "sess_001",
+      "route": {
+        "status": "ok",
+        "action": "open_agent",
+        "agent_id": "daily_wecom_task",
+        "message": "将为您调用企微文案生成智能体。"
+      },
+      "context": {
+        "source": "central_chat",
+        "current_agent_id": null,
+        "relation": "new_task",
+        "artifact_refs": []
+      },
+      "plan": null
+    }
+  }
+}

@@ -49,7 +49,10 @@ async def runtime_config(
         evidence_fixed_questions_path=settings.evidence_fixed_questions_path,
         agent_http_timeout_seconds=settings.agent_http_timeout_seconds,
         memory_enabled=settings.memory_enabled,
+        memory_recall_enabled=settings.memory_recall_enabled,
         memory_formation_mode=settings.memory_formation_mode,
+        memory_execution_mode=settings.memory_execution_mode,
+        memory_turn_outbox_consumer_enabled=settings.memory_turn_outbox_consumer_enabled,
         memory_formation_model_version=settings.memory_formation_model_version,
         memory_formation_prompt_version=settings.memory_formation_prompt_version,
         memory_formation_policy_version=settings.memory_formation_policy_version,
@@ -79,6 +82,11 @@ async def runtime_config(
         memory_mem0_degraded=mem0_metadata.get("status") == "degraded",
         memory_mem0_last_error=None,
         memory_mem0_health_status=mem0_metadata.get("status"),
+        memory_rehearsal_collection=(
+            settings.memory_rehearsal_milvus_collection
+            if settings.memory_execution_mode == "state_rehearsal"
+            else None
+        ),
         knowledge_enabled=settings.knowledge_enabled,
         knowledge_vector_backend=settings.knowledge_vector_backend,
         knowledge_prefetch_timeout_seconds=settings.knowledge_prefetch_timeout_seconds,

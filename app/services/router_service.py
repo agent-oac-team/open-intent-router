@@ -1,4 +1,5 @@
 import re
+from copy import copy
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -21,12 +22,14 @@ from app.schemas.routing import (
     RouteRequest,
     RouteResponse,
 )
+from app.schemas.turns import TurnUserInput
 from app.services.context_service import ContextService
 from app.services.invocation_service import build_invocation_input, missing_required_inputs
 from app.services.plan_builder import build_ordered_plan_from_text
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 from app.services.task_continuation import requests_plan_continuation
+from app.services.turn_service import TurnService
 
 
 class RouterService:
@@ -44,6 +47,7 @@ class RouterService:
         plan_service: PlanService | None = None,
         agent_context_service=None,
         plan_continuation_resolver=None,
+        turn_service: TurnService | None = None,
     ) -> None:
         self.settings = settings
         self.registry = registry
@@ -57,10 +61,12 @@ class RouterService:
         self.plan_service = plan_service
         self.agent_context_service = agent_context_service
         self.plan_continuation_resolver = plan_continuation_resolver
+        self.turn_service = turn_service
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         request_id = request.request_id or f"req_{uuid4().hex}"
         request = request.model_copy(update={"request_id": request_id})
+        await self._start_turn(request)
         available_agents = await self._available_agent_definitions(request)
         available_agent_ids = [agent.agent_id for agent in available_agents]
         tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
@@ -200,6 +206,39 @@ class RouterService:
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
         return response
+
+    async def route_decision_shadow(self, request: RouteRequest) -> RouteResponse:
+        shadow = copy(self)
+        shadow.turn_service = None
+        shadow.plan_service = None
+        shadow.chat_history_service = None
+        shadow.result_repository = None
+        shadow.event_service = None
+        shadow.route_log_repository = None
+        shadow.agent_context_service = None
+        shadow.plan_continuation_resolver = None
+        return await shadow.route(request)
+
+    async def _start_turn(self, request: RouteRequest) -> None:
+        if self.turn_service is None:
+            return
+        tenant_id = request.user.tenant_id
+        if not tenant_id:
+            raise RoutingError("Trusted tenant identity is required")
+        await self.turn_service.start_turn(
+            tenant_id=tenant_id,
+            user_id=request.user.id,
+            session_id=request.session_id,
+            request_id=request.request_id or "",
+            source=request.source,
+            user_input=TurnUserInput(
+                text=request.input.text,
+                metadata={
+                    "input_type": request.input.type,
+                    "attachment_count": len(request.input.attachments),
+                },
+            ),
+        )
 
     async def _available_agent_definitions(self, request: RouteRequest) -> list[AgentDefinition]:
         return [
@@ -626,6 +665,34 @@ class RouterService:
     async def _after_route(self, request: RouteRequest, response: RouteResponse) -> RouteResponse:
         if self.plan_service and response.plan is not None:
             await self.plan_service.save_plan(response.plan)
+        if self.turn_service and response.plan is not None:
+            tenant_id = request.user.tenant_id
+            if not tenant_id:
+                raise RoutingError("Trusted tenant identity is required")
+            await self.turn_service.attach_activity(
+                tenant_id=tenant_id,
+                user_id=request.user.id,
+                request_id=response.request_id,
+                plan_id=response.plan.plan_id,
+                blocked=response.execution_policy != "auto_execute",
+            )
+        if (
+            self.turn_service
+            and response.plan is None
+            and response.invocation is None
+            and response.decision.action in {"reply", "clarify", "unsupported", "silent"}
+        ):
+            tenant_id = request.user.tenant_id
+            if not tenant_id:
+                raise RoutingError("Trusted tenant identity is required")
+            await self.turn_service.complete_route_only(
+                tenant_id=tenant_id,
+                user_id=request.user.id,
+                request_id=response.request_id,
+                response_kind=response.decision.action,
+                response_text=response.assistant_message or response.decision.message or "",
+                error=response.error.model_dump(mode="json") if response.error else None,
+            )
         if self.chat_history_service:
             await self.chat_history_service.record_user_input(
                 session_id=request.session_id,

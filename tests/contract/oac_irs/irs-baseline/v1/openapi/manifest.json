@@ -1,0 +1,149 @@
+{
+  "baseline": "irs-local-runtime-v1",
+  "captured_at": "2026-07-16T03:08:36.861290+00:00",
+  "excluded_surfaces": [
+    "POST /api/v1/admin/agent-registry/sync-feishu",
+    "POST /api/v1/agents/available",
+    "GET /api/v1/sessions/{session_id}/chat-history"
+  ],
+  "operation_count": 22,
+  "operations": [
+    {
+      "method": "GET",
+      "operation_id": "list_agent_registry_api_v1_admin_agent_registry_get",
+      "path": "/api/v1/admin/agent-registry",
+      "snapshot": "operations/registry-list.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "upsert_agent_registry_item_api_v1_admin_agent_registry_post",
+      "path": "/api/v1/admin/agent-registry",
+      "snapshot": "operations/registry-create.json"
+    },
+    {
+      "method": "PUT",
+      "operation_id": "update_agent_registry_item_api_v1_admin_agent_registry__agent_id__put",
+      "path": "/api/v1/admin/agent-registry/{agent_id}",
+      "snapshot": "operations/registry-update.json"
+    },
+    {
+      "method": "PATCH",
+      "operation_id": "set_agent_registry_item_enabled_api_v1_admin_agent_registry__agent_id__enabled_patch",
+      "path": "/api/v1/admin/agent-registry/{agent_id}/enabled",
+      "snapshot": "operations/registry-enabled.json"
+    },
+    {
+      "method": "DELETE",
+      "operation_id": "delete_agent_registry_item_api_v1_admin_agent_registry__agent_id__delete",
+      "path": "/api/v1/admin/agent-registry/{agent_id}",
+      "snapshot": "operations/registry-delete.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "route_message_api_v1_central_route_post",
+      "path": "/api/v1/central/route",
+      "snapshot": "operations/central-route.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "accept_navigation_event_api_v1_central_events_navigation_post",
+      "path": "/api/v1/central/events/navigation",
+      "snapshot": "operations/central-navigation-event.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "accept_agent_event_api_v1_central_events_agent_post",
+      "path": "/api/v1/central/events/agent",
+      "snapshot": "operations/central-agent-event.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "confirm_plan_api_v1_central_plans__plan_id__confirm_post",
+      "path": "/api/v1/central/plans/{plan_id}/confirm",
+      "snapshot": "operations/central-plan-confirm.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "search_knowledge_api_v1_knowledge_search_post",
+      "path": "/api/v1/knowledge/search",
+      "snapshot": "operations/knowledge-search.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "grouped_search_knowledge_api_v1_knowledge_grouped_search_post",
+      "path": "/api/v1/knowledge/grouped-search",
+      "snapshot": "operations/knowledge-grouped-search.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "read_knowledge_api_v1_knowledge_read_post",
+      "path": "/api/v1/knowledge/read",
+      "snapshot": "operations/knowledge-read.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "list_knowledge_assets_api_v1_knowledge_assets_get",
+      "path": "/api/v1/knowledge/assets",
+      "snapshot": "operations/knowledge-assets-list.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "get_knowledge_asset_api_v1_knowledge_assets__asset_id__get",
+      "path": "/api/v1/knowledge/assets/{asset_id}",
+      "snapshot": "operations/knowledge-asset-detail.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "list_knowledge_asset_chunks_api_v1_knowledge_assets__asset_id__chunks_get",
+      "path": "/api/v1/knowledge/assets/{asset_id}/chunks",
+      "snapshot": "operations/knowledge-asset-chunks.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "get_knowledge_chunk_api_v1_knowledge_chunks__chunk_id__get",
+      "path": "/api/v1/knowledge/chunks/{chunk_id}",
+      "snapshot": "operations/knowledge-chunk-detail.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "upload_knowledge_file_api_v1_admin_knowledge_files_post",
+      "path": "/api/v1/admin/knowledge/files",
+      "snapshot": "operations/knowledge-admin-upload.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "list_knowledge_files_api_v1_admin_knowledge_files_get",
+      "path": "/api/v1/admin/knowledge/files",
+      "snapshot": "operations/knowledge-admin-list.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "get_knowledge_file_detail_api_v1_admin_knowledge_files__asset_id__get",
+      "path": "/api/v1/admin/knowledge/files/{asset_id}",
+      "snapshot": "operations/knowledge-admin-detail.json"
+    },
+    {
+      "method": "GET",
+      "operation_id": "list_knowledge_file_chunks_api_v1_admin_knowledge_files__asset_id__chunks_get",
+      "path": "/api/v1/admin/knowledge/files/{asset_id}/chunks",
+      "snapshot": "operations/knowledge-admin-chunks.json"
+    },
+    {
+      "method": "POST",
+      "operation_id": "retry_knowledge_file_api_v1_admin_knowledge_files__asset_id__retry_post",
+      "path": "/api/v1/admin/knowledge/files/{asset_id}/retry",
+      "snapshot": "operations/knowledge-admin-retry.json"
+    },
+    {
+      "method": "DELETE",
+      "operation_id": "delete_knowledge_file_api_v1_admin_knowledge_files__asset_id__delete",
+      "path": "/api/v1/admin/knowledge/files/{asset_id}",
+      "snapshot": "operations/knowledge-admin-delete.json"
+    }
+  ],
+  "service": {
+    "title": "OAC Central Backend",
+    "version": "0.1.0"
+  },
+  "source": "http://127.0.0.1:18080/openapi.json"
+}

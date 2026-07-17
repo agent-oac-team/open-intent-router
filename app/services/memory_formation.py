@@ -20,6 +20,7 @@ from app.schemas.memory import (
     MemoryFormationTrigger,
     MemoryFormationTurn,
 )
+from app.schemas.turns import CanonicalTurn, TurnCapsule, TurnStatus
 
 _MAX_CAPSULE_REFS = 50
 _MAX_CAPSULE_REF_CHARS = 128
@@ -150,6 +151,52 @@ class TurnCapsuleBuilder:
             completed_at=completed,
         )
 
+    def build_canonical_capsule(self, turn: CanonicalTurn) -> TurnCapsule:
+        if turn.status != TurnStatus.COMPLETED:
+            raise ValueError("Turn Capsule requires a completed Canonical Turn")
+        if turn.final_response is None or turn.completed_at is None:
+            raise ValueError("Turn Capsule requires a final semantic response")
+        if not all((turn.turn_id, turn.tenant_id, turn.user_id, turn.session_id, turn.request_id)):
+            raise ValueError("Turn Capsule requires trusted canonical ownership")
+        return TurnCapsule(
+            turn_id=turn.turn_id,
+            tenant_id=turn.tenant_id,
+            user_id=turn.user_id,
+            session_id=turn.session_id,
+            request_id=turn.request_id,
+            source=turn.source,
+            state_version=turn.state_version,
+            user_input=turn.user_input,
+            final_response=turn.final_response,
+            references=turn.references,
+            completed_at=turn.completed_at,
+        )
+
+    def build_from_canonical_turn(self, turn: CanonicalTurn) -> MemoryFormationTurn:
+        capsule = self.build_canonical_capsule(turn)
+        return MemoryFormationTurn(
+            turn_id=capsule.turn_id,
+            request_id=capsule.request_id,
+            session_id=capsule.session_id,
+            run_id=capsule.references.run_ids[0] if capsule.references.run_ids else None,
+            user_id=capsule.user_id,
+            tenant_id=capsule.tenant_id,
+            user_text=_bounded_text(
+                capsule.user_input.text,
+                self.settings.memory_formation_capsule_user_chars,
+            ),
+            assistant_text=_bounded_text(
+                capsule.final_response.text,
+                self.settings.memory_formation_capsule_assistant_chars,
+            ),
+            result_status="completed",
+            result_refs=_bounded_refs(capsule.references.result_ids),
+            plan_refs=_bounded_refs(
+                [capsule.references.plan_id] if capsule.references.plan_id else []
+            ),
+            completed_at=_as_utc(capsule.completed_at),
+        )
+
 
 class FormationTriggerCoordinator:
     def __init__(self, *, settings: Settings, repository) -> None:
@@ -260,6 +307,99 @@ class TurnCaptureService:
         turn = self.builder.build_from_records(run=run, result=result)
         stored_turn, job = await self.coordinator.append_and_check(turn)
         return TurnCaptureResult(status="captured", turn=stored_turn, job=job)
+
+
+class TurnOutboxFormationConsumer:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        outbox_repository,
+        turn_repository,
+        builder: TurnCapsuleBuilder,
+        coordinator: FormationTriggerCoordinator,
+        event_repository,
+        owner: str,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.settings = settings
+        self.outbox_repository = outbox_repository
+        self.turn_repository = turn_repository
+        self.builder = builder
+        self.coordinator = coordinator
+        self.event_repository = event_repository
+        self.owner = owner
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    async def run_once(self) -> dict[str, int | str]:
+        if not self.settings.memory_turn_outbox_consumer_enabled:
+            return {"status": "consumer_off", "processed": 0}
+        now = self.clock()
+        event = await self.outbox_repository.claim(
+            owner=self.owner,
+            now=now,
+            lease_seconds=self.settings.memory_formation_lease_seconds,
+        )
+        if event is None:
+            return {"status": "idle", "processed": 0}
+        try:
+            if event.event_type != "turn.completed":
+                await self._complete(event, now=now)
+                return {"status": "ignored", "processed": 1}
+            turn = await self.turn_repository.get_internal(event.turn_id)
+            if turn is None:
+                raise ValueError("Canonical Turn referenced by Outbox does not exist")
+            skip_reason = self._skip_reason()
+            if skip_reason:
+                await self._record_skip(turn, reason=skip_reason)
+                await self._complete(event, now=now)
+                return {"status": "skipped", "processed": 1, "reason": skip_reason}
+            memory_turn = self.builder.build_from_canonical_turn(turn)
+            await self.coordinator.append_and_check(memory_turn)
+            await self._complete(event, now=now)
+            return {"status": "captured", "processed": 1}
+        except Exception:
+            await self.outbox_repository.fail(
+                event.outbox_id,
+                owner=self.owner,
+                lease_token=event.lease_token or "",
+                now=now,
+                retry_at=now + timedelta(seconds=self.settings.memory_formation_retry_base_seconds),
+                error_code="formation_turn_outbox_error",
+            )
+            return {"status": "retry", "processed": 0}
+
+    def _skip_reason(self) -> str | None:
+        if self.settings.memory_execution_mode == "decision_shadow":
+            return "decision_shadow_no_memory_side_effect"
+        if self.settings.memory_formation_mode == "off":
+            return "formation_mode_off"
+        return None
+
+    async def _record_skip(self, turn: CanonicalTurn, *, reason: str) -> None:
+        digest = hashlib.sha256(f"{turn.turn_id}\x1f{reason}".encode()).hexdigest()
+        await self.event_repository.add_event(
+            MemoryEvent(
+                event_id=f"mevt_skip_{digest[:32]}",
+                event_type="formation_skipped",
+                user_id=turn.user_id,
+                tenant_id=turn.tenant_id,
+                request_id=turn.request_id,
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
+                run_id=turn.references.run_ids[0] if turn.references.run_ids else None,
+                decision_status="skipped",
+                payload={"reason_code": reason, "source": "turn_outbox"},
+            )
+        )
+
+    async def _complete(self, event, *, now: datetime) -> None:
+        await self.outbox_repository.complete(
+            event.outbox_id,
+            owner=self.owner,
+            lease_token=event.lease_token or "",
+            now=now,
+        )
 
 
 class FormationIdleSweeper:
@@ -394,7 +534,9 @@ class MemoryFormationRuntime:
     async def start(self) -> None:
         if self._tasks:
             return
-        if self.settings.memory_formation_mode == "off":
+        if self.settings.memory_formation_mode == "off" and (
+            self.reconciler is None or not self.settings.memory_turn_outbox_consumer_enabled
+        ):
             self.status.state = "disabled"
             return
         self.status.state = "starting"
@@ -404,11 +546,12 @@ class MemoryFormationRuntime:
                 await self.reconciler.run_once()
             except Exception:
                 self.status.last_error_code = "formation_reconciler_error"
-        if self.settings.memory_formation_worker_enabled:
+        formation_enabled = self.settings.memory_formation_mode != "off"
+        if formation_enabled and self.settings.memory_formation_worker_enabled:
             self._tasks.append(
                 asyncio.create_task(self._worker_loop(), name="memory-formation-worker")
             )
-        if self.settings.memory_formation_sweeper_enabled:
+        if formation_enabled and self.settings.memory_formation_sweeper_enabled:
             self._tasks.append(
                 asyncio.create_task(self._sweeper_loop(), name="memory-formation-sweeper")
             )
@@ -416,8 +559,12 @@ class MemoryFormationRuntime:
             self._tasks.append(
                 asyncio.create_task(self._reconciler_loop(), name="memory-formation-reconciler")
             )
-        self.status.worker_running = self.settings.memory_formation_worker_enabled
-        self.status.sweeper_running = self.settings.memory_formation_sweeper_enabled
+        self.status.worker_running = (
+            formation_enabled and self.settings.memory_formation_worker_enabled
+        )
+        self.status.sweeper_running = (
+            formation_enabled and self.settings.memory_formation_sweeper_enabled
+        )
         self.status.reconciler_running = self.reconciler is not None
         self.status.state = "running" if self._tasks else "idle"
 

@@ -1,0 +1,47 @@
+{
+  "name": "knowledge-admin-delete",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/v1/admin/knowledge/files/{asset_id}",
+    "headers": {
+      "X-Admin-Sync-Token": "<redacted-admin-token>",
+      "X-OAC-Username": "fixture-admin",
+      "X-OAC-User-Display-Name": "Fixture Admin"
+    },
+    "query": {
+      "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4"
+    },
+    "body": {
+      "reason": "fixture cleanup"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4",
+      "deleted": true,
+      "cleanup_warnings": [],
+      "job": {
+        "job_id": "kjob_3e226c31aa654b76974344f0e239598d",
+        "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4",
+        "status": "deleted",
+        "stage": "cleanup",
+        "file_metadata": null,
+        "warnings": [],
+        "error_message": null,
+        "total_chunks": 1,
+        "parsed_chunks": 1,
+        "indexed_chunks": 0,
+        "retry_count": 0,
+        "created_by": "fixture-admin",
+        "started_at": "2026-07-16T03:14:54.621676Z",
+        "finished_at": "2026-07-16T03:14:54.621676Z",
+        "created_at": null,
+        "updated_at": null
+      }
+    }
+  }
+}

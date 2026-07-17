@@ -44,12 +44,16 @@ def _ensure_compatible_columns(sync_conn) -> None:
     inspector = inspect(sync_conn)
     dialect = sync_conn.dialect.name
     tables = set(inspector.get_table_names())
-    if "agent_definitions" in tables and "context_text" not in _column_names(
-        inspector, "agent_definitions"
-    ):
-        sync_conn.execute(
-            text("ALTER TABLE agent_definitions ADD COLUMN context_text TEXT DEFAULT '{}'")
-        )
+    if "agent_definitions" in tables:
+        agent_columns = _column_names(inspector, "agent_definitions")
+        if "context_text" not in agent_columns:
+            sync_conn.execute(
+                text("ALTER TABLE agent_definitions ADD COLUMN context_text TEXT DEFAULT '{}'")
+            )
+        if "revision" not in agent_columns:
+            sync_conn.execute(
+                text("ALTER TABLE agent_definitions ADD COLUMN revision INTEGER DEFAULT 0 NOT NULL")
+            )
     if "memory_items" in tables:
         _ensure_memory_item_columns(sync_conn, inspector)
         _backfill_legacy_memories(sync_conn, dialect=dialect)
@@ -59,40 +63,15 @@ def _ensure_compatible_columns(sync_conn) -> None:
         _ensure_formation_turn_request_scope(sync_conn, inspector, dialect=dialect)
     if "plans" in tables:
         _ensure_plan_ownership(sync_conn, inspector, tables, dialect=dialect)
-    _ensure_context_owner_columns(sync_conn, inspector, tables)
+    _ensure_context_owner_columns(sync_conn, inspector, tables, dialect=dialect)
 
 
 def _column_names(inspector, table_name: str) -> set[str]:
     return {column["name"] for column in inspector.get_columns(table_name)}
 
 
-def _ensure_context_owner_columns(sync_conn, inspector, tables: set[str]) -> None:
-    definitions = {
-        "chat_messages": {"tenant_id": "VARCHAR(128)"},
-        "agent_runs": {
-            "user_id": "VARCHAR(128)",
-            "tenant_id": "VARCHAR(128)",
-            "plan_id": "VARCHAR(128)",
-            "step_id": "VARCHAR(128)",
-            "formation_suppressed": "BOOLEAN DEFAULT FALSE NOT NULL",
-            "formation_published_order": "INTEGER DEFAULT 0 NOT NULL",
-            "used_memory_ids_text": "TEXT DEFAULT '[]' NOT NULL",
-        },
-        "agent_results": {
-            "user_id": "VARCHAR(128)",
-            "tenant_id": "VARCHAR(128)",
-            "plan_id": "VARCHAR(128)",
-            "step_id": "VARCHAR(128)",
-            "message": "TEXT DEFAULT '' NOT NULL",
-            "formation_suppressed": "BOOLEAN DEFAULT FALSE NOT NULL",
-            "formation_published": "BOOLEAN DEFAULT FALSE NOT NULL",
-            "turn_captured": "BOOLEAN DEFAULT FALSE NOT NULL",
-        },
-        "agent_events": {
-            "user_id": "VARCHAR(128)",
-            "tenant_id": "VARCHAR(128)",
-        },
-    }
+def _ensure_context_owner_columns(sync_conn, inspector, tables: set[str], *, dialect: str) -> None:
+    definitions = _context_owner_column_definitions(dialect)
     for table, columns_to_add in definitions.items():
         if table not in tables:
             continue
@@ -103,6 +82,59 @@ def _ensure_context_owner_columns(sync_conn, inspector, tables: set[str]) -> Non
             sync_conn.execute(
                 text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{name} ON {table} ({name})")
             )
+        if table == "agent_runs":
+            sync_conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_delegation_key "
+                    "ON agent_runs (delegation_key) WHERE delegation_key IS NOT NULL"
+                )
+            )
+
+
+def _context_owner_column_definitions(dialect: str) -> dict[str, dict[str, str]]:
+    datetime_type = "TIMESTAMP WITH TIME ZONE" if dialect == "postgresql" else "DATETIME"
+    return {
+        "chat_messages": {"tenant_id": "VARCHAR(128)"},
+        "agent_runs": {
+            "user_id": "VARCHAR(128)",
+            "tenant_id": "VARCHAR(128)",
+            "plan_id": "VARCHAR(128)",
+            "step_id": "VARCHAR(128)",
+            "formation_suppressed": "BOOLEAN DEFAULT FALSE NOT NULL",
+            "formation_published_order": "INTEGER DEFAULT 0 NOT NULL",
+            "used_memory_ids_text": "TEXT DEFAULT '[]' NOT NULL",
+            "turn_id": "VARCHAR(128)",
+            "delegated": "BOOLEAN DEFAULT FALSE NOT NULL",
+            "delegation_key": "VARCHAR(128)",
+            "state_version": "INTEGER DEFAULT 1 NOT NULL",
+            "event_sequence": "INTEGER DEFAULT 0 NOT NULL",
+            "deadline_at": datetime_type,
+            "heartbeat_at": datetime_type,
+            "claim_owner": "VARCHAR(128)",
+            "claim_token": "VARCHAR(128)",
+            "claim_expires_at": datetime_type,
+            "terminal_event_id": "VARCHAR(128)",
+        },
+        "agent_results": {
+            "user_id": "VARCHAR(128)",
+            "tenant_id": "VARCHAR(128)",
+            "plan_id": "VARCHAR(128)",
+            "step_id": "VARCHAR(128)",
+            "message": "TEXT DEFAULT '' NOT NULL",
+            "formation_suppressed": "BOOLEAN DEFAULT FALSE NOT NULL",
+            "formation_published": "BOOLEAN DEFAULT FALSE NOT NULL",
+            "turn_captured": "BOOLEAN DEFAULT FALSE NOT NULL",
+            "turn_id": "VARCHAR(128)",
+            "run_state_version": "INTEGER",
+        },
+        "agent_events": {
+            "user_id": "VARCHAR(128)",
+            "tenant_id": "VARCHAR(128)",
+            "turn_id": "VARCHAR(128)",
+            "sequence": "INTEGER",
+            "run_state_version": "INTEGER",
+        },
+    }
 
 
 def _ensure_memory_item_columns(sync_conn, inspector) -> None:

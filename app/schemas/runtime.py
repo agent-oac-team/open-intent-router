@@ -23,7 +23,10 @@ class RuntimeConfigResponse(StrictBaseModel):
     evidence_fixed_questions_path: str | None = None
     agent_http_timeout_seconds: float
     memory_enabled: bool
+    memory_recall_enabled: bool
     memory_formation_mode: str
+    memory_execution_mode: str
+    memory_turn_outbox_consumer_enabled: bool
     memory_formation_model_version: str
     memory_formation_prompt_version: str
     memory_formation_policy_version: str
@@ -49,6 +52,7 @@ class RuntimeConfigResponse(StrictBaseModel):
     memory_mem0_degraded: bool = False
     memory_mem0_last_error: str | None = None
     memory_mem0_health_status: str | None = None
+    memory_rehearsal_collection: str | None = None
     knowledge_enabled: bool
     knowledge_vector_backend: str
     knowledge_prefetch_timeout_seconds: float

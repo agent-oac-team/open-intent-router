@@ -1,0 +1,23 @@
+{
+  "name": "registry-delete",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/v1/admin/agent-registry/{agent_id}",
+    "headers": {
+      "X-Admin-Sync-Token": "<redacted-admin-token>",
+      "X-OAC-Username": "fixture-admin",
+      "X-OAC-User-Display-Name": "Fixture Admin"
+    },
+    "query": {
+      "agent_id": "fixture_agent"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": null
+  }
+}

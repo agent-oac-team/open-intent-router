@@ -4,12 +4,22 @@
 
 ## 配置边界
 
-配置项以 `.env.example` 为准，分为四组：
+配置项以 `.env.example` 为准，分为六组：
 
 - 形成策略：`MEMORY_FORMATION_MODE`、5-turn/30-second、model/prompt/policy version、0.90/0.70 thresholds。
 - 恢复语义：model timeout、lease、max attempts、指数 retry 范围。
 - 后台进程：formation worker/sweeper、index worker、TTL sweeper、maintenance/sweep interval、consolidation。
 - 内容上限：user/assistant/summary capsule chars 和 prompt max chars。
+- 独立关闭：`MEMORY_FORMATION_MODE` 控制自动形成，`MEMORY_RECALL_ENABLED` 控制召回，
+  `MEMORY_FORMATION_WORKER_ENABLED` 控制形成 Job Worker；三者互不替代。
+- 隔离执行：`MEMORY_EXECUTION_MODE=decision_shadow` 禁止 Memory 召回和写副作用；
+  `state_rehearsal` 必须配置独立 `MEMORY_REHEARSAL_DATABASE_URL` 和
+  `MEMORY_REHEARSAL_MILVUS_COLLECTION`，且不得指向主数据域。
+
+自动 Formation 的唯一可信入口是已完成 Canonical Turn 的 `turn.completed` Transactional
+Outbox。Consumer 重新读取 Turn 并验证 tenant/user/session/request 所有权、终态、最终语义响应和
+Result 引用后才构造 Capsule。Plan、Run、Result、Event 或 Host 消息不能脱离 completed Turn 自动
+形成记忆。重复 Outbox 投递按 canonical `turn_id`、policy version 和冻结 window 收敛。
 
 `GET /api/v1/runtime/config` 只暴露非敏感模式、版本、worker 开关、queue/dead-letter/index/delete health。管理员使用 `GET /api/v1/admin/memories/health` 和 `GET /api/v1/admin/memories/metrics` 查看完整无正文聚合；响应不得包含 API key、token、数据库密码、prompt 或候选原文。
 
@@ -27,7 +37,7 @@
 ### 2. Observe
 
 1. 设置 `MEMORY_FORMATION_MODE=observe`，开启 formation worker/sweeper；consolidation 初始关闭。
-2. 至少覆盖完整 5-turn、30-second idle、无 session close、structured event 和 temporary/private 流量。
+2. 至少覆盖完整 5-turn、30-second idle、无 session close、重复 Turn Outbox 和 temporary/private 流量。
 3. 抽样审查 evidence、scope、subject、memory key、ADD/UPDATE/DELETE/NOOP/REJECT/PENDING reason；observe 不允许 current/revision/provider side effect。
 4. 连续观察一个有代表性的流量周期，并用下方 gate 决定是否进入 enforced。
 
@@ -86,11 +96,15 @@ precision review 表至少包含 `job_id/scope/operation/reviewer/correct`；`pr
 
 1. 将 `MEMORY_FORMATION_MODE=off`、`MEMORY_FORMATION_WORKER_ENABLED=false`、`MEMORY_FORMATION_SWEEPER_ENABLED=false`、`MEMORY_CONSOLIDATION_ENABLED=false` 后滚动重启。
 2. 保持 index worker 和 TTL sweeper 开启，以完成已接受的 index/delete/TTL maintenance；off 不是撤销已提交 canonical operation。
-3. 发起一个完整 turn 和一个 structured Plan event，确认没有新的自动 turn/job/decision side effect。
+3. 发起一个完整 Turn 并消费其 Outbox，确认记录 `formation_mode_off` 跳过原因，且没有新的
+   formation turn/job/decision side effect。
 4. 验证显式 write-candidates、recall、用户删除、operation status、repair 和 runtime/debug 查询仍工作。
 5. 观察 queue/dead-letter/index/delete health，保存切换时间、最后处理 job、未完成 operation 和恢复决策。
 
-回退不删除 PostgreSQL schema、revision 或 tombstone，也不从 mem0 history恢复 canonical 内容。重新开启时 worker 依靠 lease、idempotency key、watermark 和 outbox 恢复，不人工复制 provider vector。
+回退不删除 PostgreSQL schema、revision 或 tombstone，也不从 mem0 history恢复 canonical 内容。
+重新开启时 worker 依靠 lease、idempotency key、watermark 和 outbox 恢复，不人工复制 provider
+vector。禁止设置 `MEMORY_IMPORT_LEGACY_HISTORY_ENABLED=true`；OIR 不从 IRS/OAC 历史消息、
+Session、Plan、Result 或 Event 初始化 Memory。
 
 ## 验收命令与 2026-07-14 证据
 

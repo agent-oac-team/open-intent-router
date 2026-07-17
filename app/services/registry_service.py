@@ -68,21 +68,27 @@ class AgentRegistryService:
                 return agent
         return None
 
-    async def upsert_definition(self, definition: AgentDefinition) -> AgentDefinition:
+    async def upsert_definition(
+        self, definition: AgentDefinition, *, expected_revision: int | None = None
+    ) -> AgentDefinition:
         repository = self._require_writable_repository()
-        saved = await repository.upsert(definition)
+        saved = await repository.upsert(definition, expected_revision=expected_revision)
         await self.reload()
         return saved
 
-    async def set_enabled(self, agent_id: str, enabled: bool) -> AgentDefinition | None:
+    async def set_enabled(
+        self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
+    ) -> AgentDefinition | None:
         repository = self._require_writable_repository()
-        saved = await repository.set_enabled(agent_id, enabled)
+        saved = await repository.set_enabled(agent_id, enabled, expected_revision=expected_revision)
         await self.reload()
         return saved
 
-    async def delete_definition(self, agent_id: str) -> bool:
+    async def delete_definition(
+        self, agent_id: str, *, expected_revision: int | None = None
+    ) -> bool:
         repository = self._require_writable_repository()
-        deleted = await repository.delete(agent_id)
+        deleted = await repository.delete(agent_id, expected_revision=expected_revision)
         await self.reload()
         return deleted
 

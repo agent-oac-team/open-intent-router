@@ -65,6 +65,29 @@ class MilvusKnowledgeVectorStore:
         self._load_collection(client)
         return len(records)
 
+    def reset_collection(self) -> None:
+        client = self._milvus_client()
+        if client.has_collection(self.settings.knowledge_milvus_collection):
+            client.drop_collection(collection_name=self.settings.knowledge_milvus_collection)
+        self._ensure_collection(client)
+
+    def list_index_records(self, *, batch_size: int = 500) -> list[dict[str, Any]]:
+        client = self._milvus_client()
+        self._ensure_collection(client)
+        iterator = client.query_iterator(
+            collection_name=self.settings.knowledge_milvus_collection,
+            filter="",
+            batch_size=batch_size,
+            output_fields=["chunk_id", "source_id"],
+        )
+        records: list[dict[str, Any]] = []
+        try:
+            while batch := iterator.next():
+                records.extend(record for record in batch if isinstance(record, dict))
+        finally:
+            iterator.close()
+        return records
+
     async def search(
         self,
         *,

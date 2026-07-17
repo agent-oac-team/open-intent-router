@@ -1,0 +1,366 @@
+{
+  "contract": "oac-irs-migration-baseline/v1",
+  "generated_at": "2026-07-16T11:37:11.518065+00:00",
+  "irs_source_revision": "348cf93fa3441108481631b7768d5ab7670c706e",
+  "oac_source_revision": "cd97c1b with working-tree evidence at 2026-07-16",
+  "counts": {
+    "openapi_operations": 22,
+    "success_fixtures": 22,
+    "error_fixtures": 9,
+    "oac_sequences": 6,
+    "route_golden_cases": 10,
+    "knowledge_golden_cases": 17
+  },
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "da8003c6fd65031ddffa7b574ae65ef5549ace02ee899122663e7846d2296648",
+      "bytes": 1884
+    },
+    {
+      "path": "execution-ticket/v1/README.md",
+      "sha256": "c7b671f3ad018c9806187959da3a6e0f522ea619e54ad96abe1d332cc71ff9fc",
+      "bytes": 1684
+    },
+    {
+      "path": "execution-ticket/v1/contract.json",
+      "sha256": "2f2801e8a791c29361f6c4fdd697c9267e8911a475247f3f45ca8b6007ca1a87",
+      "bytes": 2533
+    },
+    {
+      "path": "golden/knowledge/v1/dataset.json",
+      "sha256": "ce1b3d2d24315b10cdff5bd901844a6fa475110a5ea067b22a3c99ff183a6bb7",
+      "bytes": 9776
+    },
+    {
+      "path": "golden/route/v1/dataset.json",
+      "sha256": "b1701d22fbabe181b02bcb198eb030e6cf3db61850527447a142103925df22d4",
+      "bytes": 7729
+    },
+    {
+      "path": "identity/v1/contract.json",
+      "sha256": "7bf917104fe07035b450d472301510a40ca95ac9813400ea4da8476035898d9a",
+      "bytes": 2915
+    },
+    {
+      "path": "identity/v1/topology-validation.md",
+      "sha256": "44dddf876a92b156cfd7bc602206c7ff4e31117212d87bb186ee345d3a66a0a4",
+      "bytes": 2719
+    },
+    {
+      "path": "irs-baseline/v1/contract-differences.md",
+      "sha256": "b27e9fd158fe0c2184998f3b85089eca942ddcf60eda821bce2e38db04460cd0",
+      "bytes": 7849
+    },
+    {
+      "path": "irs-baseline/v1/errors/central-validation-error.json",
+      "sha256": "66a22d4d3f2a7ad7105123aa6abc003e3242210ba1c628190f036d9f85be341d",
+      "bytes": 1121
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-admin-unauthorized.json",
+      "sha256": "e692b2431b28a178c9d778cc9359198b3335b0d1e6002eb47efc6b31e5244ec9",
+      "bytes": 415
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-embedding-error.json",
+      "sha256": "b03a4c12b91ff8fd9ce9dff2388502fbffe134d2edded7546e176220f66376e3",
+      "bytes": 992
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-no-match.json",
+      "sha256": "00b60dccccfbed7e450e0d012c9e242b417b546d10a5860c206ef67e0660123e",
+      "bytes": 1010
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-permission-filtered.json",
+      "sha256": "0b83fffb5e8e470e4402af04f6e3788a0505e33c80f304cde47b0c62bc261fcf",
+      "bytes": 1145
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-result-truncated.json",
+      "sha256": "ff9a531501b8de1853b86ce01bd3e7dd1214ff39af735dea2616db68228f437b",
+      "bytes": 3406
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-timeout.json",
+      "sha256": "09432ece8021ea3de2f6cc404a170a004663bc355e60ff14bb149928e92f298a",
+      "bytes": 1004
+    },
+    {
+      "path": "irs-baseline/v1/errors/knowledge-vector-search-error.json",
+      "sha256": "0a126e6ae5d5608e18d795aa29de6c63a2902a8fbbbc14a2284ca0414eb84e73",
+      "bytes": 1002
+    },
+    {
+      "path": "irs-baseline/v1/errors/registry-unauthorized.json",
+      "sha256": "99950d8d1446266071926a93bce34d6eb7f0f0e6c9b313d6dc8f2712fa014f96",
+      "bytes": 407
+    },
+    {
+      "path": "irs-baseline/v1/openapi/manifest.json",
+      "sha256": "fe1fb7168a6b1916763bc6bb029795207d96b688098527618e5f90bb03fff927",
+      "bytes": 5523
+    },
+    {
+      "path": "irs-baseline/v1/openapi/openapi.json",
+      "sha256": "93aaba7b3b4e6bd8b3fb06695ea661d4cf612151cd752fbfe6c923474d506cf7",
+      "bytes": 141121
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/central-agent-event.json",
+      "sha256": "c92b7dc01ac3bfec1e8ec725ae2b433c15e15ab270af902e15e62729b3384713",
+      "bytes": 6208
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/central-navigation-event.json",
+      "sha256": "c4471c9167b3c0c9b786db3b9705ded29ee122ea716e905cb3a06b33d4af5ee3",
+      "bytes": 4238
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/central-plan-confirm.json",
+      "sha256": "f1a4a1ed43ea4724cdbf8287fa5526aff6e08c7d9c30d1578050558af4d11efc",
+      "bytes": 3429
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/central-route.json",
+      "sha256": "c37804a2febc67279d82a2b969aba68f8d5298c28b5ec8d06b052b37fa1daa90",
+      "bytes": 11248
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-admin-chunks.json",
+      "sha256": "5fcf8ed22c64720e1a41d8d7314df436049a4f213f0efa6d737d44a812910016",
+      "bytes": 9587
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-admin-delete.json",
+      "sha256": "4224b45de830c2b0281a653152bf5ad1183ced2338844012f6fbf9ab362ea35e",
+      "bytes": 11520
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-admin-detail.json",
+      "sha256": "3873affd92f866207230f6cc005634d16dad5f937db620cfc7a24cb38597592e",
+      "bytes": 15016
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-admin-list.json",
+      "sha256": "0606eb7a01b490b6f9488d6bb63b2a58cbaa5b655cb0e83f85e89873fabef3cc",
+      "bytes": 9130
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-admin-retry.json",
+      "sha256": "3244c9ee572ad6e3d85c4a49863bf02fcac82217056200055a2bbcab83b95de3",
+      "bytes": 14355
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-admin-upload.json",
+      "sha256": "c724a245e463404482b2079f501574567fccd3d2d26767d233d822b4ca593dc0",
+      "bytes": 16340
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-asset-chunks.json",
+      "sha256": "c6ada81c38333ac5fceb3e51c74dd1eaf4ab6e6134985a218bbb74201513e163",
+      "bytes": 22163
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-asset-detail.json",
+      "sha256": "be96c6352f9395d2e9926b7a800de14b861b8aa4960ed54d37c80cab292f0ac6",
+      "bytes": 18428
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-assets-list.json",
+      "sha256": "656305d3f92a7f6b1f6b4a67f6de59cd9fc1b6ce4cc0e2b7ef6aaea52d792bc6",
+      "bytes": 19808
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-chunk-detail.json",
+      "sha256": "2b4294aabec9bd42c52271d24a8811e50ae9b0464a6f887064e1f104e299a695",
+      "bytes": 21576
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-grouped-search.json",
+      "sha256": "cb729b279a5573faeb823d37664d26bff63cc18f95dacb821b5eafb31b4704b7",
+      "bytes": 19096
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-read.json",
+      "sha256": "087bc13cfe37b3eebcd73a931ff6f282c874cbb4eca4c1e3dc7381b84e998e99",
+      "bytes": 22979
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/knowledge-search.json",
+      "sha256": "0f6408c6426c7994c4027ce4bd4fa20209313a1466173578174e5d3ee36e1b88",
+      "bytes": 20637
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/registry-create.json",
+      "sha256": "c7fbfddc9b31ffb84a4bbd8280bf7e966d1521d8d777ee712898a7318adca7b5",
+      "bytes": 5878
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/registry-delete.json",
+      "sha256": "11d8b482c9bfe8ffc2b6fa27f3708e6ae3d6fa2acb3f33cd5f53a61272845f42",
+      "bytes": 2499
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/registry-enabled.json",
+      "sha256": "766f30b1240d223530b665414e957cf250e6cdbbda141a7b2b932a1c2b8ba1af",
+      "bytes": 4853
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/registry-list.json",
+      "sha256": "56c02549c14dd2eb9e650ace2b7d0014963ad8f603c1320001335472a80cc924",
+      "bytes": 4418
+    },
+    {
+      "path": "irs-baseline/v1/openapi/operations/registry-update.json",
+      "sha256": "a416eb7d85b401620c7eb300f17ec383acb61bdba5528efbb8bbd02e602d30c3",
+      "bytes": 6079
+    },
+    {
+      "path": "irs-baseline/v1/success/central-agent-event.json",
+      "sha256": "668de8eaa8beb5ab1d78836e93f3d80bf6e49e9deb48dbc4c3239f114d110122",
+      "bytes": 809
+    },
+    {
+      "path": "irs-baseline/v1/success/central-navigation-event.json",
+      "sha256": "c34e399577c7937efd226a2165553e57214266e05a1261d3f8e6867e33645615",
+      "bytes": 524
+    },
+    {
+      "path": "irs-baseline/v1/success/central-plan-confirm.json",
+      "sha256": "3c59d64fd6523eafcf48e76a1c182af8244968bfd1a7942fa73e986f0e15809f",
+      "bytes": 680
+    },
+    {
+      "path": "irs-baseline/v1/success/central-route.json",
+      "sha256": "cc904300ae2b0d5d45ce05b9d578d1e9605053d58700fe170082db9726e0add0",
+      "bytes": 1025
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-admin-chunks.json",
+      "sha256": "a43f888a7f9eb4098cdd266f90e4ed092181482dcc77c5c68948230e08638454",
+      "bytes": 1874
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-admin-delete.json",
+      "sha256": "64e73f65bc74f62d7b42e728f83d4984ded13468f6e8a41b51d927f08202e1f3",
+      "bytes": 1293
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-admin-detail.json",
+      "sha256": "5cd7dfa99c870688fdddd6b1c1f01c754f1daaf53329954b422ee796e0388ffa",
+      "bytes": 3981
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-admin-list.json",
+      "sha256": "685ad0d085eea6e9ec6bec48d439842b4e5227572ad0d106be2ea3fd6b00cf71",
+      "bytes": 1260
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-admin-retry.json",
+      "sha256": "d2fb8aab8328530a843c718c4e445bf3c0645a4e024746532a791e738cfe890b",
+      "bytes": 2507
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-admin-upload.json",
+      "sha256": "6d7994a18c3b4d861b1ad974389a5225682a69ddf4111c8d1be78a187110245b",
+      "bytes": 2737
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-asset-chunks.json",
+      "sha256": "74dce0ad2b06cd6512a8d38077b70d70877e843d11f40c0e2dafd44d05562be2",
+      "bytes": 3491
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-asset-detail.json",
+      "sha256": "0f889e918c780e0b573af9e830ced93fb770ff004cdb05322293de4d87a8ef9c",
+      "bytes": 1073
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-assets-list.json",
+      "sha256": "b84b6f6a54cb6d568bb2a51c0ccf4abe7fd36cfcdcdf249f4b6a4343de2429e0",
+      "bytes": 1015
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-chunk-detail.json",
+      "sha256": "64db061ae85a06fdc840cab8b655e754a813e08e2ba0d6fd1b2e508316cd4f1d",
+      "bytes": 1883
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-grouped-search.json",
+      "sha256": "f5b7fe682f8c07bd00728549ef54e17123d3bacb2623ce75f64a3fafb5284383",
+      "bytes": 3017
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-read.json",
+      "sha256": "1d15fa17f17d56185d51c509c94c244f66a4d8028568b19ea1715abab308366c",
+      "bytes": 4168
+    },
+    {
+      "path": "irs-baseline/v1/success/knowledge-search.json",
+      "sha256": "0b7aa6edbd33ae56906f889540af92b08ba953ee3a86026dbf53767868c2f7f7",
+      "bytes": 2233
+    },
+    {
+      "path": "irs-baseline/v1/success/registry-create.json",
+      "sha256": "bffd4458edc1c0de8fa212a468b1b16fb3dacc0746b29692d5c963fa0e1fcef9",
+      "bytes": 1178
+    },
+    {
+      "path": "irs-baseline/v1/success/registry-delete.json",
+      "sha256": "d30a1bca51163427c2e8afc59c808ebd5d6acdf537abadd036a08ebe6d3d39f9",
+      "bytes": 494
+    },
+    {
+      "path": "irs-baseline/v1/success/registry-enabled.json",
+      "sha256": "8f66ae05838535757bfcfbce957ca85c99b45d2473b6472ac244843c89ccad37",
+      "bytes": 906
+    },
+    {
+      "path": "irs-baseline/v1/success/registry-list.json",
+      "sha256": "649453e2be53b973c3a170ccd9c4df89942ad24f7d2177adad38d5f03552835b",
+      "bytes": 853
+    },
+    {
+      "path": "irs-baseline/v1/success/registry-update.json",
+      "sha256": "18ebbb1d1a5e0b82b65a2d580092fe2c9097c940eb76283feb1151db2560bd54",
+      "bytes": 1245
+    },
+    {
+      "path": "migration-records/acceptance-thresholds.json",
+      "sha256": "877702abf20cebc7e02421c37b40e23083fbb9135baa07534166d11ab4b60c68",
+      "bytes": 2050
+    },
+    {
+      "path": "migration-records/acceptance-thresholds.md",
+      "sha256": "c1f2c5b7971c50d92a1c40ea9ee10ce9570b6d7ec1f4c40e12bb6ed8e30254df",
+      "bytes": 2240
+    },
+    {
+      "path": "migration-records/irs-local-performance.json",
+      "sha256": "67516ee699bd48f18daf041061e726c2d1bb33bad027cbc652011da64131496d",
+      "bytes": 949
+    },
+    {
+      "path": "migration-records/url-switch-matrix.md",
+      "sha256": "2e37569842eb63659acbaee051cff30ff4edd63b5a1262d01bb5516180dd05bc",
+      "bytes": 3085
+    },
+    {
+      "path": "oac-sequences/v1/README.md",
+      "sha256": "e7d5fa932c39cf33c04f632ac817f0659b20e232ef4d67e73adca32b64155625",
+      "bytes": 1780
+    },
+    {
+      "path": "oac-sequences/v1/sequences.json",
+      "sha256": "7f9a7281b0728991e3cef7a13c86c7b33400a065c197ef698c48e83377f8b059",
+      "bytes": 13455
+    },
+    {
+      "path": "shadow/v1/dataset.json",
+      "sha256": "300b1e952919f3a5e82499902839fc90d861f5ab6a8abcf5dad3341d73fce0d0",
+      "bytes": 2141
+    }
+  ]
+}

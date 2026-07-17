@@ -20,6 +20,7 @@ PlanExecutionPolicy = Literal[
 ]
 ContextPipelineMode = Literal["legacy", "observe", "enforced"]
 MemoryFormationMode = Literal["off", "observe", "enforced"]
+MemoryExecutionMode = Literal["live", "decision_shadow", "state_rehearsal"]
 
 
 class Settings(BaseSettings):
@@ -83,7 +84,13 @@ class Settings(BaseSettings):
     agent_http_timeout_seconds: float = 30.0
 
     memory_enabled: bool = True
+    memory_recall_enabled: bool = True
     memory_formation_mode: MemoryFormationMode = "off"
+    memory_execution_mode: MemoryExecutionMode = "live"
+    memory_turn_outbox_consumer_enabled: bool = True
+    memory_import_legacy_history_enabled: bool = False
+    memory_rehearsal_database_url: str | None = None
+    memory_rehearsal_milvus_collection: str = "oir_memory_vectors_rehearsal"
     memory_formation_window_turns: int = Field(default=5, ge=1, le=100)
     memory_formation_idle_seconds: float = Field(default=30.0, gt=0)
     memory_formation_model: str = "formation-default"
@@ -177,6 +184,22 @@ class Settings(BaseSettings):
                 "memory formation prompt budget is too small for the configured turn window; "
                 f"requires at least {minimum_prompt_chars} characters"
             )
+        if self.knowledge_milvus_collection == self.memory_milvus_collection:
+            raise ValueError("knowledge and memory Milvus collections must be distinct")
+        if self.memory_import_legacy_history_enabled:
+            raise ValueError("legacy history import is not supported")
+        if self.memory_execution_mode == "state_rehearsal":
+            if not self.memory_rehearsal_database_url:
+                raise ValueError("state rehearsal requires an isolated Memory database URL")
+            if self.memory_rehearsal_database_url == self.database_url:
+                raise ValueError(
+                    "state rehearsal Memory database must differ from canonical database"
+                )
+            if self.memory_rehearsal_milvus_collection in {
+                self.memory_milvus_collection,
+                self.knowledge_milvus_collection,
+            }:
+                raise ValueError("state rehearsal Memory collection must be isolated")
         return self
 
     @property

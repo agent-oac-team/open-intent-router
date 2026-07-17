@@ -1,0 +1,791 @@
+{
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "KnowledgeEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "asset_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Metadata"
+          },
+          "business_domain": {
+            "default": "",
+            "title": "Business Domain",
+            "type": "string"
+          },
+          "chunk_id": {
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "chunk_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Metadata"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "freshness": {
+            "default": "unknown",
+            "enum": [
+              "current",
+              "stale",
+              "expired",
+              "unknown"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "index_refs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/KnowledgeIndexRef"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Refs"
+          },
+          "sensitivity": {
+            "enum": [
+              "public",
+              "internal",
+              "restricted",
+              "secret"
+            ],
+            "title": "Sensitivity",
+            "type": "string"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          },
+          "source_ref": {
+            "$ref": "#/components/schemas/KnowledgeSourceRef"
+          },
+          "source_type": {
+            "enum": [
+              "database",
+              "excel",
+              "table",
+              "document"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          },
+          "structured_payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structured Payload"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "chunk_id",
+          "asset_id",
+          "content",
+          "source_type",
+          "source_name",
+          "source_ref",
+          "confidence",
+          "sensitivity"
+        ],
+        "title": "KnowledgeEvidence",
+        "type": "object"
+      },
+      "KnowledgeGroupedAssetResult": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_group": {
+            "title": "Asset Group",
+            "type": "string"
+          },
+          "asset_id": {
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "asset_key": {
+            "title": "Asset Key",
+            "type": "string"
+          },
+          "asset_name": {
+            "title": "Asset Name",
+            "type": "string"
+          },
+          "business_domain": {
+            "title": "Business Domain",
+            "type": "string"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeEvidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "boolean"
+          },
+          "source_file": {
+            "title": "Source File",
+            "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "asset_group",
+          "asset_key",
+          "asset_name",
+          "asset_id",
+          "source_file",
+          "business_domain",
+          "matched",
+          "confidence"
+        ],
+        "title": "KnowledgeGroupedAssetResult",
+        "type": "object"
+      },
+      "KnowledgeGroupedSearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_group": {
+            "minLength": 1,
+            "title": "Asset Group",
+            "type": "string"
+          },
+          "asset_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Keys"
+          },
+          "consumer": {
+            "enum": [
+              "central",
+              "agent",
+              "coze_workflow",
+              "admin"
+            ],
+            "title": "Consumer",
+            "type": "string"
+          },
+          "consumer_id": {
+            "minLength": 1,
+            "title": "Consumer Id",
+            "type": "string"
+          },
+          "include_empty_assets": {
+            "default": true,
+            "title": "Include Empty Assets",
+            "type": "boolean"
+          },
+          "max_chars_per_asset": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Chars Per Asset"
+          },
+          "purpose": {
+            "enum": [
+              "answer",
+              "route",
+              "plan",
+              "execute",
+              "validate",
+              "explain",
+              "workflow"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "request_id": {
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "top_k_per_asset": {
+            "default": 3,
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Top K Per Asset",
+            "type": "integer"
+          },
+          "user_id": {
+            "minLength": 1,
+            "title": "User Id",
+            "type": "string"
+          },
+          "user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "User Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "request_id",
+          "session_id",
+          "user_id",
+          "consumer",
+          "consumer_id",
+          "purpose",
+          "query",
+          "asset_group"
+        ],
+        "title": "KnowledgeGroupedSearchRequest",
+        "type": "object"
+      },
+      "KnowledgeGroupedSearchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_group": {
+            "title": "Asset Group",
+            "type": "string"
+          },
+          "assets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/KnowledgeGroupedAssetResult"
+            },
+            "title": "Assets",
+            "type": "object"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "boolean"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "trace_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Trace Ids",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "request_id",
+          "query",
+          "asset_group",
+          "matched",
+          "confidence"
+        ],
+        "title": "KnowledgeGroupedSearchResponse",
+        "type": "object"
+      },
+      "KnowledgeIndexRef": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "embedding_dim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Dim"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "index_id": {
+            "minLength": 1,
+            "title": "Index Id",
+            "type": "string"
+          },
+          "index_type": {
+            "default": "vector",
+            "enum": [
+              "vector",
+              "keyword",
+              "structured"
+            ],
+            "title": "Index Type",
+            "type": "string"
+          },
+          "store": {
+            "default": "milvus",
+            "title": "Store",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "index_id"
+        ],
+        "title": "KnowledgeIndexRef",
+        "type": "object"
+      },
+      "KnowledgeSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "business_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Id"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "database": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database"
+          },
+          "document_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Name"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "paragraph": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paragraph"
+          },
+          "row": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row"
+          },
+          "section_path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Section Path",
+            "type": "array"
+          },
+          "sheet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet"
+          },
+          "source_type": {
+            "enum": [
+              "database",
+              "excel",
+              "table",
+              "document"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          },
+          "table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          }
+        },
+        "required": [
+          "source_type"
+        ],
+        "title": "KnowledgeSourceRef",
+        "type": "object"
+      },
+      "KnowledgeWarning": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "no_match",
+              "permission_filtered",
+              "secret_filtered",
+              "embedding_error",
+              "vector_search_error",
+              "timeout",
+              "top_k_capped",
+              "disabled",
+              "low_confidence",
+              "configuration_error",
+              "unsupported_file_type",
+              "file_too_large",
+              "parse_warning",
+              "import_failed",
+              "cleanup_warning",
+              "limit_capped",
+              "max_chars_capped",
+              "result_truncated",
+              "missing_ids",
+              "filtered_ids",
+              "ambiguous_source_ref",
+              "unsupported_source_ref"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "KnowledgeWarning",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "OAC Central Backend",
+    "version": "0.1.0"
+  },
+  "method": "POST",
+  "openapi": "3.1.0",
+  "operation": {
+    "operationId": "grouped_search_knowledge_api_v1_knowledge_grouped_search_post",
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/KnowledgeGroupedSearchRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/KnowledgeGroupedSearchResponse"
+            }
+          }
+        },
+        "description": "Successful Response"
+      },
+      "422": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        },
+        "description": "Validation Error"
+      }
+    },
+    "summary": "Grouped Search Knowledge",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  "path": "/api/v1/knowledge/grouped-search"
+}

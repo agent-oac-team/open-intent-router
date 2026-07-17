@@ -1,5 +1,8 @@
 # API 概览
 
+> OAC 使用的 IRS 兼容 API 由独立 Host Adapter 暴露，不属于 OIR Native API。
+> 完整路径、身份、Ticket 和 capability 契约见 [OAC Host Adapter](oac-host-adapter.md)。
+
 本文档说明 `open-intent-router` MVP 阶段提供的主要接口边界。接口以 FastAPI 暴露，完整字段定义以代码中的 Pydantic Schema 和运行时 OpenAPI 文档为准。
 
 ## 健康检查
@@ -12,6 +15,19 @@
 ### `POST /api/v1/route`
 
 只执行意图识别和路由决策，不调用目标 Agent。
+
+每个被接受的语义请求会在路由开始时按可信
+`tenant_id/user_id/request_id` 创建或恢复一个 Canonical Turn。相同身份、session、source
+和当前输入的重试返回同一逻辑 Turn；跨身份或输入冲突会被拒绝。Turn 只保存当前受控输入，
+不会复制 `frontend_context`、Host 历史消息、页面状态或 Provider 会话 ID。
+
+- `reply/clarify/unsupported/silent` 且没有 Plan/Invocation 时，Router 直接完成 Turn，不创建伪 Run。
+- 返回待确认 Plan 时，Turn 绑定 `plan_id` 并保持 `blocked`，等待后续可信状态推进。
+- 外部 Agent 路径保持活动状态，只有所有权一致的最终 Result 才能完成 Turn。
+- Turn/Run/Result/Plan/Outbox 的最终收口使用单一数据库事务；Memory Provider 不在主事务内调用。
+
+Canonical Turn 当前是 OIR 内部应用契约，不新增公开 Turn HTTP 端点。数据库结构和状态不变量见
+[canonical-turn-data-model.md](./canonical-turn-data-model.md)。
 
 典型返回内容包括：
 
@@ -238,7 +254,9 @@ Run 用于记录一次 Agent 调用的生命周期，包括调用输入、调用
 - `GET /api/v1/sessions/{session_id}/messages`
 - `POST /api/v1/sessions/{session_id}/messages`
 
-Session 用于保存用户与路由器之间的消息上下文。MVP 只提供轻量会话消息能力，不实现复杂会话状态机。
+Session API 用于保存 Host 展示和上下文消息，是可丢弃、可重建的读模型；它不是 Canonical Turn、
+Run、Result、Plan 或 Memory 的事实源。删除、刷新或重新加载展示消息不会隐式重开已完成 Turn，
+也不能用消息历史覆盖 OIR 的语义运行状态。MVP 只提供轻量会话消息能力，不实现复杂会话状态机。
 
 `POST /api/v1/sessions/{session_id}/messages` 用于宿主应用写入 `/route` 之外产生的可见聊天消息，例如子 Agent 回复。请求字段保持通用：
 

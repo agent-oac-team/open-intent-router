@@ -52,8 +52,11 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert body["admin_auth_mode"] == "token_required"
     assert body["registry_mutation_mode"] == "token_required"
     assert body["memory_enabled"] is True
+    assert body["memory_recall_enabled"] is True
     assert body["memory_strategy_provider"] == "memory"
     assert body["memory_formation_mode"] == "observe"
+    assert body["memory_execution_mode"] == "live"
+    assert body["memory_turn_outbox_consumer_enabled"] is True
     assert body["memory_formation_model_version"] == "formation-model-test"
     assert body["memory_formation_prompt_version"] == "formation-prompt-test"
     assert body["memory_formation_policy_version"] == "formation-policy-test"

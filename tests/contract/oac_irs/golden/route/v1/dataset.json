@@ -1,0 +1,231 @@
+{
+  "dataset_id": "oac-route-golden",
+  "version": "route-golden/v1",
+  "comparison_policy": {
+    "blocking_fields": ["route.action", "route.agent_id", "context.relation", "plan.shape", "permission_outcome"],
+    "message_policy": "type_and_required_semantics",
+    "text_exact_match": false
+  },
+  "cases": [
+    {
+      "id": "route-reply-direct-answer",
+      "dimensions": ["single_intent", "permission_allow", "direct_answer"],
+      "input": {
+        "request_id": "req_golden_reply",
+        "session_id": "sess_golden_reply",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "central_chat",
+        "user_query": "当前任务已经完成了吗"
+      },
+      "expected": {
+        "action": "reply",
+        "agent_id": null,
+        "relation": "new_task",
+        "plan": "absent",
+        "message": {"type": "non_empty_text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-clarify-missing-input",
+      "dimensions": ["single_intent", "permission_allow", "clarification"],
+      "input": {
+        "request_id": "req_golden_clarify",
+        "session_id": "sess_golden_clarify",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "central_chat",
+        "user_query": "帮我做一个"
+      },
+      "expected": {
+        "action": "clarify",
+        "agent_id": null,
+        "relation": "new_task",
+        "plan": "absent",
+        "message": {"type": "question_text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-open-agent-single-intent",
+      "dimensions": ["single_intent", "permission_allow", "agent_open"],
+      "input": {
+        "request_id": "req_golden_open",
+        "session_id": "sess_golden_open",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "central_chat",
+        "user_query": "帮我生成一条企微客户触达文案"
+      },
+      "expected": {
+        "action": "open_agent",
+        "agent_id": "daily_wecom_task",
+        "relation": "new_task",
+        "plan": "absent",
+        "message": {"type": "text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-continue-current-agent",
+      "dimensions": ["single_intent", "permission_allow", "agent_continue"],
+      "input": {
+        "request_id": "req_golden_continue",
+        "session_id": "sess_golden_continue",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "agent_chat",
+        "user_query": "把刚才的方案再具体一点",
+        "current_agent_id": "strategy_analysis",
+        "current_agent_session_id": "agent_session_golden"
+      },
+      "expected": {
+        "action": "continue_agent",
+        "agent_id": "strategy_analysis",
+        "relation": "continue_current",
+        "plan": "absent",
+        "message": {"type": "text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-exit-current-agent",
+      "dimensions": ["single_intent", "permission_allow", "agent_exit"],
+      "input": {
+        "request_id": "req_golden_exit",
+        "session_id": "sess_golden_exit",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "agent_chat",
+        "user_query": "结束当前智能体",
+        "current_agent_id": "strategy_analysis",
+        "current_agent_session_id": "agent_session_golden",
+        "frontend_context": {
+          "active_agent": {
+            "agent_id": "strategy_analysis",
+            "agent_type": "chat",
+            "status": "running",
+            "agent_session_id": "agent_session_golden"
+          }
+        }
+      },
+      "expected": {
+        "action": "exit_agent",
+        "agent_id": "strategy_analysis",
+        "relation": "exit_agent",
+        "plan": "absent",
+        "message": {"type": "non_empty_text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-show-plan-multi-intent",
+      "dimensions": ["multi_intent", "permission_allow", "plan"],
+      "input": {
+        "request_id": "req_golden_plan",
+        "session_id": "sess_golden_plan",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "central_chat",
+        "user_query": "先生成企微文案，再做成营销海报并进行合规审核"
+      },
+      "expected": {
+        "action": "show_plan",
+        "agent_id": null,
+        "relation": "multi_task",
+        "plan": {
+          "presence": "required",
+          "minimum_steps": 3,
+          "ordered_agent_ids": ["daily_wecom_task", "marketing_poster", "compliance_review"]
+        },
+        "message": {"type": "non_empty_text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-unsupported-capability",
+      "dimensions": ["single_intent", "permission_allow", "unsupported"],
+      "input": {
+        "request_id": "req_golden_unsupported",
+        "session_id": "sess_golden_unsupported",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "central_chat",
+        "user_query": "帮我控制办公室空调温度"
+      },
+      "expected": {
+        "action": "unsupported",
+        "agent_id": null,
+        "relation": "unsupported",
+        "plan": "absent",
+        "message": {"type": "non_empty_text"},
+        "permission_outcome": "allowed_but_no_capability"
+      }
+    },
+    {
+      "id": "route-silent-agent-event",
+      "dimensions": ["event_driven", "permission_allow", "silent"],
+      "input": {
+        "request_id": "req_golden_silent",
+        "session_id": "sess_golden_silent",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "agent_event",
+        "event_id": "evt_golden_progress",
+        "frontend_context": {"event_status": "running", "user_visible_update_required": false}
+      },
+      "expected": {
+        "action": "silent",
+        "agent_id": null,
+        "relation": "continue_current",
+        "plan": "absent",
+        "message": {"type": "empty_or_non_visible_text"},
+        "permission_outcome": "allowed"
+      }
+    },
+    {
+      "id": "route-permission-denied-no-candidates",
+      "dimensions": ["single_intent", "permission_deny", "negative"],
+      "input": {
+        "request_id": "req_golden_permission_deny",
+        "session_id": "sess_golden_permission_deny",
+        "user_id": "user_golden_denied",
+        "user_tags": ["未知版本"],
+        "source": "central_chat",
+        "user_query": "帮我生成一条企微文案"
+      },
+      "expected": {
+        "action": "unsupported",
+        "agent_id": null,
+        "relation": "unsupported",
+        "plan": "absent",
+        "message": {"type": "non_empty_text"},
+        "permission_outcome": "denied_no_candidates",
+        "forbidden_agent_ids": ["strategy_analysis", "daily_wecom_task", "compliance_review", "marketing_poster"]
+      }
+    },
+    {
+      "id": "route-switch-agent",
+      "dimensions": ["single_intent", "permission_allow", "agent_switch"],
+      "input": {
+        "request_id": "req_golden_switch",
+        "session_id": "sess_golden_switch",
+        "user_id": "user_golden",
+        "user_tags": ["运营版"],
+        "source": "agent_chat",
+        "user_query": "不要继续分析了，改为生成企微文案",
+        "current_agent_id": "strategy_analysis",
+        "current_agent_session_id": "agent_session_golden"
+      },
+      "expected": {
+        "action": "open_agent",
+        "agent_id": "daily_wecom_task",
+        "relation": "switch_agent",
+        "plan": "absent",
+        "message": {"type": "text"},
+        "permission_outcome": "allowed"
+      }
+    }
+  ]
+}

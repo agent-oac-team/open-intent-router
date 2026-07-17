@@ -17,6 +17,25 @@ from app.schemas.memory import (
 )
 from app.schemas.plans import Plan
 from app.schemas.sessions import ChatMessage
+from app.schemas.turns import CanonicalTurn
+
+
+class TurnRepository(Protocol):
+    async def create_idempotent(self, turn: CanonicalTurn) -> tuple[CanonicalTurn, bool]: ...
+
+    async def get(self, turn_id: str, *, tenant_id: str, user_id: str) -> CanonicalTurn | None: ...
+
+    async def get_by_request(
+        self, *, tenant_id: str, user_id: str, request_id: str
+    ) -> CanonicalTurn | None: ...
+
+    async def find_by_request_id(self, request_id: str) -> CanonicalTurn | None: ...
+
+    async def get_internal(self, turn_id: str) -> CanonicalTurn | None: ...
+
+    async def update_if_version(
+        self, turn: CanonicalTurn, *, expected_version: int
+    ) -> CanonicalTurn | None: ...
 
 
 class AgentDefinitionRepository(Protocol):
@@ -24,11 +43,15 @@ class AgentDefinitionRepository(Protocol):
 
     async def get(self, agent_id: str) -> AgentDefinition | None: ...
 
-    async def upsert(self, definition: AgentDefinition) -> AgentDefinition: ...
+    async def upsert(
+        self, definition: AgentDefinition, *, expected_revision: int | None = None
+    ) -> AgentDefinition: ...
 
-    async def set_enabled(self, agent_id: str, enabled: bool) -> AgentDefinition | None: ...
+    async def set_enabled(
+        self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
+    ) -> AgentDefinition | None: ...
 
-    async def delete(self, agent_id: str) -> bool: ...
+    async def delete(self, agent_id: str, *, expected_revision: int | None = None) -> bool: ...
 
 
 class MessageRepository(Protocol):

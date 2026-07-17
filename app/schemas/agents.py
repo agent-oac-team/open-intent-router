@@ -63,6 +63,7 @@ class AgentDefinition(StrictBaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
     version: str | None = None
+    revision: int = Field(default=0, ge=0)
     enabled: bool = True
     type: AgentType
     capabilities: list[str] = Field(default_factory=list)
@@ -133,6 +134,7 @@ class AgentDefinition(StrictBaseModel):
             name=self.name,
             description=self.description,
             version=self.version,
+            revision=self.revision,
             enabled=self.enabled,
             type=self.type,
             capabilities=self.capabilities,
@@ -170,6 +172,7 @@ class AgentPublic(StrictBaseModel):
     name: str
     description: str
     version: str | None = None
+    revision: int = Field(default=0, ge=0)
     enabled: bool
     type: AgentType
     capabilities: list[str] = Field(default_factory=list)

@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
     name VARCHAR(200) NOT NULL,
     description TEXT NOT NULL,
     version VARCHAR(64),
+    revision INTEGER DEFAULT 0 NOT NULL,
     type VARCHAR(64) NOT NULL,
     enabled BOOLEAN NOT NULL,
     domain VARCHAR(200),
@@ -106,6 +107,24 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
 CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_definitions_agent_id ON agent_definitions (agent_id);
 CREATE INDEX IF NOT EXISTS ix_agent_definitions_enabled ON agent_definitions (enabled);
 CREATE INDEX IF NOT EXISTS ix_agent_definitions_type ON agent_definitions (type);
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS revision INTEGER DEFAULT 0 NOT NULL;
+
+CREATE TABLE IF NOT EXISTS registry_revisions (
+    revision_id VARCHAR(128) NOT NULL,
+    agent_id VARCHAR(128) NOT NULL,
+    revision INTEGER NOT NULL,
+    operation VARCHAR(32) NOT NULL,
+    operator_id VARCHAR(128) NOT NULL,
+    source VARCHAR(64) NOT NULL,
+    before_text TEXT,
+    after_text TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (revision_id)
+);
+CREATE INDEX IF NOT EXISTS ix_registry_revisions_agent_id ON registry_revisions (agent_id);
+CREATE INDEX IF NOT EXISTS ix_registry_revisions_operation ON registry_revisions (operation);
+CREATE INDEX IF NOT EXISTS ix_registry_revisions_operator_id ON registry_revisions (operator_id);
+CREATE INDEX IF NOT EXISTS ix_registry_revisions_source ON registry_revisions (source);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id SERIAL NOT NULL,
@@ -158,6 +177,66 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_conversation_events_event_id ON conversatio
 CREATE INDEX IF NOT EXISTS ix_conversation_events_event_type ON conversation_events (event_type);
 CREATE INDEX IF NOT EXISTS ix_conversation_events_session_id ON conversation_events (session_id);
 
+CREATE TABLE IF NOT EXISTS canonical_turns (
+    turn_id VARCHAR(128) NOT NULL,
+    tenant_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    session_id VARCHAR(128) NOT NULL,
+    request_id VARCHAR(128) NOT NULL,
+    source VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    state_version INTEGER DEFAULT 1 NOT NULL,
+    user_input_text TEXT NOT NULL,
+    references_text TEXT DEFAULT '{}' NOT NULL,
+    final_response_text TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (turn_id),
+    CONSTRAINT uq_canonical_turns_owner_request UNIQUE (tenant_id, user_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS ix_canonical_turns_tenant_id ON canonical_turns (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_canonical_turns_user_id ON canonical_turns (user_id);
+CREATE INDEX IF NOT EXISTS ix_canonical_turns_session_id ON canonical_turns (session_id);
+CREATE INDEX IF NOT EXISTS ix_canonical_turns_request_id ON canonical_turns (request_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_canonical_turns_request_id ON canonical_turns (request_id);
+CREATE INDEX IF NOT EXISTS ix_canonical_turns_status ON canonical_turns (status);
+CREATE INDEX IF NOT EXISTS idx_canonical_turns_owner_session_status
+    ON canonical_turns (tenant_id, user_id, session_id, status);
+CREATE INDEX IF NOT EXISTS idx_canonical_turns_status_updated
+    ON canonical_turns (status, updated_at);
+
+CREATE TABLE IF NOT EXISTS turn_outbox (
+    outbox_id VARCHAR(128) NOT NULL,
+    turn_id VARCHAR(128) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    idempotency_key VARCHAR(512) NOT NULL,
+    payload_text TEXT DEFAULT '{}' NOT NULL,
+    status VARCHAR(32) DEFAULT 'pending' NOT NULL,
+    attempt_count INTEGER DEFAULT 0 NOT NULL,
+    max_attempts INTEGER DEFAULT 5 NOT NULL,
+    lease_owner VARCHAR(128),
+    lease_token VARCHAR(128),
+    lease_expires_at TIMESTAMP WITH TIME ZONE,
+    available_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    published_at TIMESTAMP WITH TIME ZONE,
+    last_error_code VARCHAR(128),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (outbox_id),
+    CONSTRAINT uq_turn_outbox_idempotency UNIQUE (idempotency_key),
+    CONSTRAINT fk_turn_outbox_turn
+        FOREIGN KEY (turn_id) REFERENCES canonical_turns (turn_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS ix_turn_outbox_turn_id ON turn_outbox (turn_id);
+CREATE INDEX IF NOT EXISTS ix_turn_outbox_event_type ON turn_outbox (event_type);
+CREATE INDEX IF NOT EXISTS ix_turn_outbox_status ON turn_outbox (status);
+CREATE INDEX IF NOT EXISTS ix_turn_outbox_lease_expires_at ON turn_outbox (lease_expires_at);
+CREATE INDEX IF NOT EXISTS ix_turn_outbox_available_at ON turn_outbox (available_at);
+CREATE INDEX IF NOT EXISTS idx_turn_outbox_claim
+    ON turn_outbox (status, available_at, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_turn_outbox_turn_status ON turn_outbox (turn_id, status);
+
 CREATE TABLE IF NOT EXISTS agent_runs (
     run_id VARCHAR(128) NOT NULL,
     request_id VARCHAR(128),
@@ -165,10 +244,21 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     agent_id VARCHAR(128) NOT NULL,
     user_id VARCHAR(128),
     tenant_id VARCHAR(128),
+    turn_id VARCHAR(128),
     plan_id VARCHAR(128),
     step_id VARCHAR(128),
     status VARCHAR(32) NOT NULL,
     invoker_type VARCHAR(64) NOT NULL,
+    delegated BOOLEAN DEFAULT FALSE NOT NULL,
+    delegation_key VARCHAR(128),
+    state_version INTEGER DEFAULT 1 NOT NULL,
+    event_sequence INTEGER DEFAULT 0 NOT NULL,
+    deadline_at TIMESTAMP WITH TIME ZONE,
+    heartbeat_at TIMESTAMP WITH TIME ZONE,
+    claim_owner VARCHAR(128),
+    claim_token VARCHAR(128),
+    claim_expires_at TIMESTAMP WITH TIME ZONE,
+    terminal_event_id VARCHAR(128),
     input_text TEXT NOT NULL,
     output_text TEXT,
     error_text TEXT,
@@ -184,6 +274,17 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS user_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS plan_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS step_id VARCHAR(128);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS turn_id VARCHAR(128);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS delegated BOOLEAN DEFAULT FALSE NOT NULL;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS delegation_key VARCHAR(128);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS state_version INTEGER DEFAULT 1 NOT NULL;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS event_sequence INTEGER DEFAULT 0 NOT NULL;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS claim_owner VARCHAR(128);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS claim_token VARCHAR(128);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS terminal_event_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS formation_suppressed BOOLEAN DEFAULT FALSE NOT NULL;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS formation_published_order INTEGER DEFAULT 0 NOT NULL;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS used_memory_ids_text TEXT DEFAULT '[]' NOT NULL;
@@ -193,6 +294,52 @@ CREATE INDEX IF NOT EXISTS ix_agent_runs_session_id ON agent_runs (session_id);
 CREATE INDEX IF NOT EXISTS ix_agent_runs_status ON agent_runs (status);
 CREATE INDEX IF NOT EXISTS ix_agent_runs_user_id ON agent_runs (user_id);
 CREATE INDEX IF NOT EXISTS ix_agent_runs_tenant_id ON agent_runs (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_agent_runs_turn_id ON agent_runs (turn_id);
+CREATE INDEX IF NOT EXISTS ix_agent_runs_delegated ON agent_runs (delegated);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_delegation_key
+    ON agent_runs (delegation_key) WHERE delegation_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_agent_runs_deadline_at ON agent_runs (deadline_at);
+CREATE INDEX IF NOT EXISTS ix_agent_runs_claim_expires_at ON agent_runs (claim_expires_at);
+CREATE INDEX IF NOT EXISTS ix_agent_runs_terminal_event_id ON agent_runs (terminal_event_id);
+
+CREATE TABLE IF NOT EXISTS execution_tickets (
+    ticket_hash VARCHAR(64) NOT NULL,
+    request_id VARCHAR(128) NOT NULL,
+    run_id VARCHAR(128) NOT NULL,
+    turn_id VARCHAR(128) NOT NULL,
+    tenant_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    agent_id VARCHAR(128) NOT NULL,
+    plan_id VARCHAR(128),
+    step_id VARCHAR(128),
+    purpose VARCHAR(64) NOT NULL,
+    claims_text TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    run_state_version INTEGER DEFAULT 1 NOT NULL,
+    event_sequence INTEGER DEFAULT 0 NOT NULL,
+    lease_owner VARCHAR(128),
+    lease_token VARCHAR(128),
+    lease_expires_at TIMESTAMP WITH TIME ZONE,
+    consumed_event_id VARCHAR(128),
+    consumed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (ticket_hash)
+);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_request_id ON execution_tickets (request_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_run_id ON execution_tickets (run_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_turn_id ON execution_tickets (turn_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_tenant_id ON execution_tickets (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_user_id ON execution_tickets (user_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_agent_id ON execution_tickets (agent_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_plan_id ON execution_tickets (plan_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_step_id ON execution_tickets (step_id);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_purpose ON execution_tickets (purpose);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_status ON execution_tickets (status);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_lease_expires_at
+    ON execution_tickets (lease_expires_at);
+CREATE INDEX IF NOT EXISTS ix_execution_tickets_consumed_event_id
+    ON execution_tickets (consumed_event_id);
 
 CREATE TABLE IF NOT EXISTS agent_results (
     result_id VARCHAR(128) NOT NULL,
@@ -201,9 +348,11 @@ CREATE TABLE IF NOT EXISTS agent_results (
     agent_id VARCHAR(128) NOT NULL,
     user_id VARCHAR(128),
     tenant_id VARCHAR(128),
+    turn_id VARCHAR(128),
     plan_id VARCHAR(128),
     step_id VARCHAR(128),
     status VARCHAR(32) NOT NULL,
+    run_state_version INTEGER,
     message TEXT DEFAULT '' NOT NULL,
     formation_suppressed BOOLEAN DEFAULT FALSE NOT NULL,
     formation_published BOOLEAN DEFAULT FALSE NOT NULL,
@@ -218,6 +367,8 @@ ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS user_id VARCHAR(128);
 ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128);
 ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS plan_id VARCHAR(128);
 ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS step_id VARCHAR(128);
+ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS turn_id VARCHAR(128);
+ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS run_state_version INTEGER;
 ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS message TEXT DEFAULT '' NOT NULL;
 ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS formation_suppressed BOOLEAN DEFAULT FALSE NOT NULL;
 ALTER TABLE agent_results ADD COLUMN IF NOT EXISTS formation_published BOOLEAN DEFAULT FALSE NOT NULL;
@@ -229,6 +380,7 @@ CREATE INDEX IF NOT EXISTS ix_agent_results_status ON agent_results (status);
 CREATE INDEX IF NOT EXISTS ix_agent_results_user_id ON agent_results (user_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_tenant_id ON agent_results (tenant_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_plan_id ON agent_results (plan_id);
+CREATE INDEX IF NOT EXISTS ix_agent_results_turn_id ON agent_results (turn_id);
 
 CREATE TABLE IF NOT EXISTS agent_events (
     event_id VARCHAR(128) NOT NULL,
@@ -238,17 +390,23 @@ CREATE TABLE IF NOT EXISTS agent_events (
     agent_id VARCHAR(128) NOT NULL,
     user_id VARCHAR(128),
     tenant_id VARCHAR(128),
+    turn_id VARCHAR(128),
     agent_session_id VARCHAR(128),
     event_type VARCHAR(64) NOT NULL,
     status VARCHAR(32),
     plan_id VARCHAR(128),
     step_id VARCHAR(128),
+    sequence INTEGER,
+    run_state_version INTEGER,
     payload_text TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     PRIMARY KEY (event_id)
 );
 ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS user_id VARCHAR(128);
 ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128);
+ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS turn_id VARCHAR(128);
+ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS sequence INTEGER;
+ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS run_state_version INTEGER;
 CREATE INDEX IF NOT EXISTS ix_agent_events_agent_id ON agent_events (agent_id);
 CREATE INDEX IF NOT EXISTS ix_agent_events_event_type ON agent_events (event_type);
 CREATE INDEX IF NOT EXISTS ix_agent_events_plan_id ON agent_events (plan_id);
@@ -256,6 +414,7 @@ CREATE INDEX IF NOT EXISTS ix_agent_events_run_id ON agent_events (run_id);
 CREATE INDEX IF NOT EXISTS ix_agent_events_session_id ON agent_events (session_id);
 CREATE INDEX IF NOT EXISTS ix_agent_events_user_id ON agent_events (user_id);
 CREATE INDEX IF NOT EXISTS ix_agent_events_tenant_id ON agent_events (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_agent_events_turn_id ON agent_events (turn_id);
 
 CREATE TABLE IF NOT EXISTS plans (
     plan_id VARCHAR(128) NOT NULL,
@@ -648,6 +807,145 @@ CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_logs_purpose ON knowledge_retr
 CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_logs_status ON knowledge_retrieval_logs (status);
 CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_logs_tenant_id ON knowledge_retrieval_logs (tenant_id);
 CREATE INDEX IF NOT EXISTS ix_knowledge_retrieval_logs_user_id ON knowledge_retrieval_logs (user_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_asset_groups (
+    group_id VARCHAR(128) PRIMARY KEY,
+    tenant_id VARCHAR(128) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    stable_asset_keys_text TEXT DEFAULT '[]' NOT NULL,
+    metadata_text TEXT DEFAULT '{}' NOT NULL,
+    CONSTRAINT uq_knowledge_asset_groups_tenant_name UNIQUE (tenant_id, name)
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_asset_groups_tenant_id
+    ON knowledge_asset_groups (tenant_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_assets (
+    asset_id VARCHAR(128) PRIMARY KEY,
+    tenant_id VARCHAR(128) NOT NULL,
+    owner_id VARCHAR(128) NOT NULL,
+    stable_key VARCHAR(128),
+    group_id VARCHAR(128) REFERENCES knowledge_asset_groups (group_id),
+    name VARCHAR(512) NOT NULL,
+    description TEXT DEFAULT '' NOT NULL,
+    file_name VARCHAR(512),
+    content_type VARCHAR(255),
+    size_bytes INTEGER DEFAULT 0 NOT NULL,
+    file_hash VARCHAR(128),
+    content_hash VARCHAR(128),
+    status VARCHAR(32) NOT NULL,
+    sensitivity VARCHAR(32) NOT NULL,
+    access_policy_text TEXT DEFAULT '{}' NOT NULL,
+    tags_text TEXT DEFAULT '[]' NOT NULL,
+    parser_version VARCHAR(128),
+    chunking_version VARCHAR(128),
+    embedding_version VARCHAR(128),
+    metadata_text TEXT DEFAULT '{}' NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    CONSTRAINT uq_knowledge_assets_tenant_key UNIQUE (tenant_id, stable_key)
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_assets_tenant_id ON knowledge_assets (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_assets_owner_id ON knowledge_assets (owner_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_assets_group_id ON knowledge_assets (group_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_assets_status ON knowledge_assets (status);
+CREATE INDEX IF NOT EXISTS ix_knowledge_assets_sensitivity ON knowledge_assets (sensitivity);
+CREATE INDEX IF NOT EXISTS idx_knowledge_assets_tenant_status
+    ON knowledge_assets (tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS knowledge_asset_chunks (
+    chunk_id VARCHAR(128) PRIMARY KEY,
+    asset_id VARCHAR(128) NOT NULL REFERENCES knowledge_assets (asset_id) ON DELETE RESTRICT,
+    tenant_id VARCHAR(128) NOT NULL,
+    ordinal INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    content_hash VARCHAR(128) NOT NULL,
+    title TEXT,
+    source_ref_text TEXT DEFAULT '{}' NOT NULL,
+    citation_text TEXT DEFAULT '{}' NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    sensitivity VARCHAR(32) NOT NULL,
+    metadata_text TEXT DEFAULT '{}' NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    CONSTRAINT uq_knowledge_asset_chunks_ordinal UNIQUE (asset_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_asset_chunks_asset_id
+    ON knowledge_asset_chunks (asset_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_asset_chunks_tenant_id
+    ON knowledge_asset_chunks (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_asset_chunks_status
+    ON knowledge_asset_chunks (status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_asset_chunks_tenant_status
+    ON knowledge_asset_chunks (tenant_id, status);
+
+CREATE TABLE IF NOT EXISTS knowledge_import_jobs (
+    job_id VARCHAR(128) PRIMARY KEY,
+    tenant_id VARCHAR(128) NOT NULL,
+    asset_id VARCHAR(128) NOT NULL REFERENCES knowledge_assets (asset_id) ON DELETE RESTRICT,
+    status VARCHAR(32) NOT NULL,
+    stage VARCHAR(32) NOT NULL,
+    stage_history_text TEXT DEFAULT '[]' NOT NULL,
+    attempt INTEGER DEFAULT 1 NOT NULL,
+    warnings_text TEXT DEFAULT '[]' NOT NULL,
+    error_text TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_import_jobs_tenant_id
+    ON knowledge_import_jobs (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_import_jobs_asset_id
+    ON knowledge_import_jobs (asset_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_import_jobs_status
+    ON knowledge_import_jobs (status);
+CREATE INDEX IF NOT EXISTS ix_knowledge_import_jobs_stage ON knowledge_import_jobs (stage);
+
+CREATE TABLE IF NOT EXISTS knowledge_migration_manifests (
+    manifest_id VARCHAR(128) PRIMARY KEY,
+    tenant_id VARCHAR(128) NOT NULL,
+    source_path TEXT NOT NULL,
+    file_hash VARCHAR(128) NOT NULL,
+    pipeline_version VARCHAR(128) NOT NULL,
+    asset_id VARCHAR(128) NOT NULL,
+    chunk_ids_text TEXT DEFAULT '[]' NOT NULL,
+    collection_name VARCHAR(255),
+    migration_status VARCHAR(32) NOT NULL,
+    validation_status VARCHAR(32) NOT NULL,
+    source_refs_text TEXT DEFAULT '[]' NOT NULL,
+    metadata_text TEXT DEFAULT '{}' NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    CONSTRAINT uq_knowledge_manifest_pipeline
+        UNIQUE (tenant_id, file_hash, pipeline_version)
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_migration_manifests_tenant_id
+    ON knowledge_migration_manifests (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_migration_manifests_file_hash
+    ON knowledge_migration_manifests (file_hash);
+
+CREATE TABLE IF NOT EXISTS knowledge_operation_traces (
+    trace_id VARCHAR(128) PRIMARY KEY,
+    tenant_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(128),
+    operation VARCHAR(32) NOT NULL,
+    caller VARCHAR(128) NOT NULL,
+    purpose VARCHAR(128) NOT NULL,
+    policy_outcome VARCHAR(64) NOT NULL,
+    evidence_ids_text TEXT DEFAULT '[]' NOT NULL,
+    warnings_text TEXT DEFAULT '[]' NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    metadata_text TEXT DEFAULT '{}' NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_knowledge_operation_traces_tenant_id
+    ON knowledge_operation_traces (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_operation_traces_user_id
+    ON knowledge_operation_traces (user_id);
+CREATE INDEX IF NOT EXISTS ix_knowledge_operation_traces_operation
+    ON knowledge_operation_traces (operation);
+CREATE INDEX IF NOT EXISTS ix_knowledge_operation_traces_caller
+    ON knowledge_operation_traces (caller);
 
 COMMIT;
 

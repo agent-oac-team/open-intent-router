@@ -5,6 +5,7 @@ from uuid import uuid4
 from sqlalchemy import and_, case, delete, desc, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import RegistryVersionConflict
 from app.db.models import (
     AgentDefinitionModel,
     AgentEventModel,
@@ -46,7 +47,9 @@ class DatabaseAgentDefinitionRepository:
             )
             return _agent_from_row(row) if row else None
 
-    async def upsert(self, definition: AgentDefinition) -> AgentDefinition:
+    async def upsert(
+        self, definition: AgentDefinition, *, expected_revision: int | None = None
+    ) -> AgentDefinition:
         async with self.session_factory() as session:
             row = await session.scalar(
                 select(AgentDefinitionModel).where(
@@ -55,29 +58,48 @@ class DatabaseAgentDefinitionRepository:
             )
             values = _agent_values(definition, source="database")
             if row is None:
+                if expected_revision not in {None, 0}:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                values["revision"] = 1
                 row = AgentDefinitionModel(**values)
                 session.add(row)
             else:
+                if expected_revision is not None and row.revision != expected_revision:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                values["revision"] = row.revision + 1
                 for key, value in values.items():
                     setattr(row, key, value)
             await session.commit()
             await session.refresh(row)
             return _agent_from_row(row)
 
-    async def set_enabled(self, agent_id: str, enabled: bool) -> AgentDefinition | None:
+    async def set_enabled(
+        self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
+    ) -> AgentDefinition | None:
         async with self.session_factory() as session:
             row = await session.scalar(
                 select(AgentDefinitionModel).where(AgentDefinitionModel.agent_id == agent_id)
             )
             if row is None:
                 return None
+            if expected_revision is not None and row.revision != expected_revision:
+                raise RegistryVersionConflict("Agent revision conflict")
             row.enabled = enabled
+            row.revision += 1
             await session.commit()
             await session.refresh(row)
             return _agent_from_row(row)
 
-    async def delete(self, agent_id: str) -> bool:
+    async def delete(self, agent_id: str, *, expected_revision: int | None = None) -> bool:
         async with self.session_factory() as session:
+            if expected_revision is not None:
+                current = await session.scalar(
+                    select(AgentDefinitionModel).where(AgentDefinitionModel.agent_id == agent_id)
+                )
+                if current is None:
+                    return False
+                if current.revision != expected_revision:
+                    raise RegistryVersionConflict("Agent revision conflict")
             result = await session.execute(
                 delete(AgentDefinitionModel).where(AgentDefinitionModel.agent_id == agent_id)
             )
@@ -802,6 +824,7 @@ def _agent_values(definition: AgentDefinition, *, source: str) -> dict:
         "name": definition.name,
         "description": definition.description,
         "version": definition.version,
+        "revision": definition.revision,
         "type": definition.type,
         "enabled": definition.enabled,
         "domain": definition.domain,
@@ -828,6 +851,7 @@ def _agent_from_row(row: AgentDefinitionModel) -> AgentDefinition:
         name=row.name,
         description=row.description,
         version=row.version,
+        revision=row.revision,
         enabled=row.enabled,
         type=row.type,
         domain=row.domain,
@@ -891,11 +915,14 @@ def _agent_event_from_row(row: AgentEventModel) -> AgentEvent:
         agent_id=row.agent_id,
         user_id=row.user_id,
         tenant_id=row.tenant_id,
+        turn_id=row.turn_id,
         agent_session_id=row.agent_session_id,
         event_type=row.event_type,
         status=row.status,
         plan_id=row.plan_id,
         step_id=row.step_id,
+        sequence=row.sequence,
+        run_state_version=row.run_state_version,
         payload=loads(row.payload_text, {}),
         created_at=row.created_at,
     )
@@ -909,10 +936,21 @@ def _run_values(run: AgentRun) -> dict:
         "agent_id": run.agent_id,
         "user_id": run.user_id,
         "tenant_id": run.tenant_id,
+        "turn_id": run.turn_id,
         "plan_id": run.plan_id,
         "step_id": run.step_id,
         "status": run.status,
         "invoker_type": run.invoker_type,
+        "delegated": run.delegated,
+        "delegation_key": run.delegation_key,
+        "state_version": run.state_version,
+        "event_sequence": run.event_sequence,
+        "deadline_at": run.deadline_at,
+        "heartbeat_at": run.heartbeat_at,
+        "claim_owner": run.claim_owner,
+        "claim_token": run.claim_token,
+        "claim_expires_at": run.claim_expires_at,
+        "terminal_event_id": run.terminal_event_id,
         "input_text": dumps(run.input),
         "output_text": dumps(run.output),
         "error_text": dumps(run.error),
@@ -930,10 +968,21 @@ def _run_from_row(row: AgentRunModel) -> AgentRun:
         agent_id=row.agent_id,
         user_id=row.user_id,
         tenant_id=row.tenant_id,
+        turn_id=row.turn_id,
         plan_id=row.plan_id,
         step_id=row.step_id,
         status=row.status,
         invoker_type=row.invoker_type,
+        delegated=row.delegated,
+        delegation_key=row.delegation_key,
+        state_version=row.state_version,
+        event_sequence=row.event_sequence,
+        deadline_at=row.deadline_at,
+        heartbeat_at=row.heartbeat_at,
+        claim_owner=row.claim_owner,
+        claim_token=row.claim_token,
+        claim_expires_at=row.claim_expires_at,
+        terminal_event_id=row.terminal_event_id,
         input=loads(row.input_text, {}),
         output=loads(row.output_text, None),
         error=loads(row.error_text, None),
@@ -952,6 +1001,7 @@ def _validate_run_identity(existing: AgentRun, incoming: AgentRun) -> None:
         "agent_id",
         "user_id",
         "tenant_id",
+        "turn_id",
         "plan_id",
         "step_id",
     )
@@ -967,9 +1017,11 @@ def _result_values(result: AgentResult) -> dict:
         "agent_id": result.agent_id,
         "user_id": result.user_id,
         "tenant_id": result.tenant_id,
+        "turn_id": result.turn_id,
         "plan_id": result.plan_id,
         "step_id": result.step_id,
         "status": result.status,
+        "run_state_version": result.run_state_version,
         "message": result.message,
         "formation_suppressed": result.formation_suppressed,
         "turn_captured": (result.formation_suppressed and not result.formation_skip_audit_required),
@@ -988,9 +1040,11 @@ def _result_from_row(row: AgentResultModel) -> AgentResult:
         agent_id=row.agent_id,
         user_id=row.user_id,
         tenant_id=row.tenant_id,
+        turn_id=row.turn_id,
         plan_id=row.plan_id,
         step_id=row.step_id,
         status=row.status,
+        run_state_version=row.run_state_version,
         message=row.message,
         formation_suppressed=row.formation_suppressed,
         formation_skip_audit_required=(row.formation_suppressed and not row.turn_captured),

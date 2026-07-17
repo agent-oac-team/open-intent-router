@@ -1,6 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -16,6 +26,7 @@ class AgentDefinitionModel(Base):
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text)
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     type: Mapped[str] = mapped_column(String(64), index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     domain: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -43,6 +54,20 @@ class AgentDefinitionModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class RegistryRevisionModel(Base):
+    __tablename__ = "registry_revisions"
+
+    revision_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    operator_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    before_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ChatMessageModel(Base):
@@ -91,6 +116,80 @@ class ConversationEventModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CanonicalTurnModel(Base):
+    __tablename__ = "canonical_turns"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "request_id",
+            name="uq_canonical_turns_owner_request",
+        ),
+        Index(
+            "idx_canonical_turns_owner_session_status",
+            "tenant_id",
+            "user_id",
+            "session_id",
+            "status",
+        ),
+        Index("idx_canonical_turns_status_updated", "status", "updated_at"),
+    )
+
+    turn_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    user_input_text: Mapped[str] = mapped_column(Text, nullable=False)
+    references_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    final_response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TurnOutboxModel(Base):
+    __tablename__ = "turn_outbox"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_turn_outbox_idempotency"),
+        Index("idx_turn_outbox_claim", "status", "available_at", "lease_expires_at"),
+        Index("idx_turn_outbox_turn_status", "turn_id", "status"),
+    )
+
+    outbox_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    turn_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("canonical_turns.turn_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AgentRunModel(Base):
     __tablename__ = "agent_runs"
 
@@ -100,10 +199,27 @@ class AgentRunModel(Base):
     agent_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     plan_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     step_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     invoker_type: Mapped[str] = mapped_column(String(64))
+    delegated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    delegation_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, unique=True, index=True
+    )
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    terminal_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     input_text: Mapped[str] = mapped_column(Text, default="{}")
     output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -119,6 +235,36 @@ class AgentRunModel(Base):
     )
 
 
+class ExecutionTicketModel(Base):
+    __tablename__ = "execution_tickets"
+
+    ticket_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(128), index=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    turn_id: Mapped[str] = mapped_column(String(128), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    agent_id: Mapped[str] = mapped_column(String(128), index=True)
+    plan_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    step_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    purpose: Mapped[str] = mapped_column(String(64), index=True)
+    claims_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    run_state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    consumed_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AgentResultModel(Base):
     __tablename__ = "agent_results"
 
@@ -128,9 +274,11 @@ class AgentResultModel(Base):
     agent_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     plan_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     step_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
+    run_state_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     formation_suppressed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     formation_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -151,11 +299,14 @@ class AgentEventModel(Base):
     agent_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    turn_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     agent_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     plan_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     step_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_state_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payload_text: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -500,4 +651,147 @@ class KnowledgeRetrievalLogModel(Base):
     status: Mapped[str] = mapped_column(String(32), default="ok", index=True)
     errors_text: Mapped[str] = mapped_column(Text, default="[]")
     metadata_text: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeAssetGroupModel(Base):
+    __tablename__ = "knowledge_asset_groups"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_knowledge_asset_groups_tenant_name"),
+    )
+
+    group_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    stable_asset_keys_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    metadata_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
+class KnowledgeAssetModel(Base):
+    __tablename__ = "knowledge_assets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "stable_key", name="uq_knowledge_assets_tenant_key"),
+        Index("idx_knowledge_assets_tenant_status", "tenant_id", "status"),
+    )
+
+    asset_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    stable_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    group_id: Mapped[str | None] = mapped_column(
+        String(128), ForeignKey("knowledge_asset_groups.group_id"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    file_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    file_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    sensitivity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    access_policy_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    tags_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    parser_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    chunking_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    embedding_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    metadata_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeAssetChunkModel(Base):
+    __tablename__ = "knowledge_asset_chunks"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "ordinal", name="uq_knowledge_asset_chunks_ordinal"),
+        Index("idx_knowledge_asset_chunks_tenant_status", "tenant_id", "status"),
+    )
+
+    chunk_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("knowledge_assets.asset_id", ondelete="RESTRICT"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_ref_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    citation_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    sensitivity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    metadata_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeImportJobModel(Base):
+    __tablename__ = "knowledge_import_jobs"
+
+    job_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    asset_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("knowledge_assets.asset_id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    stage_history_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    warnings_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeMigrationManifestModel(Base):
+    __tablename__ = "knowledge_migration_manifests"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "file_hash",
+            "pipeline_version",
+            name="uq_knowledge_manifest_pipeline",
+        ),
+    )
+
+    manifest_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    pipeline_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    chunk_ids_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    collection_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    migration_status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_refs_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    metadata_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeOperationTraceModel(Base):
+    __tablename__ = "knowledge_operation_traces"
+
+    trace_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    caller: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    policy_outcome: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    evidence_ids_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    warnings_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    metadata_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

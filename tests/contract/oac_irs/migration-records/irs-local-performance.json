@@ -1,0 +1,37 @@
+{
+  "baseline": "irs-local-deterministic-v1",
+  "captured_at": "2026-07-16T03:53:29.476747+00:00",
+  "source_revision": "348cf93fa3441108481631b7768d5ab7670c706e",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "external_providers": "IRS repository fakes"
+  },
+  "measurements": {
+    "central_route_stub_llm": {
+      "samples": 100,
+      "min_ms": 1.89,
+      "p50_ms": 1.952,
+      "p95_ms": 2.049,
+      "p99_ms": 2.166,
+      "max_ms": 2.177
+    },
+    "knowledge_search_fake_vector": {
+      "samples": 100,
+      "min_ms": 0.947,
+      "p50_ms": 0.981,
+      "p95_ms": 1.089,
+      "p99_ms": 1.18,
+      "max_ms": 1.217
+    },
+    "knowledge_exact_read_memory": {
+      "samples": 100,
+      "min_ms": 0.679,
+      "p50_ms": 0.705,
+      "p95_ms": 0.739,
+      "p99_ms": 0.809,
+      "max_ms": 0.816
+    }
+  },
+  "scope_note": "用于迁移回归和相对 Diff，不是生产 SLA。"
+}

@@ -1,0 +1,67 @@
+{
+  "contract": "oac-execution-ticket/v1",
+  "wire_positions": {
+    "central_route_response": {
+      "json_path": "$.execution_ticket",
+      "type": ["string", "null"],
+      "required": false,
+      "present_for_actions": ["open_agent", "continue_agent"],
+      "absent_for_actions": ["reply", "clarify", "exit_agent", "show_plan", "unsupported", "silent"]
+    },
+    "agent_event_request": {
+      "json_path": "$.execution_ticket",
+      "type": ["string", "null"],
+      "required": false,
+      "applies_to_event_types": ["agent_progress", "agent_result", "agent_error", "agent_clarify"]
+    }
+  },
+  "oac_runtime_positions": {
+    "central_route_output": "CentralRouteOutput.execution_ticket?: string | null",
+    "active_agent": "ActiveAgent.executionTicket?: string",
+    "local_message": "LocalMessage.executionTicket?: string",
+    "retry_state": "retry.executionTicket?: string"
+  },
+  "transport_rules": {
+    "opaque": true,
+    "client_must_not_decode": true,
+    "go_proxy_must_not_parse": true,
+    "logs_must_redact": true,
+    "response_debug_must_redact": true,
+    "body_fallback_location_forbidden": ["frontend_context", "output", "metadata"],
+    "core_schema_field_forbidden": true
+  },
+  "lifecycle": {
+    "replace_on_new_handoff": true,
+    "clear_after_final_event_acceptance": true,
+    "retain_after_transport_failure": true,
+    "retry_route_issues_new_ticket": true,
+    "old_ticket_must_not_be_reused_for_new_run": true
+  },
+  "compatibility": {
+    "old_route_response_without_ticket_valid": true,
+    "old_agent_event_without_ticket_valid": true,
+    "old_typescript_client_ignores_extra_route_field": true,
+    "legacy_irs_rejects_agent_event_with_ticket": true,
+    "ticketed_write_to_legacy_irs_forbidden": true
+  },
+  "examples": {
+    "route_with_ticket": {
+      "request_id": "req_ticket_fixture",
+      "session_id": "sess_ticket_fixture",
+      "route": {"status": "ok", "action": "open_agent", "agent_id": "strategy_analysis", "message": ""},
+      "context": {"source": "central_chat", "current_agent_id": null, "relation": "new_task", "artifact_refs": []},
+      "plan": null,
+      "execution_ticket": "<opaque-ticket>"
+    },
+    "agent_event_with_ticket": {
+      "event_id": "evt_ticket_fixture",
+      "event_type": "agent_result",
+      "session_id": "sess_ticket_fixture",
+      "agent_id": "strategy_analysis",
+      "status": "running",
+      "message": "fixture result",
+      "output": {"content": "fixture result"},
+      "execution_ticket": "<opaque-ticket>"
+    }
+  }
+}

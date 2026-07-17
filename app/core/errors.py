@@ -42,6 +42,11 @@ class RegistryUnavailableError(RegistryError):
     code = "registry_unavailable"
 
 
+class RegistryVersionConflict(RegistryError):
+    status_code = 409
+    code = "registry_version_conflict"
+
+
 class RoutingError(AppError):
     code = "routing_error"
 

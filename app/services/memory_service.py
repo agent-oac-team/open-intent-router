@@ -72,9 +72,19 @@ class MemoryService:
         self.ttl_sweeper = ttl_sweeper or self._build_ttl_sweeper()
 
     async def recall(self, request: MemoryRecallRequest) -> MemoryRecallResponse:
-        if not self.settings.memory_enabled or request.max_items == 0:
+        if (
+            not self.settings.memory_enabled
+            or not self.settings.memory_recall_enabled
+            or request.max_items == 0
+        ):
             return MemoryRecallResponse(
-                context=MemoryContext(status="disabled", metadata={"memory_enabled": False})
+                context=MemoryContext(
+                    status="disabled",
+                    metadata={
+                        "memory_enabled": self.settings.memory_enabled,
+                        "memory_recall_enabled": self.settings.memory_recall_enabled,
+                    },
+                )
             )
         try:
             items = await self.adapter.search(request)

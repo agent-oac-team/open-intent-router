@@ -62,6 +62,12 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check .
 
+      - name: Validate Host Adapter boundary
+        run: python scripts/validate_host_adapter_boundaries.py
+
+      - name: Validate frozen IRS contract snapshots
+        run: python scripts/build_oac_irs_contract_index.py --check
+
   frontend-regression:
     name: frontend-regression
     runs-on: ubuntu-latest

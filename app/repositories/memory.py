@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 
+from app.core.errors import RegistryVersionConflict
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
@@ -22,19 +23,34 @@ class MemoryAgentDefinitionRepository:
     async def get(self, agent_id: str) -> AgentDefinition | None:
         return self.agents.get(agent_id)
 
-    async def upsert(self, definition: AgentDefinition) -> AgentDefinition:
-        self.agents[definition.agent_id] = definition
-        return definition
+    async def upsert(
+        self, definition: AgentDefinition, *, expected_revision: int | None = None
+    ) -> AgentDefinition:
+        current = self.agents.get(definition.agent_id)
+        revision = current.revision if current else 0
+        if expected_revision is not None and revision != expected_revision:
+            raise RegistryVersionConflict("Agent revision conflict")
+        saved = definition.model_copy(update={"revision": revision + 1})
+        self.agents[definition.agent_id] = saved
+        return saved
 
-    async def set_enabled(self, agent_id: str, enabled: bool) -> AgentDefinition | None:
+    async def set_enabled(
+        self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
+    ) -> AgentDefinition | None:
         agent = self.agents.get(agent_id)
         if agent is None:
             return None
-        updated = agent.model_copy(update={"enabled": enabled})
+        if expected_revision is not None and agent.revision != expected_revision:
+            raise RegistryVersionConflict("Agent revision conflict")
+        updated = agent.model_copy(update={"enabled": enabled, "revision": agent.revision + 1})
         self.agents[agent_id] = updated
         return updated
 
-    async def delete(self, agent_id: str) -> bool:
+    async def delete(self, agent_id: str, *, expected_revision: int | None = None) -> bool:
+        current = self.agents.get(agent_id)
+        if current is not None and expected_revision is not None:
+            if current.revision != expected_revision:
+                raise RegistryVersionConflict("Agent revision conflict")
         return self.agents.pop(agent_id, None) is not None
 
 

@@ -55,6 +55,35 @@ async def test_milvus_knowledge_vector_store_hydrates_canonical_chunks() -> None
     assert fake_client.searches[0]["output_fields"] == ["chunk_id", "source_id", "title", "uri"]
 
 
+async def test_milvus_knowledge_vector_store_resets_and_lists_index_records() -> None:
+    settings = Settings(
+        storage_backend="memory",
+        knowledge_vector_backend="milvus",
+        knowledge_milvus_collection="oir_knowledge_vectors",
+        knowledge_milvus_uri="fake-milvus.db",
+        knowledge_embedding_dim=4,
+    )
+    fake_client = FakeMilvusClient()
+    fake_client.collection_exists = True
+    fake_client.upserted = [{"chunk_id": "legacy", "source_id": "legacy"}]
+    vector_store = MilvusKnowledgeVectorStore(
+        settings,
+        KnowledgeRepository(),
+        client=fake_client,
+        embedding_client=FakeEmbeddingClient(),
+    )
+
+    vector_store.reset_collection()
+    await vector_store.upsert_chunks(
+        [KnowledgeChunk(chunk_id="canonical-1", source_id="asset-1", content="content")]
+    )
+
+    assert fake_client.dropped_collections == ["oir_knowledge_vectors"]
+    assert vector_store.list_index_records() == [
+        {"chunk_id": "canonical-1", "source_id": "asset-1"}
+    ]
+
+
 class FakeEmbeddingClient:
     dimension = 4
 
@@ -69,6 +98,7 @@ class FakeMilvusClient:
         self.loaded_collections: list[str] = []
         self.upserted: list[dict] = []
         self.searches: list[dict] = []
+        self.dropped_collections: list[str] = []
 
     def has_collection(self, collection_name: str) -> bool:
         return self.collection_exists
@@ -79,6 +109,11 @@ class FakeMilvusClient:
 
     def load_collection(self, collection_name: str) -> None:
         self.loaded_collections.append(collection_name)
+
+    def drop_collection(self, *, collection_name: str) -> None:
+        self.dropped_collections.append(collection_name)
+        self.collection_exists = False
+        self.upserted = []
 
     def upsert(self, *, collection_name: str, data: list[dict]) -> None:
         self.upserted.extend(data)
@@ -101,6 +136,27 @@ class FakeMilvusClient:
             if record["source_id"] == source_id
         ]
         return [hits[: kwargs["limit"]]]
+
+    def query_iterator(self, **kwargs):
+        return FakeQueryIterator(
+            [
+                {field: record[field] for field in kwargs["output_fields"]}
+                for record in self.upserted
+            ]
+        )
+
+
+class FakeQueryIterator:
+    def __init__(self, records: list[dict]) -> None:
+        self.records = records
+        self.closed = False
+
+    def next(self) -> list[dict]:
+        records, self.records = self.records, []
+        return records
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _source_id_from_filter(filter_text: str) -> str:

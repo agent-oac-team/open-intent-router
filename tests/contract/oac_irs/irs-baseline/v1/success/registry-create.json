@@ -1,0 +1,53 @@
+{
+  "name": "registry-create",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/admin/agent-registry",
+    "headers": {
+      "X-Admin-Sync-Token": "<redacted-admin-token>",
+      "X-OAC-Username": "fixture-admin",
+      "X-OAC-User-Display-Name": "Fixture Admin"
+    },
+    "query": {},
+    "body": {
+      "agent_id": "fixture_agent",
+      "name": "契约测试智能体",
+      "description": "用于迁移契约测试",
+      "bot_id": "",
+      "route_path": "/fixture",
+      "allowed_user_tags": [
+        "运营版"
+      ],
+      "positive_keywords": [
+        "契约"
+      ],
+      "negative_keywords": [
+        "忽略"
+      ],
+      "enabled": true
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "agent_id": "fixture_agent",
+      "name": "契约测试智能体",
+      "description": "用于迁移契约测试",
+      "bot_id": "",
+      "route_path": "/fixture",
+      "allowed_user_tags": [
+        "运营版"
+      ],
+      "positive_keywords": [
+        "契约"
+      ],
+      "negative_keywords": [
+        "忽略"
+      ],
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "name": "knowledge-search",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/knowledge/search",
+    "headers": {},
+    "query": {},
+    "body": {
+      "request_id": "req_fixture_search",
+      "session_id": "sess_fixture_knowledge",
+      "user_id": "user_fixture",
+      "user_tags": [
+        "运营版"
+      ],
+      "consumer": "coze_workflow",
+      "consumer_id": "fixture_workflow",
+      "purpose": "workflow",
+      "query": "契约测试活动期限",
+      "scope": {
+        "asset_ids": [
+          "asset_content_production_04"
+        ]
+      },
+      "return_options": {
+        "include_structured_payload": true
+      },
+      "top_k": 3
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_fixture_search",
+      "matched": true,
+      "confidence": 0.9977904993296532,
+      "evidence": [
+        {
+          "evidence_id": "ev_chunk_fixture_04_1",
+          "chunk_id": "chunk_fixture_04_1",
+          "asset_id": "asset_content_production_04",
+          "content": "活动名称：契约测试活动；活动期限：2026 年 12 月 31 日。",
+          "title": "chunk_fixture_04_1",
+          "source_type": "excel",
+          "source_name": "asset_content_production_04 表",
+          "source_ref": {
+            "source_type": "excel",
+            "database": null,
+            "table": null,
+            "fields": [],
+            "business_id": null,
+            "sheet": "活动表",
+            "row": 2,
+            "columns": [],
+            "document_name": null,
+            "section_path": [],
+            "page": null,
+            "paragraph": null,
+            "uri": null
+          },
+          "business_domain": "内容生产",
+          "confidence": 0.9977904993296532,
+          "freshness": "current",
+          "sensitivity": "internal",
+          "updated_at": null,
+          "structured_payload": {
+            "row_id": "chunk_fixture_04_1",
+            "content": "活动名称：契约测试活动；活动期限：2026 年 12 月 31 日。"
+          }
+        }
+      ],
+      "warnings": [],
+      "trace_id": "k_trace_104a8462ece34e869be82e11b0b2185f"
+    }
+  }
+}

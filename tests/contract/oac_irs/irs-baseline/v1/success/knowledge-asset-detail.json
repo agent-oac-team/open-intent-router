@@ -1,0 +1,43 @@
+{
+  "name": "knowledge-asset-detail",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/knowledge/assets/{asset_id}",
+    "headers": {},
+    "query": {
+      "user_id": "user_fixture",
+      "user_tags": "运营版",
+      "asset_id": "asset_content_production_04"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_k_access_50f2057ff91c4f0bbe6131701bedcbcf",
+      "asset": {
+        "asset_id": "asset_content_production_04",
+        "source_type": "excel",
+        "source_name": "asset_content_production_04 表",
+        "business_domain": "内容生产",
+        "owner": "",
+        "sensitivity": "internal",
+        "allowed_user_tags": [],
+        "enabled": true,
+        "freshness": "current",
+        "chunk_count": 1,
+        "visible_chunk_count": 1,
+        "metadata": {
+          "owner_team": "ops"
+        },
+        "chunks": [],
+        "created_at": null,
+        "updated_at": null
+      },
+      "warnings": []
+    }
+  }
+}

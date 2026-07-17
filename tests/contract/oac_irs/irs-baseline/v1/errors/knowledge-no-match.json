@@ -1,0 +1,43 @@
+{
+  "name": "knowledge-no-match",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/knowledge/search",
+    "headers": {},
+    "body": {
+      "request_id": "req_fixture_no_match",
+      "session_id": "sess_gap",
+      "user_id": "u_gap",
+      "user_tags": [],
+      "consumer": "central",
+      "consumer_id": "oac_central",
+      "purpose": "answer",
+      "query": "完全不存在的契约测试知识",
+      "top_k": 5
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_fixture_no_match",
+      "matched": false,
+      "confidence": 0.0,
+      "evidence": [],
+      "warnings": [
+        {
+          "code": "no_match",
+          "message": "No accessible knowledge evidence matched the query.",
+          "detail": {}
+        }
+      ],
+      "trace_id": "k_trace_be0a8cd37e984f0b9f6ea6452625879b"
+    }
+  },
+  "assertions": {
+    "expected_status": 200,
+    "expected_warning": "no_match"
+  }
+}

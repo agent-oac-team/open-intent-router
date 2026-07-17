@@ -1,0 +1,45 @@
+{
+  "name": "knowledge-timeout",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/knowledge/search",
+    "headers": {},
+    "body": {
+      "request_id": "req_fixture_timeout",
+      "session_id": "sess_gap",
+      "user_id": "u_gap",
+      "user_tags": [],
+      "consumer": "central",
+      "consumer_id": "oac_central",
+      "purpose": "answer",
+      "query": "慢速查询",
+      "top_k": 5
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_fixture_timeout",
+      "matched": false,
+      "confidence": 0.0,
+      "evidence": [],
+      "warnings": [
+        {
+          "code": "timeout",
+          "message": "Knowledge search timed out.",
+          "detail": {
+            "timeout_seconds": 0.01
+          }
+        }
+      ],
+      "trace_id": "k_trace_63472680be2d421fa85e84c539692e31"
+    }
+  },
+  "assertions": {
+    "expected_status": 200,
+    "expected_warning": "timeout"
+  }
+}

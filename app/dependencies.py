@@ -20,7 +20,21 @@ from app.repositories.database import (
     DatabaseRouteLogRepository,
     DatabaseRunRepository,
 )
+from app.repositories.delegated_runs import (
+    DatabaseDelegatedRunCompletionStore,
+    DatabaseDelegatedRunMaintenanceStore,
+    DatabaseDelegatedRunProgressStore,
+    DatabaseDelegatedRunStartStore,
+    MemoryDelegatedRunCompletionStore,
+    MemoryDelegatedRunMaintenanceStore,
+    MemoryDelegatedRunProgressStore,
+    MemoryDelegatedRunStartStore,
+)
 from app.repositories.file_registry import FileRegistrySource
+from app.repositories.knowledge_assets import (
+    DatabaseCanonicalKnowledgeRepository,
+    MemoryCanonicalKnowledgeRepository,
+)
 from app.repositories.memory import (
     MemoryAgentDefinitionRepository,
     MemoryEventRepository,
@@ -38,11 +52,22 @@ from app.repositories.memory_traces import (
     DatabaseMemoryFormationTraceRepository,
     MemoryFormationTraceRepository,
 )
+from app.repositories.turn_outbox import (
+    DatabaseTurnOutboxRepository,
+    MemoryTurnOutboxRepository,
+)
+from app.repositories.turn_route_completion import (
+    DatabaseRouteTurnCompletionStore,
+    MemoryRouteTurnCompletionStore,
+)
+from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.chat_history_service import ChatHistoryService
 from app.services.context_service import ContextService
+from app.services.delegated_run_service import DelegatedRunService
 from app.services.event_service import EventService
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.knowledge_asset_service import KnowledgeAssetService
 from app.services.knowledge_service import KnowledgeService
 from app.services.memory_candidate_hard_rules import MemoryCandidateHardRules
 from app.services.memory_candidate_policy import MemoryCandidatePolicy
@@ -56,10 +81,10 @@ from app.services.memory_formation import (
     MemoryFormationRuntimeStatus,
     TurnCapsuleBuilder,
     TurnCaptureService,
+    TurnOutboxFormationConsumer,
     UnavailableFormationJobProcessor,
 )
 from app.services.memory_integration import (
-    FormationReconciler,
     MemoryFormationProcessor,
     StructuredFormationPublisher,
 )
@@ -75,6 +100,37 @@ from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
 from app.services.task_continuation import TaskMemoryPlanResolver
+from app.services.turn_service import TurnService
+
+
+def _memory_data_settings(settings):
+    if settings.memory_execution_mode == "decision_shadow":
+        return settings.model_copy(
+            update={
+                "memory_enabled": False,
+                "memory_recall_enabled": False,
+                "memory_formation_mode": "off",
+                "memory_formation_worker_enabled": False,
+                "memory_formation_sweeper_enabled": False,
+                "memory_index_worker_enabled": False,
+                "memory_ttl_sweeper_enabled": False,
+            }
+        )
+    if settings.memory_execution_mode == "state_rehearsal":
+        return settings.model_copy(
+            update={
+                "database_url": settings.memory_rehearsal_database_url,
+                "memory_milvus_collection": settings.memory_rehearsal_milvus_collection,
+                "memory_mem0_milvus_collection": settings.memory_rehearsal_milvus_collection,
+                "memory_mem0_history_database_url": settings.memory_rehearsal_database_url,
+            }
+        )
+    return settings
+
+
+@lru_cache
+def get_memory_data_settings():
+    return _memory_data_settings(get_settings())
 
 
 @lru_cache
@@ -118,10 +174,11 @@ def get_repository_bundle() -> dict:
 def get_context_repository_bundle() -> dict:
     settings = get_settings()
     if settings.storage_backend == "database":
-        session_factory = create_session_factory(settings)
+        memory_session_factory = create_session_factory(get_memory_data_settings())
+        knowledge_session_factory = create_session_factory(settings)
         return {
-            "memory_items": DatabaseMemoryItemRepository(session_factory),
-            "knowledge": DatabaseKnowledgeRepository(session_factory),
+            "memory_items": DatabaseMemoryItemRepository(memory_session_factory),
+            "knowledge": DatabaseKnowledgeRepository(knowledge_session_factory),
         }
     return {
         "memory_items": MemoryItemRepository(),
@@ -131,7 +188,7 @@ def get_context_repository_bundle() -> dict:
 
 @lru_cache
 def get_memory_service() -> MemoryService:
-    settings = get_settings()
+    settings = get_memory_data_settings()
     repositories = get_context_repository_bundle()
     return MemoryService(
         settings=settings,
@@ -142,7 +199,7 @@ def get_memory_service() -> MemoryService:
 
 @lru_cache
 def get_memory_formation_repository():
-    settings = get_settings()
+    settings = get_memory_data_settings()
     if settings.storage_backend == "database":
         return DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
     return MemoryFormationTurnJobRepository()
@@ -168,7 +225,7 @@ def build_memory_maintenance_runtime(*, settings=None, memory_service=None):
 
 @lru_cache
 def get_memory_trace_repository():
-    settings = get_settings()
+    settings = get_memory_data_settings()
     if settings.storage_backend == "database":
         return DatabaseMemoryFormationTraceRepository(create_session_factory(settings))
     return MemoryFormationTraceRepository(
@@ -198,6 +255,7 @@ def build_memory_formation_runtime(
     *, settings=None, processor=None, repository=None, reconciler=None
 ) -> MemoryFormationRuntime:
     resolved_settings = settings or get_settings()
+    memory_settings = _memory_data_settings(resolved_settings)
     if resolved_settings.memory_formation_mode == "off":
         resolved_repository = repository or MemoryFormationTurnJobRepository()
         resolved_processor = processor or UnavailableFormationJobProcessor()
@@ -205,30 +263,21 @@ def build_memory_formation_runtime(
         resolved_repository = repository or get_memory_formation_repository()
         resolved_processor = processor or get_memory_formation_processor()
     resolved_reconciler = reconciler
-    if resolved_reconciler is None and resolved_settings.memory_formation_mode != "off":
-        canonical = get_repository_bundle()
-        publisher = StructuredFormationPublisher(
+    if resolved_reconciler is None:
+        resolved_reconciler = TurnOutboxFormationConsumer(
             settings=resolved_settings,
-            repository=resolved_repository,
-        )
-        capture = TurnCaptureService(
-            settings=resolved_settings,
+            outbox_repository=get_turn_outbox_repository(),
+            turn_repository=get_turn_repository(),
             builder=TurnCapsuleBuilder(resolved_settings),
             coordinator=FormationTriggerCoordinator(
                 settings=resolved_settings,
                 repository=resolved_repository,
             ),
             event_repository=get_memory_service().repository,
-        )
-        resolved_reconciler = FormationReconciler(
-            plan_repository=canonical["plans"],
-            run_repository=canonical["runs"],
-            result_repository=canonical["results"],
-            publisher=publisher,
-            turn_capture=capture,
+            owner=f"turn-outbox-formation-{uuid4().hex}",
         )
     return MemoryFormationRuntime(
-        settings=resolved_settings,
+        settings=memory_settings,
         worker=FormationJobWorker(
             settings=resolved_settings,
             repository=resolved_repository,
@@ -251,6 +300,19 @@ def get_knowledge_service() -> KnowledgeService:
     return KnowledgeService(settings=settings, repository=repositories["knowledge"])
 
 
+@lru_cache
+def get_knowledge_asset_repository():
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        return DatabaseCanonicalKnowledgeRepository(create_session_factory(settings))
+    return MemoryCanonicalKnowledgeRepository()
+
+
+@lru_cache
+def get_knowledge_asset_service() -> KnowledgeAssetService:
+    return KnowledgeAssetService(get_knowledge_asset_repository())
+
+
 def get_agent_context_service() -> AgentContextAssemblyService:
     settings = get_settings()
     return AgentContextAssemblyService(
@@ -262,32 +324,17 @@ def get_agent_context_service() -> AgentContextAssemblyService:
 
 @lru_cache
 def get_structured_formation_publisher() -> StructuredFormationPublisher | None:
-    settings = get_settings()
-    if settings.memory_formation_mode == "off":
-        return None
-    return StructuredFormationPublisher(
-        settings=settings,
-        repository=get_memory_formation_repository(),
-    )
+    return None
 
 
 @lru_cache
 def get_turn_capture_service() -> TurnCaptureService | None:
-    settings = get_settings()
-    if settings.memory_formation_mode == "off":
-        return None
-    repository = get_memory_formation_repository()
-    return TurnCaptureService(
-        settings=settings,
-        builder=TurnCapsuleBuilder(settings),
-        coordinator=FormationTriggerCoordinator(settings=settings, repository=repository),
-        event_repository=get_memory_service().repository,
-    )
+    return None
 
 
 @lru_cache
 def get_memory_formation_processor():
-    settings = get_settings()
+    settings = get_memory_data_settings()
     memory_service = get_memory_service()
     hard_rules = MemoryCandidateHardRules(repository=memory_service.repository)
     semantic_validator = MemoryCandidateSemanticValidator()
@@ -327,6 +374,78 @@ def get_router_service() -> RouterService:
         plan_service=get_plan_service(),
         agent_context_service=get_agent_context_service(),
         plan_continuation_resolver=get_task_memory_plan_resolver(),
+        turn_service=get_turn_service(),
+    )
+
+
+@lru_cache
+def get_turn_repository():
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        return DatabaseTurnRepository(create_session_factory(settings))
+    return MemoryTurnRepository()
+
+
+def get_turn_service() -> TurnService:
+    settings = get_settings()
+    turns = get_turn_repository()
+    outbox = get_turn_outbox_repository()
+    completion_store = (
+        DatabaseRouteTurnCompletionStore(create_session_factory(settings))
+        if settings.storage_backend == "database"
+        else MemoryRouteTurnCompletionStore(
+            turn_repository=turns,
+            outbox_repository=outbox,
+        )
+    )
+    return TurnService(turns, route_completion_store=completion_store)
+
+
+@lru_cache
+def get_turn_outbox_repository():
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        return DatabaseTurnOutboxRepository(create_session_factory(settings))
+    return MemoryTurnOutboxRepository()
+
+
+@lru_cache
+def get_delegated_run_service() -> DelegatedRunService:
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        factory = create_session_factory(settings)
+        return DelegatedRunService(
+            DatabaseDelegatedRunStartStore(factory),
+            progress_store=DatabaseDelegatedRunProgressStore(factory),
+            completion_store=DatabaseDelegatedRunCompletionStore(factory),
+            maintenance_store=DatabaseDelegatedRunMaintenanceStore(factory),
+        )
+    repositories = get_repository_bundle()
+    turns = get_turn_repository()
+    outbox = get_turn_outbox_repository()
+    return DelegatedRunService(
+        MemoryDelegatedRunStartStore(
+            run_repository=repositories["runs"],
+            turn_repository=turns,
+        ),
+        progress_store=MemoryDelegatedRunProgressStore(
+            run_repository=repositories["runs"],
+            event_repository=repositories["events"],
+        ),
+        completion_store=MemoryDelegatedRunCompletionStore(
+            run_repository=repositories["runs"],
+            result_repository=repositories["results"],
+            event_repository=repositories["events"],
+            turn_repository=turns,
+            outbox_repository=outbox,
+            plan_repository=repositories["plans"],
+        ),
+        maintenance_store=MemoryDelegatedRunMaintenanceStore(
+            run_repository=repositories["runs"],
+            event_repository=repositories["events"],
+            turn_repository=turns,
+            outbox_repository=outbox,
+        ),
     )
 
 

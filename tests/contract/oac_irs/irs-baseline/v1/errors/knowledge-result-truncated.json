@@ -1,0 +1,125 @@
+{
+  "name": "knowledge-result-truncated",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/knowledge/read",
+    "headers": {},
+    "body": {
+      "request_id": "req_fixture_truncated",
+      "session_id": "sess_fixture",
+      "user_id": "user_fixture",
+      "consumer": "central",
+      "consumer_id": "fixture_central",
+      "purpose": "answer",
+      "target": {
+        "type": "asset",
+        "asset_id": "asset_fixture_caps"
+      },
+      "return_options": {
+        "limit": 99,
+        "max_chars": 99
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_fixture_truncated",
+      "target_type": "asset",
+      "assets": [
+        {
+          "asset_id": "asset_fixture_caps",
+          "source_type": "excel",
+          "source_name": "asset_fixture_caps 表",
+          "business_domain": "客户运营",
+          "owner": "",
+          "sensitivity": "internal",
+          "allowed_user_tags": [],
+          "enabled": true,
+          "freshness": "current",
+          "chunk_count": 1,
+          "visible_chunk_count": 1,
+          "chunks": [
+            {
+              "chunk_id": "chunk_fixture_caps",
+              "asset_id": "asset_fixture_caps",
+              "title": "chunk_fixture_caps",
+              "content": "abcde",
+              "business_domain": "客户运营",
+              "sensitivity": "internal",
+              "allowed_user_tags": [],
+              "freshness": "current",
+              "enabled": true,
+              "content_hash": "hash_chunk_fixture_caps",
+              "created_at": null,
+              "updated_at": null
+            }
+          ],
+          "created_at": null,
+          "updated_at": null
+        }
+      ],
+      "chunks": [
+        {
+          "chunk_id": "chunk_fixture_caps",
+          "asset_id": "asset_fixture_caps",
+          "title": "chunk_fixture_caps",
+          "content": "abcde",
+          "business_domain": "客户运营",
+          "sensitivity": "internal",
+          "allowed_user_tags": [],
+          "freshness": "current",
+          "enabled": true,
+          "content_hash": "hash_chunk_fixture_caps",
+          "created_at": null,
+          "updated_at": null
+        }
+      ],
+      "pagination": {
+        "offset": 0,
+        "limit": 1,
+        "total": 1,
+        "returned": 1,
+        "has_more": false
+      },
+      "warnings": [
+        {
+          "code": "limit_capped",
+          "message": "limit exceeds configured maximum and was capped.",
+          "detail": {
+            "requested_limit": 99,
+            "effective_limit": 1
+          }
+        },
+        {
+          "code": "max_chars_capped",
+          "message": "max_chars exceeds configured maximum and was capped.",
+          "detail": {
+            "requested_max_chars": 99,
+            "effective_max_chars": 5
+          }
+        },
+        {
+          "code": "result_truncated",
+          "message": "Read payload exceeded the configured character budget.",
+          "detail": {
+            "effective_max_chars": 5
+          }
+        }
+      ],
+      "metadata": {
+        "filtered_count": 0,
+        "consumer": "central",
+        "consumer_id": "fixture_central",
+        "purpose": "answer"
+      }
+    }
+  },
+  "assertions": {
+    "expected_status": 200,
+    "expected_warning": "result_truncated"
+  }
+}

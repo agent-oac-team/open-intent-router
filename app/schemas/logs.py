@@ -12,10 +12,21 @@ class AgentRun(StrictBaseModel):
     agent_id: str
     user_id: str | None = None
     tenant_id: str | None = None
+    turn_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
     status: str
     invoker_type: str
+    delegated: bool = False
+    delegation_key: str | None = None
+    state_version: int = Field(default=1, ge=1)
+    event_sequence: int = Field(default=0, ge=0)
+    deadline_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    claim_owner: str | None = None
+    claim_token: str | None = None
+    claim_expires_at: datetime | None = None
+    terminal_event_id: str | None = None
     input: JsonDict = Field(default_factory=dict)
     output: JsonDict | None = None
     error: JsonDict | None = None
@@ -33,9 +44,11 @@ class AgentResult(StrictBaseModel):
     agent_id: str
     user_id: str | None = None
     tenant_id: str | None = None
+    turn_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
     status: str
+    run_state_version: int | None = Field(default=None, ge=1)
     message: str = ""
     formation_suppressed: bool = False
     formation_skip_audit_required: bool = False

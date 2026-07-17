@@ -5,8 +5,13 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
-from app.db.models import MemoryFormationJobModel
-from app.db.session import create_all_tables, create_engine, create_session_factory
+from app.db.models import CanonicalTurnModel, MemoryFormationJobModel, TurnOutboxModel
+from app.db.session import (
+    _context_owner_column_definitions,
+    create_all_tables,
+    create_engine,
+    create_session_factory,
+)
 from app.repositories.context_stores import (
     DatabaseKnowledgeRepository,
     DatabaseMemoryItemRepository,
@@ -54,6 +59,129 @@ def test_postgresql_memory_migration_is_rerunnable_and_plan_ownership_is_strict(
     assert "DELETE FROM plans" in schema_sql
 
 
+def test_postgresql_schema_contains_canonical_turn_and_outbox_contract() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS canonical_turns" in schema_sql
+    assert "CONSTRAINT uq_canonical_turns_owner_request" in schema_sql
+    assert "UNIQUE (tenant_id, user_id, request_id)" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS turn_outbox" in schema_sql
+    assert "CONSTRAINT uq_turn_outbox_idempotency" in schema_sql
+    assert "REFERENCES canonical_turns (turn_id) ON DELETE RESTRICT" in schema_sql
+    assert "idx_turn_outbox_claim" in schema_sql
+
+
+def test_postgresql_schema_contains_hashed_execution_ticket_contract() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS execution_tickets" in schema_sql
+    assert "ticket_hash VARCHAR(64) NOT NULL" in schema_sql
+    assert "claims_text TEXT NOT NULL" in schema_sql
+    assert "lease_expires_at TIMESTAMP WITH TIME ZONE" in schema_sql
+    assert "consumed_event_id VARCHAR(128)" in schema_sql
+    assert "execution_ticket TEXT" not in schema_sql
+
+
+def test_postgresql_schema_contains_registry_revision_and_audit_contract() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    assert "revision INTEGER DEFAULT 0 NOT NULL" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS registry_revisions" in schema_sql
+    assert "operator_id VARCHAR(128) NOT NULL" in schema_sql
+    assert "before_text TEXT" in schema_sql
+    assert "after_text TEXT" in schema_sql
+
+
+def test_postgresql_schema_contains_canonical_knowledge_asset_contract() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    for table in (
+        "knowledge_asset_groups",
+        "knowledge_assets",
+        "knowledge_asset_chunks",
+        "knowledge_import_jobs",
+        "knowledge_migration_manifests",
+        "knowledge_operation_traces",
+    ):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in schema_sql
+    assert "ON DELETE RESTRICT" in schema_sql
+    assert "uq_knowledge_manifest_pipeline" in schema_sql
+    assert "idx_knowledge_assets_tenant_status" in schema_sql
+
+
+def test_legacy_runtime_datetime_columns_use_postgresql_type() -> None:
+    postgresql = _context_owner_column_definitions("postgresql")["agent_runs"]
+    sqlite = _context_owner_column_definitions("sqlite")["agent_runs"]
+
+    for column in ("deadline_at", "heartbeat_at", "claim_expires_at"):
+        assert postgresql[column] == "TIMESTAMP WITH TIME ZONE"
+        assert sqlite[column] == "DATETIME"
+
+
+async def test_create_all_tables_builds_canonical_turn_and_outbox_constraints(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'canonical-turn.db'}"
+    settings = Settings(storage_backend="database", database_url=database_url)
+
+    await create_all_tables(settings)
+
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        schema = await conn.run_sync(_canonical_turn_schema_snapshot)
+    await engine.dispose()
+
+    assert schema["turn_columns"] >= {
+        "turn_id",
+        "tenant_id",
+        "user_id",
+        "session_id",
+        "request_id",
+        "status",
+        "state_version",
+        "user_input_text",
+        "references_text",
+        "final_response_text",
+        "completed_at",
+    }
+    assert ["tenant_id", "user_id", "request_id"] in schema["turn_unique_constraints"]
+    assert ["request_id"] in schema["turn_unique_indexes"]
+    assert {
+        "idx_canonical_turns_owner_session_status",
+        "idx_canonical_turns_status_updated",
+    } <= schema["turn_indexes"]
+    assert ["idempotency_key"] in schema["outbox_unique_constraints"]
+    assert {"idx_turn_outbox_claim", "idx_turn_outbox_turn_status"} <= schema["outbox_indexes"]
+    assert any(
+        foreign_key["referred_table"] == "canonical_turns"
+        and foreign_key["constrained_columns"] == ["turn_id"]
+        for foreign_key in schema["outbox_foreign_keys"]
+    )
+    assert CanonicalTurnModel.__tablename__ == "canonical_turns"
+    assert TurnOutboxModel.__tablename__ == "turn_outbox"
+
+
+def _canonical_turn_schema_snapshot(sync_conn) -> dict:
+    inspector = inspect(sync_conn)
+    return {
+        "turn_columns": {column["name"] for column in inspector.get_columns("canonical_turns")},
+        "turn_unique_constraints": [
+            constraint["column_names"]
+            for constraint in inspector.get_unique_constraints("canonical_turns")
+        ],
+        "turn_indexes": {index["name"] for index in inspector.get_indexes("canonical_turns")},
+        "turn_unique_indexes": [
+            index["column_names"]
+            for index in inspector.get_indexes("canonical_turns")
+            if index.get("unique")
+        ],
+        "outbox_unique_constraints": [
+            constraint["column_names"]
+            for constraint in inspector.get_unique_constraints("turn_outbox")
+        ],
+        "outbox_indexes": {index["name"] for index in inspector.get_indexes("turn_outbox")},
+        "outbox_foreign_keys": inspector.get_foreign_keys("turn_outbox"),
+    }
+
+
 async def test_create_all_tables_adds_agent_context_column_to_existing_database(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
@@ -86,6 +214,44 @@ async def test_create_all_tables_adds_agent_context_column_to_existing_database(
         )
     await engine.dispose()
     assert "context_text" in columns
+
+
+async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-delegated.db'}"
+    settings = Settings(storage_backend="database", database_url=database_url)
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE agent_runs (run_id VARCHAR(128) PRIMARY KEY)"))
+        await conn.execute(text("CREATE TABLE agent_results (result_id VARCHAR(128) PRIMARY KEY)"))
+        await conn.execute(text("CREATE TABLE agent_events (event_id VARCHAR(128) PRIMARY KEY)"))
+    await engine.dispose()
+
+    await create_all_tables(settings)
+    await create_all_tables(settings)
+
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        schema = await conn.run_sync(
+            lambda sync_conn: {
+                table: {column["name"] for column in inspect(sync_conn).get_columns(table)}
+                for table in ("agent_runs", "agent_results", "agent_events")
+            }
+        )
+    await engine.dispose()
+
+    assert schema["agent_runs"] >= {
+        "turn_id",
+        "delegated",
+        "state_version",
+        "deadline_at",
+        "heartbeat_at",
+        "claim_owner",
+        "claim_token",
+        "claim_expires_at",
+        "terminal_event_id",
+    }
+    assert schema["agent_results"] >= {"turn_id", "run_state_version"}
+    assert schema["agent_events"] >= {"turn_id", "sequence", "run_state_version"}
 
 
 async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp_path) -> None:

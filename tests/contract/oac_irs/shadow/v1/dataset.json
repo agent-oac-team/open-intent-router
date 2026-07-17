@@ -1,0 +1,51 @@
+{
+  "dataset_id": "oac-oir-shadow-smoke-v1",
+  "version": "shadow-replay/v1",
+  "metadata": {
+    "purpose": "Repeatable runner coverage for Route, Knowledge, permission, and synthetic E2E categories",
+    "execution_scope": "local_runner_smoke",
+    "full_environment_replay_required": true
+  },
+  "samples": [
+    {
+      "sample_id": "route-direct-reply",
+      "category": "route",
+      "kind": "route",
+      "method": "POST",
+      "path": "/api/v1/central/route",
+      "side_effect_free": true,
+      "irs_result": {"route": {"action": "reply", "agent_id": null, "message": "ok"}, "context": {"relation": "new_task"}, "plan": null},
+      "oir_result": {"route": {"action": "reply", "agent_id": null, "message": "ok"}, "context": {"relation": "new_task"}, "plan": null}
+    },
+    {
+      "sample_id": "knowledge-no-match",
+      "category": "knowledge",
+      "kind": "knowledge",
+      "method": "POST",
+      "path": "/api/v1/knowledge/search",
+      "side_effect_free": true,
+      "irs_result": {"matched": false, "evidence": [], "warnings": [{"code": "no_match"}]},
+      "oir_result": {"matched": false, "evidence": [], "warnings": [{"code": "no_match"}]}
+    },
+    {
+      "sample_id": "knowledge-permission-filtered",
+      "category": "permission",
+      "kind": "knowledge",
+      "method": "POST",
+      "path": "/api/v1/knowledge/search",
+      "side_effect_free": true,
+      "irs_result": {"matched": false, "evidence": [], "warnings": [{"code": "permission_filtered"}]},
+      "oir_result": {"matched": false, "evidence": [], "warnings": [{"code": "permission_filtered"}]}
+    },
+    {
+      "sample_id": "e2e-route-open-agent-decision-only",
+      "category": "e2e",
+      "kind": "route",
+      "method": "POST",
+      "path": "/api/v1/central/route",
+      "side_effect_free": true,
+      "irs_result": {"route": {"action": "open_agent", "agent_id": "daily_wecom_task", "message": "open"}, "context": {"relation": "new_task"}, "plan": null},
+      "oir_result": {"route": {"action": "open_agent", "agent_id": "daily_wecom_task", "message": "open"}, "context": {"relation": "new_task"}, "plan": null}
+    }
+  ]
+}
