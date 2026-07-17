@@ -31,7 +31,16 @@
 
 - 全量版本化 replay dataset 在实际 IRS/OIR 执行端达到 100% 覆盖。
 - 测试 IRS 写冻结、排空、水位线、流量和未知消费者均通过。
-- 公网 `https://test.superben.com.cn/` TLS reset 已定位并解除。
+- 公网 `https://test.superben.com.cn/` 的火山引擎域名合规拦截已解除。
 - OIR 已成为唯一事实源，IRS fallback 已移除且服务已停用。
+
+## 当前阻塞
+
+OAC Actions #388 证明服务器 443 正常监听、`firewalld` 未启用且 INPUT 无
+443 DROP/REJECT；外部 ClientHello 到达网卡后由服务器外部中间层注入 RST，Nginx
+未收到请求。公网 HTTP 同时被重定向到 `webblock.volcengine.com`，且同一 IP 使用其他
+SNI 可以正常完成 TLS，因此阻塞点已收敛为火山引擎对
+`test.superben.com.cn` 的域名合规策略。继续公网切流前必须完成该域名备案/放行，或换用
+已有备案并可配置 DNS/证书的测试域名；不得通过关闭 TLS 校验掩盖该门禁。
 
 全部项目通过 `scripts/evaluate_oac_cutover.py` 后，才能完成最终 Definition of Done 和 IRS 下线结论。
