@@ -19,6 +19,7 @@
 | 迟到回调隔离 | cutover guard、脱敏 repository、Central Handler test | 通过 |
 | IRS 写冻结 | IRS middleware 与 read/write tests | 通过 |
 | IRS 排空工具 | 本地实际 1 个遗留 Plan 终止后 0 active report | 通过（本地） |
+| 测试环境独立数据域 | OAC Actions #381；`oir_test` / `oir_rehearsal_test`、Knowledge/Memory 主与 rehearsal Milvus collections、PM2 `oir-oac-test` | 通过 |
 | 全量代码回归 | OIR 818、IRS 165、Web 18、OAC Go/TS/build | 通过 |
 | OpenSpec | `openspec validate ... --strict` | 通过 |
 
@@ -26,7 +27,6 @@
 
 以下项目不能用本地 smoke 或静态配置替代：
 
-- OAC Host Runtime、独立 PostgreSQL/Milvus 和 State Rehearsal 数据域已部署。
 - 全量版本化 replay dataset 在实际 IRS/OIR 执行端达到 100% 覆盖。
 - State Rehearsal 完整闭环且主数据域 0 副作用。
 - 测试环境 Circuit/Fallback/Write Fence 演练通过。

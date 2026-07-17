@@ -181,7 +181,7 @@
 
 ## 14. 测试环境 100% Shadow 与干净切换
 
-- [ ] 14.1 在测试环境部署 OAC Host Runtime、OIR 独立 database/collections 与隔离 State Rehearsal 数据域
+- [x] 14.1 在测试环境部署 OAC Host Runtime、OIR 独立 database/collections 与隔离 State Rehearsal 数据域
 - [ ] 14.2 对版本化 replay dataset 执行 100% Decision Shadow 并生成覆盖率证据
 - [ ] 14.3 执行隔离 State Rehearsal，对账 Turn/Run/Result/Plan/Event/Outbox/Memory 且验证主数据域无副作用
 - [ ] 14.4 处理或批准 Route/Knowledge/Latency Diff，清零权限放宽、跨用户、核心事实矛盾和重复写 blocking Diff
