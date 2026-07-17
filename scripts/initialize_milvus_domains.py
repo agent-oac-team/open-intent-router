@@ -30,17 +30,18 @@ def ensure_collection(
 
 
 def initialize(args: argparse.Namespace) -> dict:
+    knowledge_uri = Path(args.knowledge_uri)
+    memory_uri = Path(args.memory_uri)
+    if knowledge_uri.resolve() == memory_uri.resolve():
+        raise ValueError("Knowledge and Memory Milvus files must be distinct")
+
     try:
         from pymilvus import MilvusClient
     except Exception as exc:
         raise RuntimeError("pymilvus and milvus-lite are required") from exc
 
-    knowledge_uri = Path(args.knowledge_uri)
-    memory_uri = Path(args.memory_uri)
     knowledge_uri.parent.mkdir(parents=True, exist_ok=True)
     memory_uri.parent.mkdir(parents=True, exist_ok=True)
-    if knowledge_uri.resolve() == memory_uri.resolve():
-        raise ValueError("Knowledge and Memory Milvus files must be distinct")
 
     knowledge = MilvusClient(uri=str(knowledge_uri))
     memory = MilvusClient(uri=str(memory_uri))
