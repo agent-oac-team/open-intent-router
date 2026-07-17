@@ -43,7 +43,6 @@ async def table_counts(database_url: str) -> dict[str, int]:
 
 async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: str) -> dict:
     primary_before = await table_counts(primary_database_url)
-    rehearsal_before = await table_counts(rehearsal_database_url)
 
     os.environ.update(
         {
@@ -82,6 +81,7 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
     get_settings.cache_clear()
     settings = get_settings()
     await create_all_tables(settings)
+    rehearsal_before = await table_counts(rehearsal_database_url)
 
     suffix = uuid4().hex
     tenant_id = "oac"
