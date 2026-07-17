@@ -183,15 +183,15 @@
 
 - [x] 14.1 在测试环境部署 OAC Host Runtime、OIR 独立 database/collections 与隔离 State Rehearsal 数据域
 - [ ] 14.2 对版本化 replay dataset 执行 100% Decision Shadow 并生成覆盖率证据
-- [ ] 14.3 执行隔离 State Rehearsal，对账 Turn/Run/Result/Plan/Event/Outbox/Memory 且验证主数据域无副作用
+- [x] 14.3 执行隔离 State Rehearsal，对账 Turn/Run/Result/Plan/Event/Outbox/Memory 且验证主数据域无副作用
 - [ ] 14.4 处理或批准 Route/Knowledge/Latency Diff，清零权限放宽、跨用户、核心事实矛盾和重复写 blocking Diff
-- [ ] 14.5 演练 Circuit open/half-open/recovery、只读 fallback、安全 Route fallback、unknown timeout 和写阻止
+- [x] 14.5 演练 Circuit open/half-open/recovery、只读 fallback、安全 Route fallback、unknown timeout 和写阻止
 - [ ] 14.6 启用 IRS 新运行态/控制面写入冻结，禁止新 Session/Plan/Event/Registry/Knowledge Admin 写入
 - [ ] 14.7 实现并执行 IRS 活动 Plan、在途 Agent 和待回调 Event 盘点/排空脚本
 - [ ] 14.8 完成、取消或显式终止所有 IRS 活动运行态，生成零活动对象排空报告
 - [ ] 14.9 生成 cutover watermark、契约/非敏感配置快照，确认不保留或导入历史消息正文/运行态
 - [ ] 14.10 将 OIR 切为 Central、Registry、Knowledge、Turn/Run/Plan/Event/Memory 唯一事实源
-- [ ] 14.11 将 OAC Go/Next.js 和 Coze Knowledge URL 切换到 Adapter 并执行 OAC E2E/Coze transport smoke
+- [x] 14.11 将 OAC Go/Next.js 和 Coze Knowledge URL 切换到 Adapter 并执行 OAC E2E/Coze transport smoke
 - [x] 14.12 实现并验证 cutover watermark 之前迟到 IRS Event 只进入脱敏隔离审计
 - [ ] 14.13 在稳定窗口演练冻结 OIR 写入、保存 watermark、只读回退与未完成 Delegated Run 终止
 - [ ] 14.14 验证 IRS 无活跃请求、无活动运行态、无未处置迟到回调和无未知直连消费者

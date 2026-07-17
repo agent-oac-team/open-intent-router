@@ -19,8 +19,10 @@
 | 迟到回调隔离 | cutover guard、脱敏 repository、Central Handler test | 通过 |
 | IRS 写冻结 | IRS middleware 与 read/write tests | 通过 |
 | IRS 排空工具 | 本地实际 1 个遗留 Plan 终止后 0 active report | 通过（本地） |
-| 测试环境独立数据域 | OAC Actions #381；`oir_test` / `oir_rehearsal_test`、Knowledge/Memory 主与 rehearsal Milvus collections、PM2 `oir-oac-test` | 通过 |
-| 全量代码回归 | OIR 818、IRS 165、Web 18、OAC Go/TS/build | 通过 |
+| 测试环境独立数据域 | OAC Actions #381/#387；`oir_test` / `oir_rehearsal_test`、Knowledge/Memory 主与 rehearsal Milvus collections、PM2 `oir-oac-test` | 通过 |
+| 测试环境知识重建 | OAC Actions #387；6 个 Asset、269 canonical Chunk、269 Milvus records、17/17 Golden | 通过 |
+| 测试环境状态与故障演练 | OAC Actions #387；State Rehearsal、Fallback Drill、Write Fence、OAC user/admin 与 Coze transport smoke | 通过 |
+| 全量代码回归 | OIR 823、IRS 165、Web 18、OAC Go/TS/build | 通过 |
 | OpenSpec | `openspec validate ... --strict` | 通过 |
 
 ## 尚缺测试环境权威证据
@@ -28,10 +30,8 @@
 以下项目不能用本地 smoke 或静态配置替代：
 
 - 全量版本化 replay dataset 在实际 IRS/OIR 执行端达到 100% 覆盖。
-- State Rehearsal 完整闭环且主数据域 0 副作用。
-- 测试环境 Circuit/Fallback/Write Fence 演练通过。
 - 测试 IRS 写冻结、排空、水位线、流量和未知消费者均通过。
-- OAC Go/Next.js 与 Coze Knowledge URL 已切向 Adapter并通过 smoke。
+- 公网 `https://test.superben.com.cn/` TLS reset 已定位并解除。
 - OIR 已成为唯一事实源，IRS fallback 已移除且服务已停用。
 
 全部项目通过 `scripts/evaluate_oac_cutover.py` 后，才能完成最终 Definition of Done 和 IRS 下线结论。
