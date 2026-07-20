@@ -20,6 +20,7 @@ import {
   Save,
   Send,
   Server,
+  Settings2,
   Shield,
   Trash2,
   XCircle,
@@ -28,6 +29,8 @@ import {
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, isApiError } from "./api";
+import { projectRoutingJourney } from "./journey";
+import type { JourneyNode, JourneyNodeId, JourneyNodeState } from "./journey";
 import type {
   AgentDefinition,
   AgentListResponse,
@@ -38,6 +41,8 @@ import type {
   KnowledgeDebugFilters,
   KnowledgeDebugResponse,
   MemoryDebugFilters,
+  MemoryDebugEvent,
+  MemoryDebugItem,
   MemoryDebugResponse,
   MemoryFormationDecisionView,
   MemoryFormationTraceView,
@@ -116,7 +121,7 @@ type DemoPrompt = {
   text: string;
   mode: ExecutionMode;
 };
-type StatusTab = "route" | "plan" | "context" | "memory" | "knowledge" | "evidence" | "debug";
+type StatusTab = "journey" | "route" | "plan" | "context" | "memory" | "knowledge" | "evidence" | "debug";
 
 const demoPrompts: DemoPrompt[] = [
   {
@@ -275,7 +280,7 @@ function App() {
     if (!pendingMemoryPolls.length) return undefined;
     const timer = window.setTimeout(() => {
       pendingMemoryPolls.forEach((turn) => void refreshTurnMemoryTrace(turn));
-    }, 2000);
+    }, Math.min(...pendingMemoryPolls.map((turn) => memoryTracePollDelay(turn.memoryTrace.pollCount))));
     return () => window.clearTimeout(timer);
   }, [pendingMemoryPolls]);
 
@@ -894,6 +899,7 @@ function App() {
         <aside className="right-rail">
           <StatusInspector
             turn={inspectedTurn}
+            agents={agents}
             plan={plan}
             planId={planId}
             setPlanId={setPlanId}
@@ -1451,6 +1457,7 @@ function TurnTraceBadges({ turn }: { turn: ConversationTurn }) {
 
 function StatusInspector({
   turn,
+  agents,
   plan,
   planId,
   setPlanId,
@@ -1463,6 +1470,7 @@ function StatusInspector({
   onRefreshMemoryTrace,
 }: {
   turn: ConversationTurn | null;
+  agents: AgentDefinition[];
   plan: JsonRecord | null;
   planId: string;
   setPlanId: (value: string) => void;
@@ -1474,11 +1482,12 @@ function StatusInspector({
   onSubmitEvent: () => void;
   onRefreshMemoryTrace: (turn: ConversationTurn) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<StatusTab>("route");
+  const [activeTab, setActiveTab] = useState<StatusTab>("journey");
   const routeResponse = turn?.routeResponse || null;
   const invokeResponse = turn?.invokeResponse || null;
   const turnPlan = routeResponse?.plan && typeof routeResponse.plan === "object" ? (routeResponse.plan as JsonRecord) : null;
   const tabs: Array<{ id: StatusTab; label: string; icon: React.ReactNode }> = [
+    { id: "journey", label: "运行图", icon: <GitBranch size={15} /> },
     { id: "route", label: "Route", icon: <Route size={15} /> },
     { id: "plan", label: "Plan", icon: <ClipboardList size={15} /> },
     { id: "context", label: "Context", icon: <Braces size={15} /> },
@@ -1511,6 +1520,7 @@ function StatusInspector({
         ))}
       </div>
       <div className="status-tab-panel" role="tabpanel">
+        {activeTab === "journey" ? <JourneyTab turn={turn} agents={agents} /> : null}
         {activeTab === "route" ? (
           <RouteTab routeResponse={routeResponse} invokeResponse={invokeResponse} />
         ) : null}
@@ -1548,6 +1558,194 @@ function StatusInspector({
       </div>
     </section>
   );
+}
+
+function JourneyTab({ turn, agents }: { turn: ConversationTurn | null; agents: AgentDefinition[] }) {
+  const journey = useMemo(() => projectRoutingJourney(turn, agents), [turn, agents]);
+  const [selectedNodeId, setSelectedNodeId] = useState<JourneyNodeId | null>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const selectedNode = journey.nodes.find((node) => node.id === selectedNodeId) || null;
+
+  useEffect(() => {
+    setSelectedNodeId(null);
+  }, [turn?.id]);
+
+  function openDetails(node: JourneyNode, trigger: HTMLButtonElement) {
+    detailTriggerRef.current = trigger;
+    setSelectedNodeId(node.id);
+  }
+
+  function closeDetails() {
+    setSelectedNodeId(null);
+    window.setTimeout(() => detailTriggerRef.current?.focus(), 0);
+  }
+
+  if (journey.state === "empty") {
+    return (
+      <div className="journey-empty">
+        <EmptyState icon={<GitBranch size={22} />} label={journey.title} />
+        <p>{journey.summary}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="journey-view">
+      <header className={`journey-overview ${journey.state}`} aria-live="polite">
+        <span className="journey-overview-mark" aria-hidden="true">
+          {journey.state === "processing" ? <Loader2 className="spin" size={18} /> : journey.state === "failed" ? <XCircle size={18} /> : <CheckCircle2 size={18} />}
+        </span>
+        <div>
+          <small>本轮中控链路</small>
+          <strong>{journey.title}</strong>
+          <p>{journey.summary}</p>
+        </div>
+      </header>
+
+      <ol className="journey-flow" aria-label="本轮中控运行链路">
+        {journey.nodes.map((node, index) => {
+          const hasDetails = node.details.length > 0 || Boolean(node.steps?.length);
+          return (
+            <li className={`journey-stage ${node.state}`} key={node.id}>
+              <span className="journey-sequence" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+              <button
+                type="button"
+                className="journey-node"
+                disabled={!hasDetails}
+                onClick={(event) => openDetails(node, event.currentTarget)}
+                aria-label={hasDetails ? `查看${node.label}详情` : `${node.label}，${journeyStateLabel(node.state)}`}
+              >
+                <span className="journey-node-icon" aria-hidden="true">{journeyNodeIcon(node.id)}</span>
+                <span className="journey-node-copy">
+                  <span className="journey-node-head">
+                    <strong>{node.label}</strong>
+                    <small>{journeyStateLabel(node.state)}</small>
+                  </span>
+                  <span className="journey-node-summary" title={node.summary}>{node.summary}</span>
+                  {node.tags?.length ? (
+                    <span className="journey-node-tags">
+                      {node.tags.map((tag) => <span key={tag}>{tag}</span>)}
+                    </span>
+                  ) : null}
+                  {node.steps?.length ? (
+                    <span className="journey-plan-preview" aria-label="协作步骤摘要">
+                      {node.steps.slice(0, 3).map((step) => (
+                        <span key={step.id}>
+                          <i className={journeyStepTone(step.status)} aria-hidden="true" />
+                          <b>{step.label}</b>
+                          <small>{step.agentName}</small>
+                        </span>
+                      ))}
+                      {node.steps.length > 3 ? <em>另有 {node.steps.length - 3} 个步骤</em> : null}
+                    </span>
+                  ) : null}
+                </span>
+                {hasDetails ? <Eye className="journey-node-open" size={15} aria-hidden="true" /> : null}
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+
+      {selectedNode ? <JourneyDetailModal node={selectedNode} onClose={closeDetails} /> : null}
+    </div>
+  );
+}
+
+function JourneyDetailModal({ node, onClose }: { node: JourneyNode; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="modal-backdrop journey-detail-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="panel journey-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`journey-detail-${node.id}`}
+      >
+        <div className="panel-title-row journey-detail-head">
+          <div>
+            <span className={`journey-detail-state ${node.state}`}>{journeyStateLabel(node.state)}</span>
+            <h2 id={`journey-detail-${node.id}`}>{node.label}</h2>
+          </div>
+          <button ref={closeRef} className="icon-button small" type="button" onClick={onClose} aria-label="关闭运行节点详情">
+            <XCircle size={17} />
+          </button>
+        </div>
+        <p className="journey-detail-summary">{node.summary}</p>
+        {node.details.length ? (
+          <dl className="journey-detail-fields">
+            {node.details.map((field) => (
+              <div key={`${field.label}-${field.value}`}>
+                <dt>{field.label}</dt>
+                <dd>{field.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {node.steps?.length ? (
+          <div className="journey-detail-steps">
+            <h3>协作步骤</h3>
+            {node.steps.map((step, index) => (
+              <div key={step.id}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <strong>{step.label}</strong>
+                <small>{step.agentName}</small>
+                <em className={journeyStepTone(step.status)}>{step.status}</em>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function journeyNodeIcon(id: JourneyNodeId): React.ReactNode {
+  const icons: Record<JourneyNodeId, React.ReactNode> = {
+    input: <MessageSquareText size={17} />,
+    context: <BookOpen size={17} />,
+    routing: <Route size={17} />,
+    handoff: <Bot size={17} />,
+    invocation: <Zap size={17} />,
+    response: <Send size={17} />,
+    formation: <Database size={17} />,
+  };
+  return icons[id];
+}
+
+function journeyStateLabel(state: JourneyNodeState): string {
+  const labels: Record<JourneyNodeState, string> = {
+    waiting: "等待",
+    active: "处理中",
+    completed: "已完成",
+    skipped: "未使用",
+    failed: "未完成",
+  };
+  return labels[state];
+}
+
+function journeyStepTone(status: string): string {
+  const normalized = status.toLowerCase();
+  if (["completed", "success", "succeeded"].includes(normalized)) return "completed";
+  if (["failed", "error", "cancelled", "canceled"].includes(normalized)) return "failed";
+  if (["running", "active", "in_progress"].includes(normalized)) return "active";
+  return "waiting";
 }
 
 function RouteTab({
@@ -1777,6 +1975,7 @@ function MemoryTab({
     (item) => !actualIds.has(String(item.memory_id || item.item_id || "")),
   );
   const traces = uniqueFormationTraces(traceData?.formation_traces || []);
+  const requestTrace = traceData?.request_trace || null;
   const formationCounts = formationDecisionCounts(traces);
   const errors = stringArrayValue(memoryContext?.errors);
 
@@ -1966,7 +2165,11 @@ function MemoryTab({
             <RefreshCcw size={15} />
           </button>
         </div>
-        <FormationStatus state={traceState?.status || "idle"} counts={formationCounts} />
+        <FormationStatus
+          state={requestTrace?.overall_stage || traceState?.status || "idle"}
+          counts={formationCounts}
+        />
+        {requestTrace ? <MemoryRequestTraceSummary trace={requestTrace} /> : null}
         {traceState?.error ? <div className="inline-error"><XCircle size={15} />{traceState.error}</div> : null}
         {traces.length ? (
           <div className="formation-trace-list">
@@ -2115,6 +2318,24 @@ function FormationTraceCard({
 
 function MemorySectionState({ icon, label }: { icon: React.ReactNode; label: string }) {
   return <div className="memory-section-state">{icon}<span>{label}</span></div>;
+}
+
+function MemoryRequestTraceSummary({ trace }: { trace: NonNullable<MemoryDebugResponse["request_trace"]> }) {
+  const links = [
+    trace.turn_id,
+    trace.formation_job_ids[0],
+    trace.memory_ids[0],
+    trace.index_operation_ids[0],
+  ].filter(Boolean);
+  return (
+    <div className={`memory-request-trace ${trace.terminal ? "terminal" : trace.retryable ? "active" : ""}`}>
+      <div>
+        <strong>{formationStatusLabel(trace.overall_stage)}</strong>
+        <span>{trace.reason_code || (trace.terminal ? "链路已到达终态" : "链路仍在推进")}</span>
+      </div>
+      {links.length ? <small>{links.join(" · ")}</small> : null}
+    </div>
+  );
 }
 
 function FormationStatus({ state, counts }: { state: string; counts: Record<string, number> }) {
@@ -2380,18 +2601,54 @@ function DebugManagementPanel({ runtime }: { runtime: RuntimeConfig | null }) {
 }
 
 function RuntimeDebugSummary({ runtime }: { runtime: RuntimeConfig | null }) {
+  const memoryStatus = runtime?.memory_mem0_health_status || (runtime?.memory_mem0_degraded ? "degraded" : "-");
+
   return (
-    <div className="runtime-debug-summary">
-      <Metric label="Memory Provider" value={runtime ? `${runtime.memory_enabled ? "on" : "off"} / ${runtime.memory_strategy_provider}` : "-"} />
-      <Metric label="mem0 Collection" value={runtime?.memory_mem0_collection || "-"} />
-      <Metric label="mem0 History" value={runtime?.memory_mem0_history_backend || "-"} />
-      <Metric label="mem0 Health" value={runtime?.memory_mem0_health_status || (runtime?.memory_mem0_degraded ? "degraded" : "-")} />
-      <Metric label="Formation Mode" value={runtime?.memory_formation_mode || "-"} />
-      <Metric label="Formation Queue" value={runtime?.memory_formation_queue_status || "-"} />
-      <Metric label="Formation Worker" value={runtime ? `${runtime.memory_formation_worker_enabled ? "on" : "off"} / ${runtime.memory_formation_sweeper_enabled ? "sweeper" : "no sweeper"}` : "-"} />
-      <Metric label="Knowledge Backend" value={runtime ? `${runtime.knowledge_enabled ? "on" : "off"} / ${runtime.knowledge_vector_backend}` : "-"} />
-      <Metric label="Knowledge Index" value={runtime?.knowledge_milvus_collection || "-"} />
-      <Metric label="Milvus Lite URI" value={runtime?.knowledge_milvus_uri || runtime?.memory_mem0_milvus_uri || "-"} />
+    <div className="runtime-debug-block">
+      <div className="runtime-status-strip">
+        <RuntimeStatus
+          label="Memory"
+          value={runtime ? runtime.memory_strategy_provider : "-"}
+          active={Boolean(runtime?.memory_enabled) && memoryStatus === "ok"}
+          status={runtime?.memory_enabled ? memoryStatus : "off"}
+        />
+        <RuntimeStatus
+          label="Formation"
+          value={runtime?.memory_formation_mode || "-"}
+          active={Boolean(runtime?.memory_formation_worker_enabled)}
+          status={runtime?.memory_formation_worker_enabled ? "worker on" : "off"}
+        />
+        <RuntimeStatus
+          label="Knowledge"
+          value={runtime?.knowledge_vector_backend || "-"}
+          active={Boolean(runtime?.knowledge_enabled)}
+          status={runtime?.knowledge_enabled ? "on" : "off"}
+        />
+      </div>
+      <details className="debug-disclosure runtime-details">
+        <summary><Settings2 size={15} />运行配置详情</summary>
+        <div className="runtime-debug-summary">
+          <Metric label="Memory Collection" value={runtime?.memory_mem0_collection || "-"} />
+          <Metric label="Memory History" value={runtime?.memory_mem0_history_backend || "-"} />
+          <Metric label="Formation Queue" value={runtime?.memory_formation_queue_status || "-"} />
+          <Metric label="Formation Worker" value={runtime ? `${runtime.memory_formation_worker_enabled ? "on" : "off"} / ${runtime.memory_formation_sweeper_enabled ? "sweeper" : "no sweeper"}` : "-"} />
+          <Metric label="Knowledge Index" value={runtime?.knowledge_milvus_collection || "-"} />
+          <Metric label="Milvus Lite URI" value={runtime?.knowledge_milvus_uri || runtime?.memory_mem0_milvus_uri || "-"} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function RuntimeStatus({ label, value, active, status }: { label: string; value: string; active: boolean; status: string }) {
+  return (
+    <div className="runtime-status">
+      <span className={`runtime-status-dot ${active ? "active" : ""}`} aria-hidden="true" />
+      <div>
+        <strong>{label}</strong>
+        <span>{value}</span>
+      </div>
+      <small>{status}</small>
     </div>
   );
 }
@@ -2411,32 +2668,41 @@ function MemoryDebugView({
   error: string;
   onSubmit: (event?: FormEvent) => void;
 }) {
+  const [activeDataView, setActiveDataView] = useState<"items" | "formation" | "events">("items");
+  const [selectedItem, setSelectedItem] = useState<MemoryDebugItem | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<MemoryDebugEvent | null>(null);
+  const [selectedTrace, setSelectedTrace] = useState<MemoryFormationTraceView | null>(null);
   const update = (key: keyof MemoryDebugFilters, value: string) => setFilters({ ...filters, [key]: value });
   return (
     <div className="debug-management-view">
       <form className="debug-filter-form" onSubmit={onSubmit}>
         <TextField label="user_id" value={String(filters.user_id || "")} onChange={(value) => update("user_id", value)} />
         <TextField label="tenant_id" value={String(filters.tenant_id || "")} onChange={(value) => update("tenant_id", value)} />
-        <TextField label="agent_id" value={String(filters.agent_id || "")} onChange={(value) => update("agent_id", value)} />
-        <TextField label="scopes" value={String(filters.scopes || "")} onChange={(value) => update("scopes", value)} />
-        <TextField label="memory_id" value={String(filters.memory_id || "")} onChange={(value) => update("memory_id", value)} />
-        <TextField label="request_id" value={String(filters.request_id || "")} onChange={(value) => update("request_id", value)} />
-        <TextField label="session_id" value={String(filters.session_id || "")} onChange={(value) => update("session_id", value)} />
-        <TextField label="turn_id" value={String(filters.turn_id || "")} onChange={(value) => update("turn_id", value)} />
-        <TextField label="run_id" value={String(filters.run_id || "")} onChange={(value) => update("run_id", value)} />
-        <TextField label="formation_job_id" value={String(filters.formation_job_id || "")} onChange={(value) => update("formation_job_id", value)} />
-        <TextField label="memory_key" value={String(filters.memory_key || "")} onChange={(value) => update("memory_key", value)} />
-        <SelectField
-          label="decision_status"
-          value={String(filters.decision_status || "")}
-          onChange={(value) => update("decision_status", value)}
-          options={["", "pending", "resolved", "accepted", "rejected"]}
-        />
         <TextField label="limit" value={String(filters.limit || "")} onChange={(value) => update("limit", value)} />
         <button type="submit" className="secondary-button" disabled={loading}>
           {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
           刷新 Memory
         </button>
+        <details className="debug-disclosure filter-disclosure">
+          <summary><Settings2 size={15} />高级筛选</summary>
+          <div className="advanced-filter-grid">
+            <TextField label="agent_id" value={String(filters.agent_id || "")} onChange={(value) => update("agent_id", value)} />
+            <TextField label="scopes" value={String(filters.scopes || "")} onChange={(value) => update("scopes", value)} />
+            <TextField label="memory_id" value={String(filters.memory_id || "")} onChange={(value) => update("memory_id", value)} />
+            <TextField label="request_id" value={String(filters.request_id || "")} onChange={(value) => update("request_id", value)} />
+            <TextField label="session_id" value={String(filters.session_id || "")} onChange={(value) => update("session_id", value)} />
+            <TextField label="turn_id" value={String(filters.turn_id || "")} onChange={(value) => update("turn_id", value)} />
+            <TextField label="run_id" value={String(filters.run_id || "")} onChange={(value) => update("run_id", value)} />
+            <TextField label="formation_job_id" value={String(filters.formation_job_id || "")} onChange={(value) => update("formation_job_id", value)} />
+            <TextField label="memory_key" value={String(filters.memory_key || "")} onChange={(value) => update("memory_key", value)} />
+            <SelectField
+              label="decision_status"
+              value={String(filters.decision_status || "")}
+              onChange={(value) => update("decision_status", value)}
+              options={["", "pending", "resolved", "accepted", "rejected"]}
+            />
+          </div>
+        </details>
       </form>
       <ReadOnlyNotice />
       {error ? <div className="inline-error"><XCircle size={15} />{error}</div> : null}
@@ -2450,105 +2716,347 @@ function MemoryDebugView({
             <Metric label="Provider" value={String(data.metadata.strategy_provider || data.metadata.memory_provider || "-")} />
             <Metric label="Status" value={String(recordValue(data.metadata.mem0)?.status || data.metadata.mem0_status || "-")} />
           </div>
-          <section className="debug-section">
+          <div className="memory-data-tabs" role="tablist" aria-label="Memory 数据视图">
+            <button type="button" role="tab" aria-selected={activeDataView === "items"} className={activeDataView === "items" ? "active" : ""} onClick={() => setActiveDataView("items")}>
+              <Database size={15} />
+              <span>Items</span>
+              <strong>{data.items.length}</strong>
+            </button>
+            <button type="button" role="tab" aria-selected={activeDataView === "formation"} className={activeDataView === "formation" ? "active" : ""} onClick={() => setActiveDataView("formation")}>
+              <GitBranch size={15} />
+              <span>Formation</span>
+              <strong>{uniqueFormationTraces(data.formation_traces || []).length}</strong>
+            </button>
+            <button type="button" role="tab" aria-selected={activeDataView === "events"} className={activeDataView === "events" ? "active" : ""} onClick={() => setActiveDataView("events")}>
+              <Activity size={15} />
+              <span>Events</span>
+              <strong>{data.events.length}</strong>
+            </button>
+          </div>
+          {activeDataView === "items" ? <section className="debug-section" role="tabpanel">
             <h3>Memory Items</h3>
             {data.items.length ? (
               <div className="debug-list">
                 {data.items.map((item) => (
-                  <article className="debug-row" key={item.memory_id}>
-                    <div>
-                      <strong>{item.memory_id}</strong>
-                      <span>{item.content}</span>
-                    </div>
+                  <button
+                    type="button"
+                    className="debug-row memory-item-row"
+                    key={item.memory_id}
+                    onClick={() => setSelectedItem(item)}
+                    aria-label={`查看 Memory Item ${item.memory_id}`}
+                  >
+                    <span className="memory-item-main">
+                      <strong className="memory-item-id" title={item.memory_id}>{item.memory_id}</strong>
+                      <span className="memory-item-content">{item.content}</span>
+                    </span>
                     <div className="context-item-meta">
                       <span>{item.scope}</span>
                       {item.user_id ? <span>{item.user_id}</span> : null}
-                      {item.tenant_id ? <span>{item.tenant_id}</span> : null}
                       {item.agent_id ? <span>{item.agent_id}</span> : null}
-                      {typeof item.confidence === "number" ? <span>confidence {item.confidence.toFixed(2)}</span> : null}
-                      {item.ttl_expires_at ? <span>TTL {item.ttl_expires_at}</span> : null}
+                      <Eye size={15} aria-hidden="true" />
                     </div>
-                  </article>
+                  </button>
                 ))}
               </div>
             ) : (
               <EmptyState icon={<Database size={20} />} label="当前过滤条件下没有 Memory Item" />
             )}
-          </section>
-          <section className="debug-section">
-            <h3>Formation Traces</h3>
+          </section> : null}
+          {activeDataView === "formation" ? <section className="debug-section" role="tabpanel">
+            <div className="debug-section-heading">
+              <div>
+                <h3>Formation Jobs</h3>
+                <span>查看记忆形成任务及其决策链路</span>
+              </div>
+            </div>
             {(data.formation_traces || []).length ? (
-              <div className="debug-list compact">
+              <div className="debug-list formation-job-list">
                 {uniqueFormationTraces(data.formation_traces || []).map((trace) => (
-                  <article className="debug-row" key={trace.job.job_id}>
-                    <div>
-                      <strong>{trace.job.job_id}</strong>
-                      <span>{trace.job.trigger} / {trace.job.status} / {trace.job.mode}</span>
-                    </div>
-                    <div className="context-item-meta">
-                      <span>{trace.decisions.length} decisions</span>
-                      <span>{trace.job.attempt_count}/{trace.job.max_attempts} attempts</span>
-                      <span>semantic {trace.semantic_contract_version || "-"}</span>
-                      <span>validation {formatCountMap(trace.semantic_validation_counts)}</span>
-                      <span>verifier {formatCountMap(trace.semantic_verifier_counts)}</span>
-                    </div>
-                  </article>
+                  <button type="button" className="formation-job-row" key={trace.job.job_id} onClick={() => setSelectedTrace(trace)} aria-label={`查看 Formation Job ${trace.job.job_id}`}>
+                    <span className={`formation-job-status ${trace.job.status}`}>{trace.job.status}</span>
+                    <span className="formation-job-main">
+                      <strong title={trace.job.job_id}>{trace.job.job_id}</strong>
+                      <span>{trace.job.first_turn_id || "-"} → {trace.job.last_turn_id || "-"}</span>
+                    </span>
+                    <span className="formation-job-facts">
+                      <span>{trace.job.trigger} · {trace.job.mode}</span>
+                      <span>{trace.decisions.length} decisions · {trace.model_latency_ms ?? "-"}ms</span>
+                    </span>
+                    <Eye size={16} aria-hidden="true" />
+                  </button>
                 ))}
               </div>
             ) : (
               <EmptyState icon={<Activity size={20} />} label="当前过滤条件下没有 Formation Trace" />
             )}
-          </section>
-          <section className="debug-section">
-            <h3>Memory Revisions</h3>
-            {(data.revisions || []).length ? (
-              <div className="debug-list compact">
-                {(data.revisions || []).map((revision) => (
-                  <article className="debug-row" key={revision.revision_id}>
-                    <div>
-                      <strong>{revision.revision_id}</strong>
-                      <span>{revision.content_redacted ? "[redacted]" : revision.content_preview || "-"}</span>
-                    </div>
-                    <div className="context-item-meta">
-                      <span>{revision.memory_id}</span>
-                      <span>rev {revision.revision_no}</span>
-                      <span>{revision.operation}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <EmptyState icon={<GitBranch size={20} />} label="当前过滤条件下没有 Memory Revision" />
-            )}
-          </section>
-          <section className="debug-section">
+          </section> : null}
+          {activeDataView === "events" ? <section className="debug-section" role="tabpanel">
             <h3>Memory Events</h3>
             {data.events.length ? (
               <div className="debug-list compact">
                 {data.events.map((event) => (
-                  <article className="debug-row" key={event.event_id}>
-                    <div>
-                      <strong>{event.event_type}</strong>
-                      <span>{event.memory_id || event.event_id}</span>
-                    </div>
+                  <button
+                    type="button"
+                    className="debug-row memory-item-row"
+                    key={event.event_id}
+                    onClick={() => setSelectedEvent(event)}
+                    aria-label={`查看 Memory Event ${event.event_id}`}
+                  >
+                    <span className="memory-item-main">
+                      <strong className="memory-item-id" title={event.event_type}>{event.event_type}</strong>
+                      <span className="memory-item-id" title={event.memory_id || event.event_id}>{event.memory_id || event.event_id}</span>
+                    </span>
                     <div className="context-item-meta">
                       {event.user_id ? <span>{event.user_id}</span> : null}
-                      {event.tenant_id ? <span>{event.tenant_id}</span> : null}
                       {event.agent_id ? <span>{event.agent_id}</span> : null}
-                      {event.created_at ? <span>{event.created_at}</span> : null}
+                      <Eye size={15} aria-hidden="true" />
                     </div>
-                  </article>
+                  </button>
                 ))}
               </div>
             ) : (
               <EmptyState icon={<Activity size={20} />} label="当前过滤条件下没有 Memory Event" />
             )}
-          </section>
+          </section> : null}
           <JsonBlock title="Memory Debug Metadata" value={redactSensitive(data.metadata)} defaultOpen={false} />
+          {selectedItem ? (
+            <MemoryItemDetailModal
+              item={selectedItem}
+              revisions={(data.revisions || []).filter((revision) => revision.memory_id === selectedItem.memory_id)}
+              onClose={() => setSelectedItem(null)}
+            />
+          ) : null}
+          {selectedEvent ? <MemoryEventDetailModal event={selectedEvent} onClose={() => setSelectedEvent(null)} /> : null}
+          {selectedTrace ? <FormationTraceDetailModal trace={selectedTrace} onClose={() => setSelectedTrace(null)} /> : null}
         </>
       ) : (
         <EmptyState icon={<Database size={20} />} label={loading ? "正在读取 Memory Debug" : "尚未读取 Memory Debug"} />
       )}
+    </div>
+  );
+}
+
+function MemoryItemDetailModal({
+  item,
+  revisions,
+  onClose,
+}: {
+  item: MemoryDebugItem;
+  revisions: MemoryDebugResponse["revisions"];
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="panel editor-modal memory-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Memory Item 详情"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="panel-title-row sticky-modal-head">
+          <PanelTitle icon={<Database size={18} />} title="Memory Item 详情" />
+          <button className="icon-button small" type="button" onClick={onClose} aria-label="关闭 Memory Item 详情">
+            <XCircle size={16} />
+          </button>
+        </div>
+        <div className="memory-detail-heading">
+          <strong title={item.memory_id}>{item.memory_id}</strong>
+          <span>{item.scope}</span>
+        </div>
+        <div className="memory-detail-content">{item.content}</div>
+        <div className="memory-detail-grid">
+          <DetailField label="用户" value={item.user_id} />
+          <DetailField label="租户" value={item.tenant_id} />
+          <DetailField label="Agent" value={item.agent_id} />
+          <DetailField label="置信度" value={typeof item.confidence === "number" ? item.confidence.toFixed(2) : null} />
+          <DetailField label="重要度" value={typeof item.importance === "number" ? item.importance.toFixed(2) : null} />
+          <DetailField label="可见范围" value={item.visibility} />
+          <DetailField label="来源" value={item.source} />
+          <DetailField label="生命周期" value={item.lifecycle_status} />
+          <DetailField label="索引状态" value={item.index_status} />
+          <DetailField label="当前版本" value={item.current_revision_no == null ? null : `rev ${item.current_revision_no}`} />
+          <DetailField label="创建时间" value={item.created_at} />
+          <DetailField label="更新时间" value={item.updated_at} />
+        </div>
+        {item.memory_key ? <DetailField label="Memory Key" value={item.memory_key} wide /> : null}
+        {item.ttl_expires_at ? <DetailField label="TTL 到期时间" value={item.ttl_expires_at} wide /> : null}
+        <section className="memory-detail-section">
+          <div className="memory-detail-section-head">
+            <div>
+              <span>Version history</span>
+              <strong>版本记录</strong>
+            </div>
+            <span className="memory-detail-count">{revisions.length}</span>
+          </div>
+          {revisions.length ? (
+            <div className="memory-revision-list">
+              {revisions.map((revision) => (
+                <article className="memory-revision-row" key={revision.revision_id}>
+                  <span className="revision-marker">{revision.revision_no}</span>
+                  <div>
+                    <strong title={revision.revision_id}>{revision.revision_id}</strong>
+                    <span>{revision.content_redacted ? "[redacted]" : revision.content_preview || "无内容预览"}</span>
+                  </div>
+                  <div className="revision-facts">
+                    <span>{revision.operation}</span>
+                    <span>{revision.created_at}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="memory-empty-inline"><GitBranch size={16} /><span>这条记忆还没有历史版本</span></div>
+          )}
+        </section>
+        <JsonBlock title="完整数据" value={redactSensitive(item as unknown as JsonRecord)} defaultOpen={false} />
+      </section>
+    </div>
+  );
+}
+
+function FormationTraceDetailModal({ trace, onClose }: { trace: MemoryFormationTraceView; onClose: () => void }) {
+  const failed = ["failed", "dead_letter", "error"].includes(trace.job.status);
+  const pending = trace.job.status === "pending";
+  const persisted = trace.decisions.some((decision) => Boolean(decision.memory_id || decision.revision_id || decision.index_status));
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="panel editor-modal formation-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Formation Job 详情"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="panel-title-row sticky-modal-head">
+          <PanelTitle icon={<GitBranch size={18} />} title="Formation Job 详情" />
+          <button className="icon-button small" type="button" onClick={onClose} aria-label="关闭 Formation Job 详情">
+            <XCircle size={16} />
+          </button>
+        </div>
+        <div className="formation-detail-heading">
+          <div>
+            <strong title={trace.job.job_id}>{trace.job.job_id}</strong>
+            <span>{trace.job.trigger} · {trace.job.mode}</span>
+          </div>
+          <span className={`formation-job-status ${trace.job.status}`}>{trace.job.status}</span>
+        </div>
+        <div className="formation-flow" aria-label="Formation 执行流程">
+          <FormationFlowStep label="触发" detail={trace.job.trigger} state="complete" />
+          <FormationFlowStep label="语义校验" detail={trace.semantic_contract_version || "未记录"} state={failed ? "failed" : "complete"} />
+          <FormationFlowStep label="形成决策" detail={`${trace.decisions.length} decisions`} state={failed ? "failed" : trace.decisions.length ? "complete" : "pending"} />
+          <FormationFlowStep label="持久化" detail={persisted ? "canonical / index" : pending ? "等待确认" : "未写入"} state={failed ? "failed" : persisted ? "complete" : "pending"} />
+        </div>
+        <div className="formation-detail-grid">
+          <DetailField label="来源轮次" value={`${trace.job.first_turn_id || "-"} → ${trace.job.last_turn_id || "-"}`} />
+          <DetailField label="尝试次数" value={`${trace.job.attempt_count}/${trace.job.max_attempts}`} />
+          <DetailField label="候选数量" value={String(trace.candidate_count)} />
+          <DetailField label="模型版本" value={trace.job.model_version} />
+          <DetailField label="Prompt 版本" value={trace.job.prompt_version} />
+          <DetailField label="策略版本" value={trace.job.policy_version} />
+          <DetailField label="Validation" value={formatCountMap(trace.semantic_validation_counts)} />
+          <DetailField label="Verifier" value={formatCountMap(trace.semantic_verifier_counts)} />
+          <DetailField label="耗时" value={`${trace.model_latency_ms ?? "-"}ms model · ${trace.provider_latency_ms ?? "-"}ms provider`} />
+        </div>
+        <DetailField label="Source refs" value={trace.job.source_refs.join(" · ") || null} wide />
+        <DetailField label="Requests / Runs" value={[...trace.links.request_ids, ...trace.links.run_ids].join(" · ") || null} wide />
+        {trace.job.last_error_code ? <div className="inline-error formation-detail-error"><AlertTriangle size={15} />{trace.job.last_error_code}</div> : null}
+        <section className="memory-detail-section">
+          <div className="memory-detail-section-head">
+            <div>
+              <span>Decision trail</span>
+              <strong>形成决策</strong>
+            </div>
+            <span className="memory-detail-count">{trace.decisions.length}</span>
+          </div>
+          {trace.decisions.length ? (
+            <div className="formation-detail-decisions">
+              {trace.decisions.map((decision) => (
+                <article className={`formation-detail-decision ${decision.decision_status}`} key={decision.operation_id}>
+                  <div className="formation-detail-decision-head">
+                    <strong>{decision.proposed_operation || decision.operation}</strong>
+                    <span>{decision.decision_status}</span>
+                  </div>
+                  <p>{decision.content_redacted ? "[redacted]" : decision.content_preview || "无内容预览"}</p>
+                  <span className="memory-item-id" title={decision.memory_key}>{decision.memory_key}</span>
+                  <div className="context-item-meta">
+                    <span>{decision.reason_code}</span>
+                    {decision.scope ? <span>{decision.scope}</span> : null}
+                    {decision.revision_id ? <span>{decision.revision_id}</span> : null}
+                    {decision.index_status ? <span>index {decision.index_status}</span> : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="memory-empty-inline"><CircleDot size={16} /><span>Job 尚未产生决策</span></div>
+          )}
+        </section>
+        <JsonBlock title="完整 Formation Trace" value={redactSensitive(trace as unknown as JsonRecord)} defaultOpen={false} />
+      </section>
+    </div>
+  );
+}
+
+function FormationFlowStep({ label, detail, state }: { label: string; detail: string; state: "complete" | "pending" | "failed" }) {
+  return (
+    <div className={`formation-flow-step ${state}`}>
+      <span className="formation-flow-marker">{state === "complete" ? <CheckCircle2 size={15} /> : state === "failed" ? <XCircle size={15} /> : <CircleDot size={15} />}</span>
+      <strong>{label}</strong>
+      <span>{detail}</span>
+    </div>
+  );
+}
+
+function MemoryEventDetailModal({ event, onClose }: { event: MemoryDebugEvent; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="panel editor-modal memory-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Memory Event 详情"
+        onMouseDown={(mouseEvent) => mouseEvent.stopPropagation()}
+      >
+        <div className="panel-title-row sticky-modal-head">
+          <PanelTitle icon={<Activity size={18} />} title="Memory Event 详情" />
+          <button className="icon-button small" type="button" onClick={onClose} aria-label="关闭 Memory Event 详情">
+            <XCircle size={16} />
+          </button>
+        </div>
+        <div className="memory-detail-heading">
+          <strong title={event.event_type}>{event.event_type}</strong>
+          <span>event</span>
+        </div>
+        <div className="memory-detail-grid memory-event-detail-grid">
+          <DetailField label="Event ID" value={event.event_id} />
+          <DetailField label="Memory ID" value={event.memory_id} />
+          <DetailField label="用户" value={event.user_id} />
+          <DetailField label="租户" value={event.tenant_id} />
+          <DetailField label="Agent" value={event.agent_id} />
+          <DetailField label="Scope" value={event.scope} />
+          <DetailField label="Decision Status" value={event.decision_status} />
+          <DetailField label="Decision ID" value={event.decision_id} />
+          <DetailField label="Request ID" value={event.request_id} />
+          <DetailField label="Session ID" value={event.session_id} />
+          <DetailField label="Turn ID" value={event.turn_id} />
+          <DetailField label="Run ID" value={event.run_id} />
+          <DetailField label="Formation Job ID" value={event.formation_job_id} />
+          <DetailField label="Memory Key" value={event.memory_key} />
+          <DetailField label="创建时间" value={event.created_at} />
+        </div>
+        <JsonBlock title="Event Payload" value={redactSensitive(event.payload || {})} defaultOpen />
+        <JsonBlock title="完整数据" value={redactSensitive(event as unknown as JsonRecord)} defaultOpen={false} />
+      </section>
+    </div>
+  );
+}
+
+function DetailField({ label, value, wide = false }: { label: string; value?: string | null; wide?: boolean }) {
+  return (
+    <div className={`memory-detail-field ${wide ? "wide" : ""}`}>
+      <span>{label}</span>
+      <strong title={value || "-"}>{value || "-"}</strong>
     </div>
   );
 }
@@ -2573,15 +3081,20 @@ function KnowledgeDebugView({
     <div className="debug-management-view">
       <form className="debug-filter-form" onSubmit={onSubmit}>
         <TextField label="source_ids" value={String(filters.source_ids || "")} onChange={(value) => update("source_ids", value)} />
-        <TextField label="caller_type" value={String(filters.caller_type || "")} onChange={(value) => update("caller_type", value)} />
-        <TextField label="caller_id" value={String(filters.caller_id || "")} onChange={(value) => update("caller_id", value)} />
-        <TextField label="purpose" value={String(filters.purpose || "")} onChange={(value) => update("purpose", value)} />
         <TextField label="tenant_id" value={String(filters.tenant_id || "")} onChange={(value) => update("tenant_id", value)} />
         <TextField label="limit" value={String(filters.limit || "")} onChange={(value) => update("limit", value)} />
         <button type="submit" className="secondary-button" disabled={loading}>
           {loading ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
           刷新 Knowledge
         </button>
+        <details className="debug-disclosure filter-disclosure">
+          <summary><Settings2 size={15} />高级筛选</summary>
+          <div className="advanced-filter-grid">
+            <TextField label="caller_type" value={String(filters.caller_type || "")} onChange={(value) => update("caller_type", value)} />
+            <TextField label="caller_id" value={String(filters.caller_id || "")} onChange={(value) => update("caller_id", value)} />
+            <TextField label="purpose" value={String(filters.purpose || "")} onChange={(value) => update("purpose", value)} />
+          </div>
+        </details>
       </form>
       <ReadOnlyNotice />
       <div className="storage-boundary">
@@ -2771,20 +3284,38 @@ function numberValue(value: unknown): number | null {
   return null;
 }
 
-function memoryTraceStatus(
+export function memoryTraceStatus(
   data: MemoryDebugResponse,
   mode: ExecutionMode,
   pollCount: number,
   formationMode?: string,
 ): ConversationTurn["memoryTrace"]["status"] {
+  const requestTrace = data.request_trace;
+  if (requestTrace) {
+    if (requestTrace.overall_stage === "trace_missing") return "error";
+    if (!requestTrace.terminal) return "pending";
+    if (
+      ["turn_failed", "outbox_dead_letter", "formation_dead_letter", "index_dead_letter", "trace_missing"].includes(
+        requestTrace.overall_stage,
+      )
+    ) {
+      return "error";
+    }
+    return "success";
+  }
   const traces = uniqueFormationTraces(data.formation_traces || []);
   if (traces.some((trace) => trace.job.status === "dead_letter")) return "error";
   if (traces.some((trace) => ["pending", "claimed", "retry"].includes(trace.job.status))) {
     return "pending";
   }
   if (traces.length) return "success";
-  if (formationMode === "off" || mode === "route" || pollCount >= 20) return "not_triggered";
+  if (formationMode === "off" || mode === "route") return "not_triggered";
+  if (pollCount >= 20) return "pending";
   return "pending";
+}
+
+export function memoryTracePollDelay(pollCount: number): number {
+  return Math.min(2000 * 2 ** Math.floor(Math.max(0, pollCount) / 5), 10_000);
 }
 
 function actualRecallRecords(data: MemoryDebugResponse | null | undefined): Array<{
@@ -2856,6 +3387,23 @@ function formationStatusLabel(status: string): string {
     success: "已完成",
     not_triggered: "未触发",
     error: "异常",
+    turn_pending: "Turn 等待中",
+    turn_running: "Agent 执行中",
+    turn_failed: "Turn 失败",
+    outbox_pending: "Outbox 等待中",
+    outbox_retry: "Outbox 重试中",
+    outbox_dead_letter: "Outbox 死信",
+    formation_pending: "Formation 等待中",
+    formation_retry: "Formation 重试中",
+    formation_dead_letter: "Formation 死信",
+    formation_skipped: "Formation 已跳过",
+    completed_no_candidate: "无候选，已完成",
+    policy_rejected: "策略已拒绝",
+    memory_persisted_index_pending: "等待索引",
+    index_retry: "索引重试中",
+    index_dead_letter: "索引死信",
+    persisted: "记忆已就绪",
+    trace_missing: "链路缺失",
   };
   return labels[status] || status;
 }

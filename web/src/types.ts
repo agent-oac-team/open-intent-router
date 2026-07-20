@@ -445,12 +445,32 @@ export type MemoryFormationTraceView = {
   usage: JsonRecord;
 };
 
+export type MemoryRequestTrace = {
+  request_id: string;
+  overall_stage: string;
+  terminal: boolean;
+  retryable: boolean;
+  reason_code?: string | null;
+  turn_id?: string | null;
+  turn_status?: string | null;
+  run_ids: string[];
+  result_ids: string[];
+  outbox_ids: string[];
+  formation_turn_ids: string[];
+  formation_job_ids: string[];
+  memory_ids: string[];
+  revision_ids: string[];
+  index_operation_ids: string[];
+  updated_at?: string | null;
+};
+
 export type MemoryDebugResponse = {
   items: MemoryDebugItem[];
   revisions: MemoryRevisionView[];
   events: MemoryDebugEvent[];
   formation_traces: MemoryFormationTraceView[];
   context_trace_links: MemoryTraceLink[];
+  request_trace?: MemoryRequestTrace | null;
   metadata: JsonRecord;
 };
 

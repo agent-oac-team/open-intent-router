@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import App from "./App";
+import App, { memoryTracePollDelay, memoryTraceStatus } from "./App";
 
 const mockAgent = {
   agent_id: "script_writer",
@@ -257,8 +257,77 @@ const mockMemoryDebug = {
       created_at: "2026-07-09T00:00:00Z",
     },
   ],
-  revisions: [],
-  formation_traces: [],
+  revisions: [
+    {
+      revision_id: "revision_debug_1",
+      memory_id: "mem_debug_1",
+      revision_no: 1,
+      memory_key: "tenant:tenant_a:user:u1:preference:language",
+      operation: "add",
+      content_preview: "调试台中的记忆。",
+      content_redacted: false,
+      confidence: 0.82,
+      policy_version: "policy-v1",
+      formation_job_id: "job_debug_1",
+      created_at: "2026-07-09T00:00:00Z",
+    },
+  ],
+  formation_traces: [
+    {
+      job: {
+        job_id: "job_debug_1",
+        trigger: "idle",
+        status: "completed",
+        mode: "enforced",
+        first_turn_id: "turn_1",
+        last_turn_id: "turn_5",
+        source_refs: ["turn_1", "turn_5"],
+        model_version: "formation-v1",
+        prompt_version: "prompt-v1",
+        policy_version: "policy-v1",
+        attempt_count: 1,
+        max_attempts: 3,
+        last_error_code: null,
+        created_at: "2026-07-09T00:00:00Z",
+        updated_at: "2026-07-09T00:00:01Z",
+      },
+      links: {
+        request_ids: ["req_debug_1"],
+        session_id: "session_debug_1",
+        turn_ids: ["turn_1", "turn_5"],
+        run_ids: ["run_debug_1"],
+        memory_ids: ["mem_debug_1"],
+      },
+      scopes: ["user_preference"],
+      decisions: [
+        {
+          decision_id: "decision_debug_1",
+          operation_id: "operation_debug_1",
+          operation: "add",
+          decision_status: "accepted",
+          reason_code: "accepted_add",
+          scope: "user_preference",
+          memory_key: "tenant:tenant_a:user:u1:preference:language",
+          memory_id: "mem_debug_1",
+          revision_id: "revision_debug_1",
+          canonical_refs: ["req_debug_1"],
+          content_preview: "调试台中的记忆。",
+          content_redacted: false,
+          index_status: "ready",
+          provider_status: "completed",
+        },
+      ],
+      candidate_count: 1,
+      decision_counts: { add: 1 },
+      semantic_contract_version: "v1",
+      semantic_validation_counts: { confirmed: 1 },
+      semantic_verifier_counts: { passed: 1 },
+      revision_ids: ["revision_debug_1"],
+      model_latency_ms: 120,
+      provider_latency_ms: 45,
+      usage: {},
+    },
+  ],
   context_trace_links: [],
   metadata: {
     memory_enabled: true,
@@ -280,7 +349,11 @@ type TurnTraceScenario =
   | "pending_update"
   | "shared_multi_turn"
   | "completed_sensitive"
-  | "dead_letter";
+  | "dead_letter"
+  | "formation_retry"
+  | "index_pending"
+  | "skipped"
+  | "trace_missing";
 
 function turnMemoryDebug(
   requestId: string,
@@ -295,17 +368,21 @@ function turnMemoryDebug(
     scenario === "shared_multi_turn" ||
     scenario === "completed_sensitive" ||
     scenario === "dead_letter" ||
+    scenario === "formation_retry" ||
+    scenario === "index_pending" ||
     (scenario === "delayed" && requestCount > 1) ||
     (scenario === "out_of_order" && requestCount > 2);
   const pending = scenario === "pending_update";
   const sensitive = scenario === "completed_sensitive";
   const deadLetter = scenario === "dead_letter";
+  const formationRetry = scenario === "formation_retry";
+  const indexPending = scenario === "index_pending";
   const formationTrace = includeFormation
     ? {
         job: {
           job_id: "job_window_1",
           trigger: scenario === "delayed" ? "idle" : "turn_window",
-          status: deadLetter ? "dead_letter" : pending ? "pending" : "completed",
+          status: deadLetter ? "dead_letter" : formationRetry ? "retry" : pending ? "pending" : "completed",
           mode: "enforced",
           first_turn_id: "turn_source_1",
           last_turn_id: "turn_source_5",
@@ -313,9 +390,9 @@ function turnMemoryDebug(
           model_version: "formation-v1",
           prompt_version: "prompt-v1",
           policy_version: "policy-v1",
-          attempt_count: deadLetter ? 5 : 1,
+          attempt_count: deadLetter ? 5 : formationRetry ? 2 : 1,
           max_attempts: 5,
-          last_error_code: deadLetter ? "provider_timeout" : null,
+          last_error_code: deadLetter || formationRetry ? "provider_timeout" : null,
           created_at: "2026-07-14T00:00:00Z",
           updated_at: "2026-07-14T00:00:01Z",
         },
@@ -344,8 +421,8 @@ function turnMemoryDebug(
             canonical_refs: [`canonical_${requestId}`],
             content_preview: sensitive ? "alice@example.com 123-45-6789" : "Use concise answers",
             content_redacted: sensitive,
-            index_status: pending ? null : "ready",
-            provider_status: pending ? null : "completed",
+            index_status: pending ? null : indexPending ? "pending" : "ready",
+            provider_status: pending || indexPending ? null : "completed",
           },
         ],
         candidate_count: 1,
@@ -377,7 +454,7 @@ function turnMemoryDebug(
         current_revision_id: "revision_1",
         current_revision_no: 1,
         lifecycle_status: "active",
-        index_status: "ready",
+        index_status: indexPending ? "pending" : "ready",
         canonical_refs: [requestId],
         metadata: {},
       },
@@ -403,6 +480,49 @@ function turnMemoryDebug(
         ? [formationTrace, formationTrace]
         : [formationTrace]
       : [],
+    request_trace: {
+      request_id: requestId,
+      overall_stage:
+        scenario === "trace_missing"
+          ? "trace_missing"
+          : scenario === "dead_letter"
+            ? "formation_dead_letter"
+            : scenario === "formation_retry"
+              ? "formation_retry"
+              : scenario === "pending_update"
+                ? "formation_pending"
+                : scenario === "index_pending"
+                  ? "memory_persisted_index_pending"
+                  : scenario === "skipped"
+                    ? "formation_skipped"
+                    : (scenario === "delayed" || scenario === "out_of_order") && !includeFormation
+                      ? "outbox_pending"
+                      : scenario === "completed_sensitive"
+                        ? "policy_rejected"
+                        : "persisted",
+      terminal: ["dead_letter", "skipped", "completed_sensitive", "recall_only", "shared_multi_turn"].includes(scenario)
+        || ((scenario === "delayed" || scenario === "out_of_order") && includeFormation),
+      retryable: ["delayed", "out_of_order", "pending_update", "formation_retry", "index_pending", "trace_missing"].includes(scenario),
+      reason_code:
+        scenario === "trace_missing"
+          ? "turn_outbox_missing"
+          : scenario === "dead_letter" || scenario === "formation_retry"
+            ? "provider_timeout"
+            : scenario === "skipped"
+              ? "formation_mode_off"
+              : null,
+      turn_id: second ? "turn_2" : "turn_1",
+      turn_status: "completed",
+      run_ids: [second ? "run_2" : "run_1"],
+      result_ids: [second ? "result_2" : "result_1"],
+      outbox_ids: [second ? "outbox_2" : "outbox_1"],
+      formation_turn_ids: includeFormation ? ["turn_source_1"] : [],
+      formation_job_ids: includeFormation ? ["job_window_1"] : [],
+      memory_ids: scenario === "trace_missing" || scenario === "skipped" ? [] : [memoryId],
+      revision_ids: scenario === "trace_missing" || scenario === "skipped" ? [] : ["revision_1"],
+      index_operation_ids: indexPending || scenario === "recall_only" ? ["index_1"] : [],
+      updated_at: "2026-07-14T00:00:01Z",
+    },
     context_trace_links: [
       {
         request_ids: [requestId],
@@ -482,6 +602,31 @@ const mockKnowledgeDebug = {
     token: "should-not-render",
   },
 };
+
+describe("Memory request trace 状态契约", () => {
+  it("以后端终态为准，并在轮询上限后保留 pending", () => {
+    expect(memoryTraceStatus(turnMemoryDebug("req_1", "recall_only", 1) as never, "route-and-invoke", 1)).toBe("success");
+    expect(memoryTraceStatus(turnMemoryDebug("req_1", "dead_letter", 1) as never, "route-and-invoke", 1)).toBe("error");
+    expect(memoryTraceStatus(turnMemoryDebug("req_1", "trace_missing", 1) as never, "route-and-invoke", 1)).toBe("error");
+    expect(memoryTraceStatus(turnMemoryDebug("req_1", "formation_retry", 1) as never, "route-and-invoke", 20)).toBe("pending");
+    expect(memoryTraceStatus({
+      ...mockMemoryDebug,
+      items: [],
+      events: [],
+      formation_traces: [],
+      context_trace_links: [],
+      request_trace: null,
+    }, "route-and-invoke", 20)).toBe("pending");
+  });
+
+  it("使用有上限的退避间隔", () => {
+    expect(memoryTracePollDelay(0)).toBe(2000);
+    expect(memoryTracePollDelay(5)).toBe(4000);
+    expect(memoryTracePollDelay(10)).toBe(8000);
+    expect(memoryTracePollDelay(15)).toBe(10000);
+    expect(memoryTracePollDelay(100)).toBe(10000);
+  });
+});
 
 describe("意图路由测试台", () => {
   let failMemoryDebug = false;
@@ -718,8 +863,55 @@ describe("意图路由测试台", () => {
     expect(within(transcript).getByText("Denied 1")).toBeInTheDocument();
     expect(within(transcript).queryByText("Routing to 话术生成.")).not.toBeInTheDocument();
     expect(screen.queryByText("第 1 轮")).not.toBeInTheDocument();
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Route/i }));
     await waitFor(() => expect(screen.getAllByText("open_agent").length).toBeGreaterThan(0));
     expect(screen.getAllByText("script_writer").length).toBeGreaterThan(0);
+  });
+
+  it("默认展示中控运行图并保留技术详情标签", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    const statusTabs = screen.getByLabelText("中控状态");
+    expect(within(statusTabs).getByRole("tab", { name: "运行图" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("等待一次真实请求")).toBeInTheDocument();
+    for (const name of ["Route", "Plan", "Context", "Memory", "Knowledge", "Evidence", "Debug"]) {
+      expect(within(statusTabs).getByRole("tab", { name: new RegExp(name, "i") })).toBeInTheDocument();
+    }
+
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    const journey = await screen.findByLabelText("本轮中控运行链路");
+    expect(within(journey).getByText("准备参考信息")).toBeInTheDocument();
+    expect(within(journey).getByText("历史记忆 1")).toBeInTheDocument();
+    expect(within(journey).getByText("知识资料 1")).toBeInTheDocument();
+    expect(within(journey).getByText("话术生成")).toBeInTheDocument();
+
+    await userEvent.click(within(journey).getByRole("button", { name: "查看交给业务助手详情" }));
+    const dialog = screen.getByRole("dialog", { name: "交给业务助手" });
+    expect(within(dialog).getByText("script_writer")).toBeInTheDocument();
+    expect(within(dialog).getByText("话术生成")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "交给业务助手" })).not.toBeInTheDocument();
+    expect(within(journey).getByRole("button", { name: "查看交给业务助手详情" })).toHaveFocus();
+  });
+
+  it("选择历史轮次时重新投影整张运行图", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("我会交给话术生成处理。")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText("用户消息"), "第二轮问题");
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("第二轮回答。")).toBeInTheDocument();
+    let journey = screen.getByLabelText("本轮中控运行链路");
+    expect(within(journey).getByText("第二轮回答。")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "选择第 1 轮对话" }));
+    journey = screen.getByLabelText("本轮中控运行链路");
+    expect(within(journey).getByText("我会交给话术生成处理。")).toBeInTheDocument();
+    expect(within(journey).queryByText("第二轮回答。")).not.toBeInTheDocument();
   });
 
   it("agent_chat 缺少当前 Agent 时阻止提交", async () => {
@@ -782,11 +974,11 @@ describe("意图路由测试台", () => {
 
     await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
-    expect(await screen.findByText("我会交给话术生成处理。")).toBeInTheDocument();
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("我会交给话术生成处理。")).toBeInTheDocument();
 
     await userEvent.type(screen.getByLabelText("用户消息"), "第二轮问题");
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
-    expect(await screen.findByText("第二轮回答。")).toBeInTheDocument();
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("第二轮回答。")).toBeInTheDocument();
 
     const statusTabs = screen.getByLabelText("中控状态");
     await userEvent.click(within(statusTabs).getByRole("tab", { name: /Memory/i }));
@@ -810,12 +1002,12 @@ describe("意图路由测试台", () => {
 
     await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
-    expect(await screen.findByText("我会交给话术生成处理。")).toBeInTheDocument();
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("我会交给话术生成处理。")).toBeInTheDocument();
 
     failRouteAndInvoke = true;
     await userEvent.type(screen.getByLabelText("用户消息"), "触发失败");
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
-    expect(await screen.findByText("请求失败，请查看页面提示或右侧调试信息。")).toBeInTheDocument();
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("请求失败，请查看页面提示或右侧调试信息。")).toBeInTheDocument();
 
     await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
     const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
@@ -829,7 +1021,47 @@ describe("意图路由测试台", () => {
 
     expect(await screen.findByText("记忆与知识库调试管理")).toBeInTheDocument();
     expect((await screen.findAllByText("mem_debug_1")).length).toBeGreaterThan(0);
-    expect(screen.getByText("memory_added")).toBeInTheDocument();
+    expect(screen.getByText("运行配置详情").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("高级筛选").closest("details")).not.toHaveAttribute("open");
+
+    const memoryItem = screen.getByRole("button", { name: "查看 Memory Item mem_debug_1" });
+    expect(within(memoryItem).queryByText("tenant_a")).not.toBeInTheDocument();
+    expect(within(memoryItem).queryByText(/confidence/i)).not.toBeInTheDocument();
+    await userEvent.click(memoryItem);
+
+    const detail = screen.getByRole("dialog", { name: "Memory Item 详情" });
+    expect(within(detail).getByText("tenant_a")).toBeInTheDocument();
+    expect(within(detail).getByText("0.82")).toBeInTheDocument();
+    expect(within(detail).getAllByText("调试台中的记忆。").length).toBeGreaterThan(0);
+    expect(within(detail).getByText("版本记录")).toBeInTheDocument();
+    expect(within(detail).getByText("revision_debug_1")).toBeInTheDocument();
+    await userEvent.click(within(detail).getByRole("button", { name: "关闭 Memory Item 详情" }));
+
+    const memoryDataTabs = screen.getByLabelText("Memory 数据视图");
+    expect(screen.queryByRole("heading", { name: "Memory Revisions" })).not.toBeInTheDocument();
+    await userEvent.click(within(memoryDataTabs).getByRole("tab", { name: /Formation/i }));
+    const formationJob = screen.getByRole("button", { name: "查看 Formation Job job_debug_1" });
+    expect(within(formationJob).getByText("turn_1 → turn_5")).toBeInTheDocument();
+    await userEvent.click(formationJob);
+
+    const formationDetail = screen.getByRole("dialog", { name: "Formation Job 详情" });
+    expect(within(formationDetail).getByLabelText("Formation 执行流程")).toBeInTheDocument();
+    expect(within(formationDetail).getByText("accepted_add")).toBeInTheDocument();
+    expect(within(formationDetail).getAllByText("revision_debug_1").length).toBeGreaterThan(0);
+    await userEvent.click(within(formationDetail).getByRole("button", { name: "关闭 Formation Job 详情" }));
+
+    await userEvent.click(within(memoryDataTabs).getByRole("tab", { name: /Events/i }));
+    const memoryEvent = screen.getByRole("button", { name: "查看 Memory Event evt_1" });
+    expect(within(memoryEvent).getByText("memory_added")).toBeInTheDocument();
+    expect(within(memoryEvent).queryByText("tenant_a")).not.toBeInTheDocument();
+    expect(within(memoryEvent).queryByText("2026-07-09T00:00:00Z")).not.toBeInTheDocument();
+    await userEvent.click(memoryEvent);
+
+    const eventDetail = screen.getByRole("dialog", { name: "Memory Event 详情" });
+    expect(within(eventDetail).getByText("tenant_a")).toBeInTheDocument();
+    expect(within(eventDetail).getByText("2026-07-09T00:00:00Z")).toBeInTheDocument();
+    await userEvent.click(within(eventDetail).getByRole("button", { name: "关闭 Memory Event 详情" }));
+
     expect(screen.queryByText("should-not-render")).not.toBeInTheDocument();
 
     const debugTabs = screen.getByLabelText("调试管理视图");
@@ -848,7 +1080,7 @@ describe("意图路由测试台", () => {
 
     expect(await screen.findByText(/500/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /发送/i }));
-    expect(await screen.findByText("我会交给话术生成处理。")).toBeInTheDocument();
+    expect(await within(screen.getByLabelText("聊天记录")).findByText("我会交给话术生成处理。")).toBeInTheDocument();
 
     await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
     const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
@@ -890,7 +1122,7 @@ describe("意图路由测试台", () => {
     resolveSlowMemoryTrace!(await json(turnMemoryDebug("req_1", "recall_only", 1)));
 
     await waitFor(() => expect(within(inspector).getByText("job_window_1")).toBeInTheDocument());
-    expect(within(inspector).getByText("已完成")).toBeInTheDocument();
+    expect(within(inspector).getAllByText("记忆已就绪").length).toBeGreaterThan(0);
   });
 
   it("五轮 job 展示完整 source range 并提供 pending 更新控制", async () => {
@@ -1014,6 +1246,25 @@ describe("意图路由测试台", () => {
     expect(within(inspector).queryByText(/supersecret/)).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["recall_only", "记忆已就绪", "链路已到达终态"],
+    ["trace_missing", "链路缺失", "turn_outbox_missing"],
+    ["formation_retry", "Formation 重试中", "provider_timeout"],
+    ["index_pending", "等待索引", "链路仍在推进"],
+    ["skipped", "Formation 已跳过", "formation_mode_off"],
+  ] as const)("持续展示 %s 的后端链路状态", async (scenario, label, reason) => {
+    turnTraceScenario = scenario;
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("mock-router")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /发送/i }));
+    await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
+    const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
+    expect(await within(inspector).findAllByText(label)).not.toHaveLength(0);
+    expect(within(inspector).getAllByText(reason).length).toBeGreaterThan(0);
+    expect(within(inspector).getByRole("button", { name: "刷新本轮 Memory Trace" })).toBeInTheDocument();
+  });
+
   it("dead-letter formation 显示安全错误且不标记写入成功", async () => {
     turnTraceScenario = "dead_letter";
     render(<App />);
@@ -1023,7 +1274,7 @@ describe("意图路由测试台", () => {
     await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Memory/i }));
     const inspector = screen.getByText("状态面板").closest("section") as HTMLElement;
     expect(await within(inspector).findByText("dead_letter")).toBeInTheDocument();
-    expect(within(inspector).getByText("provider_timeout")).toBeInTheDocument();
+    expect(within(inspector).getAllByText("provider_timeout").length).toBeGreaterThan(0);
     expect(within(inspector).queryByText("已完成")).not.toBeInTheDocument();
   });
 });
