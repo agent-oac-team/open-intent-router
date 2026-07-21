@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { projectRoutingJourney } from "./journey";
-import type { AgentDefinition, ConversationTurn, JsonRecord } from "./types";
+import type {
+  AgentDefinition,
+  ConversationTurn,
+  JsonRecord,
+  MemoryFormationDecisionView,
+} from "./types";
 
 const agents = [
   {
@@ -81,6 +86,97 @@ function routeResponse(action: string, targetAgentId: string | null = null, extr
 
 function node(turn: ConversationTurn, id: string) {
   return projectRoutingJourney(turn, agents).nodes.find((item) => item.id === id)!;
+}
+
+function formationData(input: {
+  stage: string;
+  jobStatus?: string;
+  candidateCount?: number;
+  decisions?: MemoryFormationDecisionView[];
+  terminal?: boolean;
+}) {
+  const decisions = input.decisions || [];
+  return {
+    request_trace: {
+      request_id: "req_1",
+      overall_stage: input.stage,
+      terminal: input.terminal ?? true,
+      retryable: ["formation_pending", "formation_retry", "index_pending"].includes(input.stage),
+      turn_id: "turn_1",
+      turn_status: "completed",
+      run_ids: ["run_1"],
+      result_ids: ["result_1"],
+      outbox_ids: ["outbox_1"],
+      formation_turn_ids: ["turn_1"],
+      formation_job_ids: ["job_1"],
+      memory_ids: ["mem_existing"],
+      revision_ids: ["revision_existing"],
+      index_operation_ids: ["index_existing"],
+    },
+    items: [],
+    revisions: [],
+    events: [],
+    formation_traces: [
+      {
+        job: {
+          job_id: "job_1",
+          trigger: "idle",
+          status: input.jobStatus || "completed",
+          mode: "enforced",
+          first_turn_id: "turn_1",
+          last_turn_id: "turn_1",
+          source_refs: ["turn_1"],
+          model_version: "formation-v1",
+          prompt_version: "prompt-v1",
+          policy_version: "policy-v1",
+          attempt_count: input.jobStatus === "retry" ? 2 : 1,
+          max_attempts: 5,
+          created_at: "2026-07-20T08:00:01Z",
+          updated_at: "2026-07-20T08:00:02Z",
+        },
+        links: {
+          request_ids: ["req_1"],
+          session_id: "session_1",
+          turn_ids: ["turn_1"],
+          run_ids: ["run_1"],
+          memory_ids: ["mem_existing"],
+        },
+        scopes: ["user_preference"],
+        decisions,
+        candidate_count: input.candidateCount ?? decisions.length,
+        decision_counts: {},
+        semantic_validation_counts: {},
+        semantic_verifier_counts: {},
+        revision_ids: [],
+        usage: {},
+      },
+    ],
+    context_trace_links: [],
+    metadata: {},
+  };
+}
+
+function formationDecision(
+  overrides: Partial<MemoryFormationDecisionView> = {},
+): MemoryFormationDecisionView {
+  return {
+    decision_id: "decision_1",
+    operation_id: "operation_1",
+    operation: "add",
+    proposed_operation: null,
+    decision_status: "accepted",
+    reason_code: "accepted_add",
+    scope: "user_preference",
+    memory_key: "tenant:tenant_1:user:user_1:preference:style",
+    memory_id: "mem_existing",
+    revision_id: "revision_existing",
+    canonical_refs: ["turn:turn_1"],
+    content_preview: "Use concise answers",
+    content_redacted: false,
+    index_status: "ready",
+    provider_status: "success",
+    ...overrides,
+  };
 }
 
 describe("projectRoutingJourney", () => {
@@ -201,9 +297,135 @@ describe("projectRoutingJourney", () => {
         },
       },
     });
-    expect(node(completed, "formation")).toMatchObject({ state: "completed", tags: ["关联 1 条记忆"] });
+    expect(node(completed, "formation")).toMatchObject({ state: "completed", tags: ["已完成"] });
     expect(node(completedTurn(), "formation").state).toBe("skipped");
     expect(node(completedTurn({ memoryTrace: { status: "error", data: null, error: "入库失败", pollCount: 2 } }), "formation")).toMatchObject({ state: "failed", summary: "入库失败" });
+  });
+
+  it("将 pending decision 标为待处理，不把旧 memory/index 引用当成本轮写入", () => {
+    const turn = completedTurn({
+      memoryTrace: {
+        status: "pending",
+        pollCount: 2,
+        data: formationData({
+          stage: "formation_pending",
+          terminal: false,
+          candidateCount: 1,
+          decisions: [
+            formationDecision({
+              operation: "pending",
+              proposed_operation: "update",
+              decision_status: "pending",
+              reason_code: "ambiguous_conflict",
+              index_status: "ready",
+            }),
+          ],
+        }),
+      },
+    });
+    const formation = node(turn, "formation");
+    expect(formation).toMatchObject({ state: "attention", summary: "有 1 条记忆变更待处理" });
+    expect(formation.substeps?.find((step) => step.id === "review")?.state).toBe("attention");
+    expect(formation.substeps?.find((step) => step.id === "persist")?.state).toBe("waiting");
+    expect(formation.substeps?.find((step) => step.id === "index")?.state).toBe("waiting");
+  });
+
+  it("仅用 accepted lifecycle decision 投影本轮持久化和索引完成", () => {
+    const turn = completedTurn({
+      memoryTrace: {
+        status: "success",
+        pollCount: 3,
+        data: formationData({ stage: "indexed", decisions: [formationDecision()] }),
+      },
+    });
+    const formation = node(turn, "formation");
+    expect(formation.tags).toEqual(["本轮写入 1 条"]);
+    expect(formation.substeps?.find((step) => step.id === "persist")?.state).toBe("completed");
+    expect(formation.substeps?.find((step) => step.id === "index")?.state).toBe("completed");
+  });
+
+  it("无候选和 reject/noop 终态会跳过写入与索引", () => {
+    const noCandidate = completedTurn({
+      memoryTrace: {
+        status: "success",
+        pollCount: 2,
+        data: formationData({ stage: "formation_completed", candidateCount: 0, decisions: [] }),
+      },
+    });
+    expect(node(noCandidate, "formation").substeps?.find((step) => step.id === "candidates")?.state).toBe("skipped");
+
+    for (const decision of [
+      formationDecision({ operation: "reject", decision_status: "rejected" }),
+      formationDecision({ operation: "noop", decision_status: "accepted" }),
+    ]) {
+      const turn = completedTurn({
+        memoryTrace: {
+          status: "success",
+          pollCount: 2,
+          data: formationData({ stage: "policy_rejected", decisions: [decision] }),
+        },
+      });
+      expect(node(turn, "formation").substeps?.find((step) => step.id === "persist")?.state).toBe("skipped");
+      expect(node(turn, "formation").substeps?.find((step) => step.id === "index")?.state).toBe("skipped");
+    }
+  });
+
+  it("区分 Formation retry、dead-letter 和索引失败", () => {
+    const retry = completedTurn({
+      memoryTrace: {
+        status: "pending",
+        pollCount: 2,
+        data: formationData({ stage: "formation_retry", jobStatus: "retry", terminal: false }),
+      },
+    });
+    expect(node(retry, "formation").substeps?.find((step) => step.id === "candidates")?.state).toBe("active");
+
+    const deadLetter = completedTurn({
+      memoryTrace: {
+        status: "error",
+        error: "provider_timeout",
+        pollCount: 5,
+        data: formationData({ stage: "formation_dead_letter", jobStatus: "dead_letter" }),
+      },
+    });
+    expect(node(deadLetter, "formation").substeps?.find((step) => step.id === "candidates")?.state).toBe("failed");
+
+    const indexFailed = completedTurn({
+      memoryTrace: {
+        status: "success",
+        pollCount: 3,
+        data: formationData({
+          stage: "index_pending",
+          decisions: [formationDecision({ index_status: "out_of_sync" })],
+        }),
+      },
+    });
+    expect(node(indexFailed, "formation").substeps?.find((step) => step.id === "index")?.state).toBe("failed");
+  });
+
+  it("将 Recall provider_timeout 留在准备参考信息阶段", () => {
+    const turn = completedTurn({
+      memoryContext: { status: "degraded", items: [], errors: ["provider_timeout"] },
+      memoryTrace: {
+        status: "success",
+        pollCount: 2,
+        data: formationData({ stage: "formation_completed", candidateCount: 0, decisions: [] }),
+      },
+    });
+    expect(node(turn, "context").summary).toContain("历史记忆读取超时");
+    expect(node(turn, "formation").substeps?.some((step) => step.summary.includes("超时"))).toBe(false);
+  });
+
+  it("请求未返回时所有 Formation 子步骤保持等待", () => {
+    const pending = completedTurn({
+      routeResponse: null,
+      invokeResponse: null,
+      assistantMessage: { ...completedTurn().assistantMessage, status: "pending" },
+      memoryTrace: { status: "loading", data: null, pollCount: 0 },
+    });
+    const formation = node(pending, "formation");
+    expect(formation.substeps).toHaveLength(7);
+    expect(formation.substeps?.every((step) => step.state === "waiting")).toBe(true);
   });
 
   it("使用 Plan 的真实步骤，并为未知 Agent 保留安全回退", () => {

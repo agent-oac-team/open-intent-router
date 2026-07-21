@@ -5,6 +5,7 @@ import {
   Bot,
   Braces,
   CheckCircle2,
+  ChevronDown,
   CircleDot,
   ClipboardList,
   Database,
@@ -1563,11 +1564,13 @@ function StatusInspector({
 function JourneyTab({ turn, agents }: { turn: ConversationTurn | null; agents: AgentDefinition[] }) {
   const journey = useMemo(() => projectRoutingJourney(turn, agents), [turn, agents]);
   const [selectedNodeId, setSelectedNodeId] = useState<JourneyNodeId | null>(null);
+  const [formationExpanded, setFormationExpanded] = useState(false);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const selectedNode = journey.nodes.find((node) => node.id === selectedNodeId) || null;
 
   useEffect(() => {
     setSelectedNodeId(null);
+    setFormationExpanded(false);
   }, [turn?.id]);
 
   function openDetails(node: JourneyNode, trigger: HTMLButtonElement) {
@@ -1608,40 +1611,74 @@ function JourneyTab({ turn, agents }: { turn: ConversationTurn | null; agents: A
           return (
             <li className={`journey-stage ${node.state}`} key={node.id}>
               <span className="journey-sequence" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
-              <button
-                type="button"
-                className="journey-node"
-                disabled={!hasDetails}
-                onClick={(event) => openDetails(node, event.currentTarget)}
-                aria-label={hasDetails ? `查看${node.label}详情` : `${node.label}，${journeyStateLabel(node.state)}`}
-              >
-                <span className="journey-node-icon" aria-hidden="true">{journeyNodeIcon(node.id)}</span>
-                <span className="journey-node-copy">
-                  <span className="journey-node-head">
-                    <strong>{node.label}</strong>
-                    <small>{journeyStateLabel(node.state)}</small>
+              <div className="journey-node-shell">
+                <button
+                  type="button"
+                  className="journey-node"
+                  disabled={!hasDetails}
+                  onClick={(event) => openDetails(node, event.currentTarget)}
+                  aria-label={hasDetails ? `查看${node.label}详情` : `${node.label}，${journeyStateLabel(node.state)}`}
+                >
+                  <span className="journey-node-icon" aria-hidden="true">{journeyNodeIcon(node.id)}</span>
+                  <span className="journey-node-copy">
+                    <span className="journey-node-head">
+                      <strong>{node.label}</strong>
+                      <small>{journeyStateLabel(node.state)}</small>
+                    </span>
+                    <span className="journey-node-summary" title={node.summary}>{node.summary}</span>
+                    {node.tags?.length ? (
+                      <span className="journey-node-tags">
+                        {node.tags.map((tag) => <span key={tag}>{tag}</span>)}
+                      </span>
+                    ) : null}
+                    {node.steps?.length ? (
+                      <span className="journey-plan-preview" aria-label="协作步骤摘要">
+                        {node.steps.slice(0, 3).map((step) => (
+                          <span key={step.id}>
+                            <i className={journeyStepTone(step.status)} aria-hidden="true" />
+                            <b>{step.label}</b>
+                            <small>{step.agentName}</small>
+                          </span>
+                        ))}
+                        {node.steps.length > 3 ? <em>另有 {node.steps.length - 3} 个步骤</em> : null}
+                      </span>
+                    ) : null}
                   </span>
-                  <span className="journey-node-summary" title={node.summary}>{node.summary}</span>
-                  {node.tags?.length ? (
-                    <span className="journey-node-tags">
-                      {node.tags.map((tag) => <span key={tag}>{tag}</span>)}
-                    </span>
-                  ) : null}
-                  {node.steps?.length ? (
-                    <span className="journey-plan-preview" aria-label="协作步骤摘要">
-                      {node.steps.slice(0, 3).map((step) => (
-                        <span key={step.id}>
-                          <i className={journeyStepTone(step.status)} aria-hidden="true" />
-                          <b>{step.label}</b>
-                          <small>{step.agentName}</small>
+                  {hasDetails ? <Eye className="journey-node-open" size={15} aria-hidden="true" /> : null}
+                </button>
+                {node.substeps?.length ? (
+                  <button
+                    type="button"
+                    className="journey-expand-button"
+                    aria-expanded={formationExpanded}
+                    aria-controls={`journey-subflow-${node.id}`}
+                    onClick={() => setFormationExpanded((value) => !value)}
+                  >
+                    <ChevronDown size={15} aria-hidden="true" />
+                    {formationExpanded ? "收起形成过程" : "展开形成过程"}
+                  </button>
+                ) : null}
+                {formationExpanded && node.substeps?.length ? (
+                  <ol
+                    id={`journey-subflow-${node.id}`}
+                    className="journey-subflow"
+                    aria-label="记忆形成子流程"
+                  >
+                    {node.substeps.map((step) => (
+                      <li className={step.state} key={step.id}>
+                        <span className="journey-subflow-marker" aria-hidden="true">
+                          {journeySubstepIcon(step.state)}
                         </span>
-                      ))}
-                      {node.steps.length > 3 ? <em>另有 {node.steps.length - 3} 个步骤</em> : null}
-                    </span>
-                  ) : null}
-                </span>
-                {hasDetails ? <Eye className="journey-node-open" size={15} aria-hidden="true" /> : null}
-              </button>
+                        <span>
+                          <strong>{step.label}</strong>
+                          <small>{step.summary}</small>
+                        </span>
+                        <em>{journeyStateLabel(step.state)}</em>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
             </li>
           );
         })}
@@ -1733,11 +1770,20 @@ function journeyStateLabel(state: JourneyNodeState): string {
   const labels: Record<JourneyNodeState, string> = {
     waiting: "等待",
     active: "处理中",
+    attention: "待处理",
     completed: "已完成",
     skipped: "未使用",
     failed: "未完成",
   };
   return labels[state];
+}
+
+function journeySubstepIcon(state: JourneyNodeState): React.ReactNode {
+  if (state === "completed") return <CheckCircle2 size={14} />;
+  if (state === "failed") return <XCircle size={14} />;
+  if (state === "active") return <Loader2 className="spin" size={14} />;
+  if (state === "attention") return <AlertTriangle size={14} />;
+  return <CircleDot size={14} />;
 }
 
 function journeyStepTone(status: string): string {
@@ -2179,6 +2225,7 @@ function MemoryTab({
                 trace={trace}
                 busyKey={operationBusy}
                 onResolve={resolveDecision}
+                onRefresh={onRefresh}
               />
             ))}
           </div>
@@ -2222,10 +2269,12 @@ function FormationTraceCard({
   trace,
   busyKey,
   onResolve,
+  onRefresh,
 }: {
   trace: MemoryFormationTraceView;
   busyKey: string;
   onResolve: (decision: MemoryFormationDecisionView, action: "confirm" | "reject") => void;
+  onRefresh: () => void;
 }) {
   return (
     <article className="formation-trace-card">
@@ -2255,8 +2304,7 @@ function FormationTraceCard({
       {trace.decisions.length ? (
         <div className="formation-decisions">
           {trace.decisions.map((decision) => {
-            const pending = decision.decision_status === "pending" && Boolean(decision.decision_id);
-            const confirmable = pending && ["update", "delete"].includes(String(decision.proposed_operation));
+            const actions = formationDecisionActions(decision);
             const contentRedacted = isSensitiveDecision(decision);
             return (
               <article className={`formation-decision ${decision.decision_status}`} key={decision.operation_id}>
@@ -2281,9 +2329,27 @@ function FormationTraceCard({
                   {decision.index_status ? <span>index {decision.index_status}</span> : null}
                   {decision.provider_status ? <span>provider {decision.provider_status}</span> : null}
                 </div>
-                {pending ? (
-                  <div className="pending-actions">
-                    {confirmable ? (
+                {actions.pending ? (
+                  actions.associationMissing ? (
+                    <div className="decision-association-error" role="alert">
+                      <AlertTriangle size={15} />
+                      <span>
+                        <strong>决策关联数据不完整</strong>
+                        当前 Trace 缺少安全 Decision ID，暂时无法确认或拒绝。
+                      </span>
+                      <button
+                        type="button"
+                        className="icon-button small"
+                        aria-label="重新加载决策关联"
+                        title="重新加载决策关联"
+                        onClick={onRefresh}
+                      >
+                        <RefreshCcw size={15} />
+                      </button>
+                    </div>
+                  ) : (
+                  <div className={`pending-actions ${actions.canConfirm ? "" : "single"}`}>
+                    {actions.canConfirm ? (
                       <button
                         type="button"
                         className="secondary-button compact"
@@ -2294,16 +2360,19 @@ function FormationTraceCard({
                         确认
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      className="secondary-button compact"
-                      disabled={busyKey === `reject:${decision.decision_id}`}
-                      onClick={() => onResolve(decision, "reject")}
-                    >
-                      {busyKey === `reject:${decision.decision_id}` ? <Loader2 className="spin" size={15} /> : <XCircle size={15} />}
-                      拒绝
-                    </button>
+                    {actions.canReject ? (
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        disabled={busyKey === `reject:${decision.decision_id}`}
+                        onClick={() => onResolve(decision, "reject")}
+                      >
+                        {busyKey === `reject:${decision.decision_id}` ? <Loader2 className="spin" size={15} /> : <XCircle size={15} />}
+                        拒绝
+                      </button>
+                    ) : null}
                   </div>
+                  )
                 ) : null}
               </article>
             );
@@ -2314,6 +2383,19 @@ function FormationTraceCard({
       )}
     </article>
   );
+}
+
+function formationDecisionActions(decision: MemoryFormationDecisionView) {
+  const pending = decision.decision_status === "pending";
+  const associated = pending && Boolean(decision.decision_id);
+  const canConfirm =
+    associated && ["update", "delete"].includes(String(decision.proposed_operation));
+  return {
+    pending,
+    canReject: associated,
+    canConfirm,
+    associationMissing: pending && !associated,
+  };
 }
 
 function MemorySectionState({ icon, label }: { icon: React.ReactNode; label: string }) {

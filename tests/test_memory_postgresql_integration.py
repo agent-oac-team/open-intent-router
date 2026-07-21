@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.config import Settings
 from app.db.models import (
     Base,
+    MemoryEventModel,
     MemoryFormationJobModel,
     MemoryFormationTurnModel,
     MemoryIndexOperationModel,
@@ -22,11 +23,26 @@ from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.memory_formation import DatabaseMemoryFormationTurnJobRepository
 from app.repositories.memory_index_operations import DatabaseMemoryIndexOutboxRepository
 from app.repositories.memory_revisions import DatabaseMemoryRevisionLedgerRepository
-from app.schemas.memory import MemoryFormationTurn, MemoryIndexOperation, MemoryItem, MemoryRevision
+from app.repositories.memory_traces import DatabaseMemoryFormationTraceRepository
+from app.schemas.memory import (
+    MemoryDecisionStatus,
+    MemoryFormationCandidate,
+    MemoryFormationReasonCode,
+    MemoryFormationTurn,
+    MemoryIndexOperation,
+    MemoryItem,
+    MemoryLifecycleOperation,
+    MemoryOperation,
+    MemoryRevision,
+)
+from app.services.memory_candidate_policy import CandidatePolicyResult
 from app.services.memory_formation import (
     FormationIdleSweeper,
     FormationTriggerCoordinator,
 )
+from app.services.memory_management import MemoryManagementService
+from app.services.memory_observability import MemoryObservabilityService
+from app.services.memory_service import MemoryService
 
 
 def _postgresql_url() -> str:
@@ -397,6 +413,161 @@ async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> N
         await second_factory.kw["bind"].dispose()
 
 
+async def test_real_postgresql_request_trace_resolves_pending_update_and_delete() -> None:
+    suffix = uuid4().hex
+    tenant_id = f"pg_decision_tenant_{suffix}"
+    user_id = f"pg_decision_user_{suffix}"
+    session_id = f"pg_decision_session_{suffix}"
+    request_id = f"pg_decision_request_{suffix}"
+    settings = Settings(
+        storage_backend="database",
+        database_url=_postgresql_url(),
+        memory_strategy_provider="memory",
+        memory_formation_mode="observe",
+    )
+    await create_all_tables(settings)
+    session_factory = create_session_factory(settings)
+    items = DatabaseMemoryItemRepository(session_factory)
+    memory = MemoryService(settings=settings, repository=items)
+    formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
+
+    try:
+        await formation.append_turn(
+            MemoryFormationTurn(
+                turn_id=f"pg_decision_turn_{suffix}",
+                request_id=request_id,
+                session_id=session_id,
+                run_id=f"pg_decision_run_{suffix}",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                result_status="completed",
+                completed_at=datetime.now(UTC),
+            )
+        )
+        job = await formation.create_job_for_pending(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            trigger="idle",
+            mode="observe",
+            model_version="model-v1",
+            prompt_version="prompt-v1",
+            policy_version="policy-v1",
+        )
+        assert job
+        memory_key = f"tenant:{tenant_id}:user:{user_id}:preference:response_style"
+        added = await memory.lifecycle.apply(
+            CandidatePolicyResult(
+                candidate=_pg_candidate(
+                    suffix=suffix,
+                    operation="add",
+                    content="Initial preference",
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    memory_key=memory_key,
+                ),
+                operation=_pg_operation(
+                    suffix=f"add-{suffix}",
+                    operation=MemoryOperation.ADD,
+                    status=MemoryDecisionStatus.ACCEPTED,
+                    reason=MemoryFormationReasonCode.ACCEPTED_NEW,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    memory_key=memory_key,
+                    job_id=job.job_id,
+                ),
+                redacted_trace={},
+            )
+        )
+        assert added.item and added.revision
+
+        pending_results = []
+        for proposed_operation, reason in (
+            ("update", MemoryFormationReasonCode.CONFIDENCE_PENDING),
+            ("delete", MemoryFormationReasonCode.AMBIGUOUS_DELETE),
+        ):
+            pending_results.append(
+                await memory.lifecycle.apply(
+                    CandidatePolicyResult(
+                        candidate=_pg_candidate(
+                            suffix=f"{proposed_operation}-{suffix}",
+                            operation=proposed_operation,
+                            content=f"Pending {proposed_operation}",
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            memory_key=memory_key,
+                        ),
+                        operation=_pg_operation(
+                            suffix=f"{proposed_operation}-{suffix}",
+                            operation=MemoryOperation.PENDING,
+                            status=MemoryDecisionStatus.PENDING,
+                            reason=reason,
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            memory_key=memory_key,
+                            job_id=job.job_id,
+                            memory_id=added.item.memory_id,
+                            revision_id=added.revision.revision_id,
+                        ),
+                        redacted_trace={},
+                    )
+                )
+            )
+
+        observability = MemoryObservabilityService(
+            settings=settings,
+            memory_service=memory,
+            formation_repository=formation,
+            trace_repository=DatabaseMemoryFormationTraceRepository(session_factory),
+        )
+        debug = await observability.debug_state(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
+        pending = {
+            decision.proposed_operation: decision
+            for decision in debug.formation_traces[0].decisions
+            if decision.decision_status == "pending"
+        }
+        assert set(pending) == {"update", "delete"}
+        assert all(decision.decision_id for decision in pending.values())
+        assert all(
+            event.event_id not in {result.event.event_id for result in pending_results}
+            for event in debug.events
+        )
+
+        management = MemoryManagementService(memory_service=memory)
+        updated = await management.resolve_pending(
+            decision_id=pending["update"].decision_id or "",
+            action="confirm",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            actor=user_id,
+            reason="isolated PostgreSQL acceptance",
+            idempotency_key=f"pg-confirm-update-{suffix}",
+            expected_revision_id=added.revision.revision_id,
+        )
+        rejected = await management.resolve_pending(
+            decision_id=pending["delete"].decision_id or "",
+            action="reject",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            actor=user_id,
+            reason="isolated PostgreSQL acceptance",
+            idempotency_key=f"pg-reject-delete-{suffix}",
+            expected_revision_id=added.revision.revision_id,
+        )
+        current = await items.get_by_id(added.item.memory_id, tenant_id=tenant_id)
+        assert updated.operation == "confirm"
+        assert rejected.operation == "reject"
+        assert current and current.content == "Pending update"
+        assert current.lifecycle_status == "active"
+    finally:
+        await _cleanup(session_factory, tenant_id=tenant_id)
+        await session_factory.kw["bind"].dispose()
+
+
 def _turn(
     index: int,
     *,
@@ -431,9 +602,65 @@ def _revision(memory_id: str, memory_key: str, content: str, revision_id: str) -
     )
 
 
+def _pg_candidate(
+    *, suffix: str, operation: str, content: str, tenant_id: str, user_id: str, memory_key: str
+) -> MemoryFormationCandidate:
+    return MemoryFormationCandidate(
+        candidate_id=f"pg_candidate_{suffix}",
+        proposed_operation=operation,
+        scope="user_preference",
+        content=content,
+        subject_id_hint=user_id,
+        tenant_id_hint=tenant_id,
+        memory_key_hint=memory_key,
+        confidence=0.8,
+        evidence_refs=[
+            {
+                "turn_id": f"pg_decision_turn_{suffix}",
+                "role": "user",
+                "quote": content,
+            }
+        ],
+        reason="isolated PostgreSQL acceptance",
+    )
+
+
+def _pg_operation(
+    *,
+    suffix: str,
+    operation: MemoryOperation,
+    status: MemoryDecisionStatus,
+    reason: MemoryFormationReasonCode,
+    tenant_id: str,
+    user_id: str,
+    memory_key: str,
+    job_id: str,
+    memory_id: str | None = None,
+    revision_id: str | None = None,
+) -> MemoryLifecycleOperation:
+    return MemoryLifecycleOperation(
+        operation_id=f"pg_operation_{suffix}",
+        operation=operation,
+        decision_status=status,
+        reason_code=reason,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        subject_type="user",
+        subject_id=user_id,
+        memory_key=memory_key,
+        candidate_hash=f"sha256:{suffix}",
+        memory_id=memory_id,
+        revision_id=revision_id,
+        formation_job_id=job_id,
+    )
+
+
 async def _cleanup(session_factory, *, tenant_id: str) -> None:
     async with session_factory() as session:
         memory_ids = select(MemoryItemModel.memory_id).where(MemoryItemModel.tenant_id == tenant_id)
+        await session.execute(
+            delete(MemoryEventModel).where(MemoryEventModel.tenant_id == tenant_id)
+        )
         await session.execute(
             delete(MemoryRevisionModel).where(MemoryRevisionModel.memory_id.in_(memory_ids))
         )

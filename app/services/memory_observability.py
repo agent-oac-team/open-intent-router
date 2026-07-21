@@ -48,6 +48,7 @@ _MODEL_USAGE_KEYS = {
     "total_tokens",
 }
 _METRIC_SNAPSHOT_LIMIT = 10_000
+_TRACE_SUPPORT_EVENT_LIMIT = 500
 
 
 class MemoryObservabilityService:
@@ -191,6 +192,20 @@ class MemoryObservabilityService:
             key=lambda trace: trace.job.updated_at,
             reverse=True,
         )[:limit]
+        trace_event_groups = await asyncio.gather(
+            *(
+                self.memory_repository.list_events(
+                    tenant_id=trace.job.tenant_id,
+                    user_id=trace.job.user_id,
+                    formation_job_id=trace.job.job_id,
+                    limit=_TRACE_SUPPORT_EVENT_LIMIT,
+                )
+                for trace in traces
+            )
+        )
+        trace_events_by_job = {
+            trace.job.job_id: group for trace, group in zip(traces, trace_event_groups, strict=True)
+        }
         items = await self._filtered_items(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -215,7 +230,16 @@ class MemoryObservabilityService:
             limit=limit,
         )
         safe_traces = list(
-            await asyncio.gather(*(self._trace_view(trace, events=events) for trace in traces))
+            await asyncio.gather(
+                *(
+                    self._trace_view(
+                        trace,
+                        events=events,
+                        trace_events=trace_events_by_job.get(trace.job.job_id, []),
+                    )
+                    for trace in traces
+                )
+            )
         )
         revisions = []
         for item in items:
@@ -441,9 +465,18 @@ class MemoryObservabilityService:
             and (not scopes or str(item.scope) in set(scopes))
         ][:limit]
 
-    async def _trace_view(self, trace: MemoryFormationTrace, *, events) -> MemoryFormationTraceView:
+    async def _trace_view(
+        self, trace: MemoryFormationTrace, *, events, trace_events
+    ) -> MemoryFormationTraceView:
+        trace_events = [
+            event
+            for event in trace_events
+            if event.tenant_id == trace.job.tenant_id
+            and event.user_id == trace.job.user_id
+            and event.formation_job_id == trace.job.job_id
+        ]
         provider_by_memory = {}
-        for event in events:
+        for event in [*events, *trace_events]:
             if event.memory_id and isinstance(event.payload, dict):
                 status = event.payload.get("provider_status")
                 if isinstance(status, str):
@@ -462,7 +495,7 @@ class MemoryObservabilityService:
         decisions = []
         provider_latencies = []
         decision_events = {}
-        for event in events:
+        for event in trace_events:
             if not event.event_type.startswith("memory_decision_"):
                 continue
             payload = event.payload if isinstance(event.payload, dict) else {}
@@ -471,7 +504,7 @@ class MemoryObservabilityService:
                 continue
             operation_id = event_operation.get("operation_id")
             if isinstance(operation_id, str):
-                decision_events[operation_id] = event
+                decision_events.setdefault(operation_id, event)
         for operation in trace.operations[:100]:
             metadata = operation.metadata if isinstance(operation.metadata, dict) else {}
             preview = metadata.get("content_preview")
