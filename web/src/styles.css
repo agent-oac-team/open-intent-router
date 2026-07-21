@@ -1017,6 +1017,10 @@ textarea:focus {
   --journey-tone: var(--warn);
 }
 
+.journey-stage.attention {
+  --journey-tone: var(--accent);
+}
+
 .journey-stage.skipped {
   --journey-tone: #718077;
 }
@@ -1056,6 +1060,12 @@ textarea:focus {
   color: var(--text);
   text-align: left;
   cursor: pointer;
+}
+
+.journey-node-shell {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
 .journey-node:disabled {
@@ -1149,6 +1159,122 @@ textarea:focus {
   color: var(--muted);
 }
 
+.journey-expand-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--journey-tone) 34%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--journey-tone) 5%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.journey-expand-button svg {
+  transition: transform 160ms ease;
+}
+
+.journey-expand-button[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.journey-expand-button:hover,
+.journey-expand-button:focus-visible {
+  border-color: var(--journey-tone);
+  color: var(--text);
+  outline: none;
+}
+
+.journey-subflow {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 5px 4px 2px 12px;
+  list-style: none;
+}
+
+.journey-subflow li {
+  --subflow-tone: var(--line);
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 0 10px;
+}
+
+.journey-subflow li::after {
+  position: absolute;
+  top: 26px;
+  bottom: -1px;
+  left: 11px;
+  width: 1px;
+  background: var(--subflow-tone);
+  content: "";
+  opacity: 0.65;
+}
+
+.journey-subflow li:last-child::after {
+  display: none;
+}
+
+.journey-subflow li.completed { --subflow-tone: var(--good); }
+.journey-subflow li.active { --subflow-tone: var(--warn); }
+.journey-subflow li.attention { --subflow-tone: var(--accent); }
+.journey-subflow li.failed { --subflow-tone: var(--bad); }
+.journey-subflow li.skipped { --subflow-tone: #718077; }
+
+.journey-subflow-marker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--subflow-tone);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--subflow-tone);
+}
+
+.journey-subflow li > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.journey-subflow strong,
+.journey-subflow small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.journey-subflow strong {
+  font-size: 11px;
+}
+
+.journey-subflow small,
+.journey-subflow em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.journey-subflow em {
+  color: var(--subflow-tone);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .journey-plan-preview {
   display: grid;
   gap: 4px;
@@ -1239,6 +1365,10 @@ textarea:focus {
 
 .journey-detail-state.active {
   color: var(--warn);
+}
+
+.journey-detail-state.attention {
+  color: var(--accent);
 }
 
 .journey-detail-state.failed {
@@ -1631,6 +1761,30 @@ textarea:focus {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
+}
+
+.pending-actions.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.decision-association-error {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 204, 102, 0.42);
+  border-radius: 6px;
+  color: var(--warn);
+  background: rgba(255, 204, 102, 0.055);
+  font-size: 11px;
+}
+
+.decision-association-error span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .operation-feedback {
@@ -2791,6 +2945,14 @@ pre {
 
   .journey-node {
     grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+
+  .journey-subflow li {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .journey-subflow em {
+    grid-column: 2;
   }
 
   .journey-detail-steps > div {

@@ -140,6 +140,19 @@ route-only 或后端没有返回 invocation input 时，turn 仍然可选，但 
 
 前端 per-turn 选中状态刷新后仍会消失，但后端已在 Route Log 和 `context.metadata.context_trace` 中记录 bounded Trace 摘要。该摘要适合差异比较和回放基础，不包含完整 Prompt、无界原文或完整 structured values，也不等同于完整内容级审计平台。
 
+Memory 标签中的 Formation Decision 操作沿用后端既有策略：
+
+| Pending Decision | 确认 | 拒绝 |
+| --- | --- | --- |
+| UPDATE | 支持 | 支持 |
+| DELETE | 支持，提交前二次确认 | 支持 |
+| ADD 或其他操作 | 不支持 | 有安全 `decision_id` 时支持 |
+| 缺少 `decision_id` | 不支持 | 不支持，显示关联数据错误和刷新入口 |
+
+按 request/session/turn/run 查询时，后端可以用同租户、同用户、同 Formation Job 的受限支撑事件恢复 `decision_id`，但这些支撑事件不会被加入调用方筛选后的顶层 Events。确认或拒绝成功后，前端重新读取当前选中 Turn 的 Memory Trace；DELETE 继续使用 revision precondition 和破坏性操作确认。Recall 的 `provider_timeout` 与 Formation Decision 相互独立，Recall 失败不会隐藏或禁用确认/拒绝。
+
+运行图中的“沉淀本次记忆”可以展开对话收集、后台队列、候选提取、语义/策略决策、人工处理、长期记忆更新和检索索引七个阶段。人工 pending 使用“待处理”，只有 accepted ADD/UPDATE/DELETE 才会把写入和索引阶段投影为本轮实际更新。
+
 runtime 配置会显示 `context_pipeline_mode`、route Memory/Knowledge 开关和 policy/budget/projection version。切回 `legacy` 只回滚 Router 输入路径，不会关闭 Agent access、Memory subject isolation、Knowledge source policy 或脱敏治理。
 
 ## 记忆与知识库调试管理

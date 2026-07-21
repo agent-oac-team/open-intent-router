@@ -1164,6 +1164,70 @@ async def test_pending_semantic_and_structured_values_are_not_exposed_by_debug()
     assert "value" not in public_candidate["semantic"]
 
 
+async def test_trace_hydration_keeps_pending_add_and_sensitive_decisions_non_confirmable() -> None:
+    _, memory, formation, observability, _ = _services()
+    job = await formation.add_job(
+        MemoryFormationJob(
+            job_id="job_non_confirmable_pending",
+            trigger="structured_event",
+            mode="observe",
+            tenant_id="t1",
+            user_id="u1",
+            idempotency_key="job-non-confirmable-pending",
+            model_version="model-v1",
+            prompt_version="prompt-v1",
+            policy_version="policy-v1",
+        )
+    )
+    pending_add = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(operation="add", content="Candidate to reject", confidence=0.8),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.AMBIGUOUS_CONFLICT,
+                job_id=job.job_id,
+                suffix="pending-add",
+            ),
+            redacted_trace={},
+        )
+    )
+    sensitive_marker = "PRIVATE-SENSITIVE-CANDIDATE-8842"
+    sensitive = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(operation="update", content=sensitive_marker, confidence=0.8),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.SENSITIVE_CONTENT,
+                job_id=job.job_id,
+                suffix="pending-sensitive",
+            ),
+            redacted_trace={},
+        )
+    )
+
+    response = await observability.debug_state(
+        tenant_id="t1",
+        user_id="u1",
+        formation_job_id=job.job_id,
+        decision_status="pending",
+        limit=1,
+    )
+    decisions = {
+        decision.operation_id: decision for decision in response.formation_traces[0].decisions
+    }
+    add_decision = decisions["operation_pending-add"]
+    sensitive_decision = decisions["operation_pending-sensitive"]
+
+    assert add_decision.decision_id == pending_add.event.event_id
+    assert add_decision.proposed_operation is None
+    assert sensitive_decision.decision_id == sensitive.event.event_id
+    assert sensitive_decision.proposed_operation is None
+    assert sensitive_decision.content_redacted is True
+    assert sensitive_marker not in response.model_dump_json()
+
+
 async def test_health_and_metrics_are_content_free() -> None:
     items, memory, formation, observability, _ = _services()
     now = datetime.now(UTC)
@@ -1663,6 +1727,110 @@ async def test_database_metrics_are_full_aggregates_beyond_snapshot_limit(tmp_pa
     assert metrics.deletion_completions == 10001
     assert statements
     assert not any("limit 10000" in statement for statement in statements)
+
+
+async def test_database_association_filters_hydrate_job_level_pending_decision(tmp_path) -> None:
+    settings = Settings(
+        storage_backend="database",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'job-decision-association.db'}",
+        memory_formation_mode="observe",
+    )
+    await create_all_tables(settings)
+    session_factory = create_session_factory(settings)
+    items = DatabaseMemoryItemRepository(session_factory)
+    memory = MemoryService(settings=settings, repository=items)
+    formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
+    now = datetime(2026, 7, 13, tzinfo=UTC)
+    for suffix in ("first", "second"):
+        await formation.append_turn(
+            MemoryFormationTurn(
+                turn_id=f"turn_association_{suffix}",
+                request_id=f"request_association_{suffix}",
+                session_id="session_association",
+                run_id=f"run_association_{suffix}",
+                user_id="u1",
+                tenant_id="t1",
+                result_status="completed",
+                completed_at=now,
+            )
+        )
+    job = await formation.create_job_for_pending(
+        tenant_id="t1",
+        user_id="u1",
+        session_id="session_association",
+        trigger="idle",
+        mode="observe",
+        model_version="model-v1",
+        prompt_version="prompt-v1",
+        policy_version="policy-v1",
+    )
+    assert job
+    added = await _add_current(memory, job_id=job.job_id)
+    pending = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(
+                operation="update", content="Association-safe update", confidence=0.8
+            ),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.CONFIDENCE_PENDING,
+                memory_id=added.item.memory_id,
+                revision_id=added.revision.revision_id,
+                job_id=job.job_id,
+                suffix="association-pending-update",
+            ),
+            redacted_trace={},
+        )
+    )
+    assert pending.event.request_id is None
+    assert pending.event.session_id is None
+    assert pending.event.turn_id is None
+    assert pending.event.run_id is None
+
+    observability = MemoryObservabilityService(
+        settings=settings,
+        memory_service=memory,
+        formation_repository=formation,
+        trace_repository=DatabaseMemoryFormationTraceRepository(session_factory),
+    )
+    association_filters = (
+        {"request_id": "request_association_first"},
+        {"session_id": "session_association"},
+        {"turn_id": "turn_association_second"},
+        {"run_id": "run_association_second"},
+    )
+    for filters in association_filters:
+        response = await observability.debug_state(
+            tenant_id="t1",
+            user_id="u1",
+            limit=1,
+            **filters,
+        )
+        assert len(response.formation_traces) == 1
+        decision = next(
+            value
+            for value in response.formation_traces[0].decisions
+            if value.operation_id == "operation_association-pending-update"
+        )
+        assert decision.decision_id == pending.event.event_id
+        assert decision.proposed_operation == "update"
+        assert all(event.event_id != pending.event.event_id for event in response.events)
+
+    assert (
+        await observability.debug_state(
+            tenant_id="t1",
+            user_id="u2",
+            request_id="request_association_first",
+        )
+    ).formation_traces == []
+    assert (
+        await observability.debug_state(
+            tenant_id="t2",
+            user_id="u1",
+            request_id="request_association_first",
+        )
+    ).formation_traces == []
 
 
 async def test_database_pending_resolution_and_trace_survive_service_restart(tmp_path) -> None:

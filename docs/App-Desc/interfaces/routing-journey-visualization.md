@@ -18,7 +18,19 @@
 6. 返回处理结果。
 7. 沉淀本次记忆。
 
-每个节点使用“等待、处理中、已完成、未使用、未完成”五种状态。点击有详情的节点，可以查看该节点的有限技术信息；运行图默认不展示原始 JSON、完整长标识符、provider 配置或 collection 信息。
+主节点使用“等待、处理中、待处理、已完成、未使用、未完成”六种状态。点击有详情的节点，可以查看该节点的有限技术信息；运行图默认不展示原始 JSON、完整长标识符、provider 配置或 collection 信息。
+
+“沉淀本次记忆”保留为一个主节点，并可展开以下形成过程：
+
+1. 收集本轮对话。
+2. 进入后台队列。
+3. 提取记忆候选。
+4. 语义校验与形成决策。
+5. 等待人工处理，仅在存在 unresolved pending decision 时显示“待处理”。
+6. 更新长期记忆。
+7. 更新检索索引。
+
+“待处理”表示自动流程已经给出需要人工确认的决定，不等同于系统仍在运行。主节点会优先显示待处理数量。
 
 ## 3. 数据来源
 
@@ -39,6 +51,10 @@
 因此“中控处理中”只表示整次请求仍在进行，不表示某个内部模块正在被实时追踪。此时运行图只确认“收到问题”，其他内部节点保持等待，不使用定时器依次模拟进度。
 
 请求返回后，运行图才根据真实的 RouteResponse、InvocationResult 和本轮 Context 数据还原已经完成、跳过或失败的内部阶段。Memory Formation 属于响应后的异步链路，可以继续使用现有 Memory Request Trace 近实时更新。
+
+运行图只根据 accepted ADD、UPDATE 或 DELETE lifecycle decision 判断本轮是否更新长期记忆。pending、NOOP 或 REJECT 即使关联了已有 `memory_id`、`revision_id` 或 ready index，也不代表本轮候选已经写入；相关写入和索引子步骤会保持等待或跳过。
+
+`memory_context.errors` 中的 `provider_timeout` 属于请求前的 Recall 阶段，显示在“准备参考信息”。它不会被解释为响应后的 Formation 失败，也不会覆盖 Formation 的人工待处理状态。
 
 该实现不新增统一追踪契约、SSE、WebSocket、trace 数据表或后端运行时依赖。
 

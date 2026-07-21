@@ -9,7 +9,13 @@ export type JourneyNodeId =
   | "response"
   | "formation";
 
-export type JourneyNodeState = "waiting" | "active" | "completed" | "skipped" | "failed";
+export type JourneyNodeState =
+  | "waiting"
+  | "active"
+  | "attention"
+  | "completed"
+  | "skipped"
+  | "failed";
 export type JourneyOverallState = "empty" | "processing" | "completed" | "failed";
 
 export type JourneyDetailField = {
@@ -24,6 +30,13 @@ export type JourneyStep = {
   status: string;
 };
 
+export type JourneySubstep = {
+  id: string;
+  label: string;
+  summary: string;
+  state: JourneyNodeState;
+};
+
 export type JourneyNode = {
   id: JourneyNodeId;
   label: string;
@@ -32,6 +45,7 @@ export type JourneyNode = {
   tags?: string[];
   details: JourneyDetailField[];
   steps?: JourneyStep[];
+  substeps?: JourneySubstep[];
 };
 
 export type JourneyProjection = {
@@ -45,7 +59,18 @@ type ContextSummary = {
   status: string;
   itemCount: number;
   citationCount: number;
+  errors: string[];
 };
+
+const FORMATION_SUBSTEP_LABELS = [
+  ["capture", "收集本轮对话"],
+  ["queue", "进入后台队列"],
+  ["candidates", "提取记忆候选"],
+  ["decision", "语义校验与形成决策"],
+  ["review", "等待人工处理"],
+  ["persist", "更新长期记忆"],
+  ["index", "更新检索索引"],
+] as const;
 
 const waitingNode = (id: JourneyNodeId, label: string, summary = "等待前序结果"): JourneyNode => ({
   id,
@@ -93,7 +118,10 @@ export function projectRoutingJourney(
         waitingNode("handoff", "交给业务助手"),
         waitingNode("invocation", "助手处理问题"),
         waitingNode("response", "返回处理结果"),
-        waitingNode("formation", "沉淀本次记忆", "等待本轮处理结果"),
+        {
+          ...waitingNode("formation", "沉淀本次记忆", "等待本轮处理结果"),
+          substeps: waitingFormationSubsteps(),
+        },
       ],
     };
   }
@@ -160,16 +188,23 @@ export function projectRoutingJourney(
 }
 
 function contextNode(memory: ContextSummary, knowledge: ContextSummary): JourneyNode {
+  const recallTimedOut = memory.errors.includes("provider_timeout");
   const tags = [
-    memory.itemCount ? `历史记忆 ${memory.itemCount}` : "记忆未使用",
+    recallTimedOut
+      ? "历史记忆读取超时"
+      : memory.itemCount
+        ? `历史记忆 ${memory.itemCount}`
+        : "记忆未使用",
     knowledge.itemCount ? `知识资料 ${knowledge.itemCount}` : "知识未使用",
   ];
-  let summary = "本轮未使用额外记忆或知识资料";
-  if (memory.itemCount && knowledge.itemCount) {
+  let summary = recallTimedOut
+    ? "历史记忆读取超时，本轮继续使用可用参考信息"
+    : "本轮未使用额外记忆或知识资料";
+  if (!recallTimedOut && memory.itemCount && knowledge.itemCount) {
     summary = `参考 ${memory.itemCount} 条历史记忆和 ${knowledge.itemCount} 条知识资料`;
-  } else if (memory.itemCount) {
+  } else if (!recallTimedOut && memory.itemCount) {
     summary = `参考 ${memory.itemCount} 条历史记忆`;
-  } else if (knowledge.itemCount) {
+  } else if (!recallTimedOut && knowledge.itemCount) {
     summary = `参考 ${knowledge.itemCount} 条知识资料`;
   }
   return {
@@ -181,6 +216,7 @@ function contextNode(memory: ContextSummary, knowledge: ContextSummary): Journey
     details: compactDetails([
       ["记忆状态", memory.status],
       ["记忆条目", memory.itemCount],
+      ["记忆读取异常", memory.errors.join("、")],
       ["知识状态", knowledge.status],
       ["知识条目", knowledge.itemCount],
       ["引用数量", knowledge.citationCount],
@@ -318,6 +354,12 @@ function responseNode(turn: ConversationTurn): JourneyNode {
 function formationNode(turn: ConversationTurn): JourneyNode {
   const trace = turn.memoryTrace;
   const requestTrace = trace.data?.request_trace;
+  const substeps = formationSubsteps(turn);
+  const pendingCount = substeps.filter((step) => step.state === "attention").length
+    ? (trace.data?.formation_traces || []).flatMap((formation) => formation.decisions).filter(
+        (decision) => decision.decision_status === "pending",
+      ).length
+    : 0;
   const details = compactDetails([
     ["形成状态", trace.status],
     ["链路阶段", requestTrace?.overall_stage],
@@ -326,6 +368,17 @@ function formationNode(turn: ConversationTurn): JourneyNode {
     ["形成任务数", requestTrace?.formation_job_ids.length],
     ["记忆数量", requestTrace?.memory_ids.length],
   ]);
+  if (pendingCount) {
+    return {
+      id: "formation",
+      label: "沉淀本次记忆",
+      summary: `有 ${pendingCount} 条记忆变更待处理`,
+      state: "attention",
+      tags: [`待处理 ${pendingCount}`],
+      details,
+      substeps,
+    };
+  }
   if (trace.status === "loading" || trace.status === "pending") {
     return {
       id: "formation",
@@ -334,16 +387,30 @@ function formationNode(turn: ConversationTurn): JourneyNode {
       state: "active",
       tags: ["后台处理中"],
       details,
+      substeps,
     };
   }
   if (trace.status === "success") {
+    const failed = substeps.some((step) => step.state === "failed");
+    const active = substeps.some((step) => step.state === "active");
     return {
       id: "formation",
       label: "沉淀本次记忆",
-      summary: requestTrace ? formationStageLabel(requestTrace.overall_stage) : "记忆处理链路已完成",
-      state: "completed",
-      tags: requestTrace?.memory_ids.length ? [`关联 ${requestTrace.memory_ids.length} 条记忆`] : ["已完成"],
+      summary: pendingCount
+        ? `有 ${pendingCount} 条记忆变更待处理`
+        : failed && substeps.some((step) => step.id === "index" && step.state === "failed")
+          ? "长期记忆已更新，检索索引未完成"
+        : requestTrace
+          ? formationStageLabel(requestTrace.overall_stage)
+          : "记忆处理链路已完成",
+      state: pendingCount ? "attention" : failed ? "failed" : active ? "active" : "completed",
+      tags: pendingCount
+        ? [`待处理 ${pendingCount}`]
+        : acceptedFormationDecisions(turn).length
+          ? [`本轮写入 ${acceptedFormationDecisions(turn).length} 条`]
+          : ["已完成"],
       details,
+      substeps,
     };
   }
   if (trace.status === "error") {
@@ -353,6 +420,7 @@ function formationNode(turn: ConversationTurn): JourneyNode {
       summary: trace.error || requestTrace?.reason_code || "记忆处理未完成",
       state: "failed",
       details,
+      substeps,
     };
   }
   return {
@@ -361,15 +429,202 @@ function formationNode(turn: ConversationTurn): JourneyNode {
     summary: turn.mode === "route" ? "仅路由模式，本轮不沉淀对话记忆" : "本轮未触发长期记忆沉淀",
     state: "skipped",
     details,
+    substeps,
   };
 }
 
+function waitingFormationSubsteps(): JourneySubstep[] {
+  return FORMATION_SUBSTEP_LABELS.map(([id, label]) => ({
+    id,
+    label,
+    summary: "等待本轮请求返回",
+    state: "waiting",
+  }));
+}
+
+function formationSubsteps(turn: ConversationTurn): JourneySubstep[] {
+  const traceState = turn.memoryTrace;
+  const data = traceState.data;
+  const request = data?.request_trace;
+  const traces = data?.formation_traces || [];
+  if (turn.mode === "route" || (traceState.status === "not_triggered" && !request)) return [];
+
+  const jobs = traces.map((trace) => trace.job);
+  const decisions = traces.flatMap((trace) => trace.decisions);
+  const pending = decisions.filter((decision) => decision.decision_status === "pending");
+  const accepted = acceptedFormationDecisions(turn);
+  const jobRunning = jobs.some((job) => ["pending", "claimed", "running", "retry"].includes(job.status));
+  const jobFailed = jobs.some((job) => ["failed", "error", "dead_letter"].includes(job.status));
+  const jobCompleted = jobs.length > 0 && jobs.every((job) =>
+    ["completed", "success", "succeeded"].includes(job.status),
+  );
+  const candidateCount = traces.reduce((total, trace) => total + trace.candidate_count, 0);
+  const stage = request?.overall_stage || "";
+  const queueFailed = ["outbox_dead_letter", "turn_failed", "trace_missing"].includes(stage);
+  const formationFailed = jobFailed || ["formation_dead_letter"].includes(stage);
+  const formationRetry = jobRunning || stage === "formation_retry" || stage === "formation_pending";
+  const captured = Boolean(
+    request?.turn_id ||
+      request?.formation_turn_ids.length ||
+      request?.outbox_ids.length ||
+      request?.formation_job_ids.length ||
+      jobs.length,
+  );
+  const queued = Boolean(request?.formation_job_ids.length || jobs.length);
+  const noWriteTerminal = Boolean(
+    request?.terminal || jobCompleted || ["recall_only", "formation_skipped", "policy_rejected"].includes(stage),
+  );
+
+  const indexStates = accepted.map((decision) =>
+    String(decision.index_status || decision.provider_status || "").toLowerCase(),
+  );
+  const indexFailed = indexStates.some((status) =>
+    ["failed", "error", "dead_letter", "out_of_sync", "conflict"].includes(status),
+  );
+  const indexActive = indexStates.some((status) =>
+    ["pending", "retry", "claimed", "running", "in_progress"].includes(status),
+  );
+  const indexCompleted = indexStates.length > 0 && indexStates.every((status) =>
+    ["ready", "completed", "success", "succeeded", "deleted", "not_found"].includes(status),
+  );
+
+  return [
+    {
+      id: "capture",
+      label: "收集本轮对话",
+      summary: captured || request?.terminal ? "本轮对话已进入记忆链路" : "正在确认对话收集状态",
+      state: captured || request?.terminal ? "completed" : traceState.status === "error" ? "failed" : "active",
+    },
+    {
+      id: "queue",
+      label: "进入后台队列",
+      summary: queueFailed
+        ? "后台投递未完成"
+        : queued
+          ? "后台任务已接收"
+          : stage === "outbox_pending" || stage === "turn_captured"
+            ? "等待后台任务接收"
+            : "本轮无需后台形成任务",
+      state: queueFailed
+        ? "failed"
+        : queued
+          ? "completed"
+          : stage === "outbox_pending" || stage === "turn_captured"
+            ? "active"
+            : noWriteTerminal
+              ? "skipped"
+              : "waiting",
+    },
+    {
+      id: "candidates",
+      label: "提取记忆候选",
+      summary: formationFailed
+        ? "候选提取未完成"
+        : formationRetry
+          ? stage === "formation_retry" || jobs.some((job) => job.status === "retry")
+            ? "候选提取正在重试"
+            : "正在分析可沉淀的信息"
+          : candidateCount
+            ? `已形成 ${candidateCount} 条候选`
+            : "没有形成需要沉淀的候选",
+      state: formationFailed
+        ? "failed"
+        : formationRetry
+          ? "active"
+          : candidateCount
+            ? "completed"
+            : noWriteTerminal
+              ? "skipped"
+              : "waiting",
+    },
+    {
+      id: "decision",
+      label: "语义校验与形成决策",
+      summary: pending.length
+        ? `${pending.length} 条变更需要人工处理`
+        : decisions.length
+          ? `已完成 ${decisions.length} 条形成决策`
+          : formationFailed
+            ? "形成决策未完成"
+            : "没有需要执行的记忆变更",
+      state: pending.length
+        ? "attention"
+        : decisions.length
+          ? "completed"
+          : formationFailed
+            ? "failed"
+            : formationRetry
+              ? "active"
+              : noWriteTerminal
+                ? "skipped"
+                : "waiting",
+    },
+    {
+      id: "review",
+      label: "等待人工处理",
+      summary: pending.length ? `${pending.length} 条变更等待确认或拒绝` : "本轮无需人工处理",
+      state: pending.length ? "attention" : "skipped",
+    },
+    {
+      id: "persist",
+      label: "更新长期记忆",
+      summary: accepted.length
+        ? `已接受并更新 ${accepted.length} 条长期记忆`
+        : pending.length
+          ? "等待人工处理后再更新"
+          : "本轮没有写入长期记忆",
+      state: accepted.length
+        ? "completed"
+        : pending.length || formationRetry
+          ? "waiting"
+          : noWriteTerminal || formationFailed
+            ? "skipped"
+            : "waiting",
+    },
+    {
+      id: "index",
+      label: "更新检索索引",
+      summary: !accepted.length
+        ? "本轮没有需要更新的检索索引"
+        : indexFailed
+          ? "检索索引更新未完成"
+          : indexActive
+            ? "正在更新检索索引"
+            : indexCompleted
+              ? "检索索引已更新"
+              : "等待检索索引状态",
+      state: !accepted.length
+        ? pending.length || formationRetry
+          ? "waiting"
+          : "skipped"
+        : indexFailed
+          ? "failed"
+          : indexActive
+            ? "active"
+            : indexCompleted
+              ? "completed"
+              : "waiting",
+    },
+  ];
+}
+
+function acceptedFormationDecisions(turn: ConversationTurn) {
+  return (turn.memoryTrace.data?.formation_traces || [])
+    .flatMap((trace) => trace.decisions)
+    .filter(
+      (decision) =>
+        decision.decision_status === "accepted" &&
+        ["add", "update", "delete"].includes(String(decision.operation).toLowerCase()),
+    );
+}
+
 function summarizeContext(context: JsonRecord | null): ContextSummary {
-  if (!context) return { status: "unavailable", itemCount: 0, citationCount: 0 };
+  if (!context) return { status: "unavailable", itemCount: 0, citationCount: 0, errors: [] };
   return {
     status: String(context.status || "unknown"),
     itemCount: recordArray(context.items).length,
     citationCount: recordArray(context.citations).length,
+    errors: stringArray(context.errors),
   };
 }
 
