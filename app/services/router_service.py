@@ -72,11 +72,39 @@ class RouterService:
         tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
         candidate_ids = available_agent_ids
         candidates = [agent.to_candidate() for agent in available_agents]
+        if not available_agents:
+            response = RouteResponse(
+                request_id=request_id,
+                session_id=request.session_id,
+                decision=RouteDecision(
+                    status="unsupported",
+                    action="unsupported",
+                    confidence=0,
+                    reason="No candidate Agent is available.",
+                    message="No available Agent can handle this request.",
+                ),
+                context=RouteContext(
+                    relation="unsupported",
+                    current_agent_id=(
+                        request.current_agent.agent_id if request.current_agent else None
+                    ),
+                    candidate_agent_ids=[],
+                    metadata={
+                        "authorization_filtered": True,
+                        "tag_filter": "no_available_agents",
+                        "available_agent_ids": [],
+                    },
+                ),
+            )
+            response = self._finalize_assistant_message(response)
+            return await self._after_route(request, response)
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
         recent_events = await self._recent_events(request)
         active_plan = await self._active_plan(request)
+        if active_plan is not None:
+            self._validate_plan_agents(active_plan, set(candidate_ids))
         evidence_result = await self._evidence(request, candidate_ids)
         if evidence_result.route_override_denied:
             return await self._route_from_denied_evidence_override(
@@ -93,38 +121,6 @@ class RouterService:
                 active_plan=active_plan,
                 candidate_agents=candidates,
             )
-        if not available_agents:
-            base_context, _, _ = await self.context_service.assemble_route_context(
-                request,
-                candidate_agent_ids=[],
-                candidate_agents=[],
-                request_id=request_id,
-                host_history=host_history,
-                agent_history=agent_history,
-                recent_results=recent_results,
-                recent_events=recent_events,
-                evidence=evidence_result.evidence,
-                active_plan=active_plan,
-                intent_hint=evidence_result.intent_hint,
-            )
-            base_context = _with_evidence_metadata(base_context, evidence_result)
-            base_context = _with_filter_metadata(base_context, tag_filter, available_agent_ids)
-            response = RouteResponse(
-                request_id=request_id,
-                session_id=request.session_id,
-                decision=RouteDecision(
-                    status="unsupported",
-                    action="unsupported",
-                    confidence=0,
-                    reason="No candidate Agent is available.",
-                    message="No available Agent can handle this request.",
-                ),
-                context=base_context,
-            )
-            response = self._finalize_assistant_message(response)
-            response = await self._after_route(request, response)
-            return response
-
         if evidence_result.route_override:
             return await self._route_from_evidence_override(
                 request,
@@ -255,12 +251,25 @@ class RouterService:
             current = request.current_agent.agent_id if request.current_agent else None
             if output.decision.target_agent_id != current:
                 raise RoutingError("continue_agent target must match current Agent")
+        if output.plan is not None:
+            self._validate_plan_agents(output.plan, candidate_ids)
         try:
             return RouteResponse.model_validate(output.model_dump())
         except ValidationError as exc:
             raise RoutingError(
                 "Router output validation failed", details={"errors": exc.errors()}
             ) from exc
+
+    @staticmethod
+    def _validate_plan_agents(plan, candidate_ids: set[str]) -> None:
+        unauthorized = sorted(
+            {step.agent_id for step in plan.steps if step.agent_id not in candidate_ids}
+        )
+        if unauthorized:
+            raise RoutingError(
+                "Plan contains an Agent outside the candidate set",
+                details={"unauthorized_agent_ids": unauthorized},
+            )
 
     def _normalize_candidate_context(
         self,

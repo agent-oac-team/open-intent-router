@@ -205,6 +205,8 @@ CREATE INDEX IF NOT EXISTS idx_canonical_turns_owner_session_status
     ON canonical_turns (tenant_id, user_id, session_id, status);
 CREATE INDEX IF NOT EXISTS idx_canonical_turns_status_updated
     ON canonical_turns (status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_canonical_turns_owner_status_updated
+    ON canonical_turns (tenant_id, user_id, status, updated_at);
 
 CREATE TABLE IF NOT EXISTS turn_outbox (
     outbox_id VARCHAR(128) NOT NULL,
@@ -301,6 +303,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_delegation_key
 CREATE INDEX IF NOT EXISTS ix_agent_runs_deadline_at ON agent_runs (deadline_at);
 CREATE INDEX IF NOT EXISTS ix_agent_runs_claim_expires_at ON agent_runs (claim_expires_at);
 CREATE INDEX IF NOT EXISTS ix_agent_runs_terminal_event_id ON agent_runs (terminal_event_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_owner_request_status
+    ON agent_runs (tenant_id, user_id, request_id, status);
 
 CREATE TABLE IF NOT EXISTS execution_tickets (
     ticket_hash VARCHAR(64) NOT NULL,
@@ -381,6 +385,8 @@ CREATE INDEX IF NOT EXISTS ix_agent_results_user_id ON agent_results (user_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_tenant_id ON agent_results (tenant_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_plan_id ON agent_results (plan_id);
 CREATE INDEX IF NOT EXISTS ix_agent_results_turn_id ON agent_results (turn_id);
+CREATE INDEX IF NOT EXISTS idx_agent_results_owner_run_status
+    ON agent_results (tenant_id, user_id, run_id, status);
 
 CREATE TABLE IF NOT EXISTS agent_events (
     event_id VARCHAR(128) NOT NULL,

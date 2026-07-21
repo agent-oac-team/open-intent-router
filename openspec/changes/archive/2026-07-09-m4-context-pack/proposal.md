@@ -50,8 +50,8 @@
   - `web/src/App.test.tsx`
   - Context tab 从占位状态升级为展示 Context Pack 和预算信息。
 - Documentation:
-  - `docs/api.md`
-  - `docs/visual-test-ui.md`
-  - 必要时更新 `docs/中控能力设计文档.md` 中 M4 已落地状态。
+  - `docs/App-Desc/contracts/api.md`
+  - `docs/App-Desc/interfaces/visual-test-ui.md`
+  - 必要时更新 `docs/App-Research/designs/中控能力设计文档.md` 中 M4 已落地状态。
 - Tests:
   - Context Pack 构建、预算裁剪、Route Log 摘要、LLM 输入和前端 Context tab 测试。

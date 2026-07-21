@@ -10,6 +10,20 @@ TurnIdentifier = str
 TurnResponseKind = Literal["reply", "clarify", "unsupported", "silent", "agent_result", "error"]
 
 
+class FormationEligibilitySnapshot(StrictBaseModel):
+    mode: Literal["off", "observe", "enforced"]
+    execution_mode: Literal["live", "decision_shadow", "state_rehearsal"] | str = "live"
+    suppressed: bool = False
+    reason_code: str | None = Field(default=None, max_length=64)
+    policy_version: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_suppression_reason(self) -> "FormationEligibilitySnapshot":
+        if self.suppressed != bool(self.reason_code):
+            raise ValueError("suppressed formation eligibility requires exactly one reason code")
+        return self
+
+
 class TurnStatus(StrEnum):
     PENDING = "pending"
     ROUTING = "routing"

@@ -1,6 +1,8 @@
 import hashlib
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import text
@@ -23,6 +25,8 @@ from app.repositories.memory_traces import (
     DatabaseMemoryFormationTraceRepository,
     MemoryFormationTraceRepository,
 )
+from app.repositories.turn_outbox import MemoryTurnOutboxRepository
+from app.repositories.turns import MemoryTurnRepository
 from app.schemas.memory import (
     MemoryCandidateSemantics,
     MemoryDecisionStatus,
@@ -36,6 +40,13 @@ from app.schemas.memory import (
     MemoryLifecycleOperation,
     MemoryOperation,
 )
+from app.schemas.turns import (
+    CanonicalTurn,
+    TurnOutboxEvent,
+    TurnSemanticResponse,
+    TurnStatus,
+    TurnUserInput,
+)
 from app.services.memory_adapter import (
     MemoryIndexOperationResult,
     MemoryProviderOperationStatus,
@@ -46,10 +57,80 @@ from app.services.memory_management import (
     MemoryManagementNotFound,
     MemoryManagementService,
 )
-from app.services.memory_observability import MemoryObservabilityService
+from app.services.memory_observability import MemoryObservabilityService, _request_trace_stage
 from app.services.memory_service import MemoryService
 
 _MEMORY_IDENTITY_SECRET = "memory-identity-secret"
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("outbox_pending", ("outbox_pending", False, True, None)),
+        ("formation_pending", ("formation_pending", False, True, None)),
+        ("formation_retry", ("formation_retry", False, True, "provider_timeout")),
+        ("formation_dead_letter", ("formation_dead_letter", True, False, "invalid_json")),
+        ("skipped", ("formation_skipped", True, False, "formation_mode_off")),
+        ("index_pending", ("memory_persisted_index_pending", False, True, None)),
+        ("persisted", ("persisted", True, False, None)),
+        ("trace_missing", ("trace_missing", False, True, "turn_outbox_missing")),
+    ],
+)
+def test_request_trace_stage_matrix(case: str, expected: tuple) -> None:
+    outboxes = []
+    formation_turns = []
+    traces = []
+    items = []
+    events = []
+    index_operations = []
+
+    if case == "outbox_pending":
+        outboxes = [SimpleNamespace(status="pending", last_error_code=None)]
+    elif case == "formation_pending":
+        formation_turns = [SimpleNamespace(status="pending")]
+    elif case in {"formation_retry", "formation_dead_letter"}:
+        formation_turns = [SimpleNamespace(status="claimed")]
+        traces = [
+            SimpleNamespace(
+                job=SimpleNamespace(
+                    status="retry" if case == "formation_retry" else "dead_letter",
+                    last_error_code=(
+                        "provider_timeout" if case == "formation_retry" else "invalid_json"
+                    ),
+                ),
+                candidate_count=0,
+                decisions=[],
+            )
+        ]
+    elif case == "skipped":
+        events = [
+            SimpleNamespace(
+                event_type="formation_skipped",
+                payload={"reason_code": "formation_mode_off"},
+            )
+        ]
+    elif case in {"index_pending", "persisted"}:
+        formation_turns = [SimpleNamespace(status="completed")]
+        traces = [
+            SimpleNamespace(
+                job=SimpleNamespace(status="completed", last_error_code=None),
+                candidate_count=1,
+                decisions=[SimpleNamespace(decision_status="accepted")],
+            )
+        ]
+        items = [SimpleNamespace(index_status="pending" if case == "index_pending" else "ready")]
+
+    actual = _request_trace_stage(
+        turn_status="completed",
+        outboxes=outboxes,
+        formation_turns=formation_turns,
+        traces=traces,
+        items=items,
+        index_operations=index_operations,
+        events=events,
+    )
+
+    assert actual == expected
 
 
 def _memory_actor_headers(user_id: str, tenant_id: str) -> dict[str, str]:
@@ -461,6 +542,75 @@ async def test_mode_off_router_recall_is_linked_to_turn_without_formation_buffer
     assert response.context_trace_links[0].run_ids == ["run_mode_off"]
     assert response.context_trace_links[0].consumer == "router"
     assert (await observability.metrics()).recall_used == 1
+
+
+async def test_health_and_metrics_include_canonical_pipeline_backlog() -> None:
+    settings = Settings(storage_backend="memory", memory_formation_mode="enforced")
+    items = MemoryItemRepository()
+    memory = MemoryService(settings=settings, repository=items)
+    formation = MemoryFormationTurnJobRepository()
+    traces = MemoryFormationTraceRepository(
+        formation_repository=formation,
+        event_repository=items,
+    )
+    turns = MemoryTurnRepository()
+    outboxes = MemoryTurnOutboxRepository()
+    observability = MemoryObservabilityService(
+        settings=settings,
+        memory_service=memory,
+        formation_repository=formation,
+        trace_repository=traces,
+        turn_repository=turns,
+        outbox_repository=outboxes,
+    )
+    now = datetime.now(UTC)
+    for suffix, status in (
+        ("pending", TurnStatus.PENDING),
+        ("missing", TurnStatus.COMPLETED),
+        ("outbox", TurnStatus.COMPLETED),
+    ):
+        await turns.create_idempotent(
+            CanonicalTurn(
+                turn_id=f"turn_{suffix}",
+                tenant_id="t1",
+                user_id="u1",
+                session_id=f"session_{suffix}",
+                request_id=f"request_{suffix}",
+                source="host_chat",
+                status=status,
+                user_input=TurnUserInput(text="private metric content"),
+                final_response=(
+                    TurnSemanticResponse(kind="agent_result", text="private response")
+                    if status == TurnStatus.COMPLETED
+                    else None
+                ),
+                created_at=now,
+                updated_at=now,
+                completed_at=now if status == TurnStatus.COMPLETED else None,
+            )
+        )
+    await outboxes.add_idempotent(
+        TurnOutboxEvent(
+            outbox_id="outbox_pending",
+            turn_id="turn_outbox",
+            event_type="turn.completed",
+            idempotency_key="turn.completed:turn_outbox",
+            available_at=now,
+        )
+    )
+
+    health = await observability.health()
+    metrics = await observability.metrics()
+
+    assert health.pending_turn_count == 1
+    assert health.outbox_pending_count == 1
+    assert health.trace_missing_count == 1
+    assert health.outbox_oldest_pending_seconds is not None
+    assert metrics.pending_turn_count == 1
+    assert metrics.outbox_pending_count == 1
+    assert metrics.trace_missing_count == 1
+    assert "private metric content" not in metrics.model_dump_json()
+    assert "private response" not in health.model_dump_json()
 
 
 async def test_debug_service_clamps_internal_limit_to_one_hundred() -> None:

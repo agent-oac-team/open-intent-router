@@ -41,6 +41,6 @@
 
 ## 6. Documentation
 
-- [x] 6.1 Update `docs/visual-test-ui.md` to describe the chat-style conversation panel and right-side status tabs.
+- [x] 6.1 Update `docs/App-Desc/interfaces/visual-test-ui.md` to describe the chat-style conversation panel and right-side status tabs.
 - [x] 6.2 Document that M1 assistant bubbles use `decision.message`, while M3 will migrate the source to `assistant_message`.
 - [x] 6.3 Document that Context and Memory tabs are placeholders until their modules are implemented.

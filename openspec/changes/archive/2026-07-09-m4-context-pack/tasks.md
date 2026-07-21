@@ -48,8 +48,8 @@
 - [x] 6.1 Update the Context tab to show budget usage, included item count, dropped item count, and source groups when Context Pack data exists.
 - [x] 6.2 Show dropped, trimmed, or summary-placeholder item reasons in the Context tab.
 - [x] 6.3 Keep an explicit empty Context tab state when Context Pack data is unavailable.
-- [x] 6.4 Update `docs/api.md` and `docs/visual-test-ui.md` for Context Pack, budget diagnostics, and the host-managed session message append API.
-- [x] 6.5 Update `docs/中控能力设计文档.md` only if implementation confirms a design correction or completed-state note.
+- [x] 6.4 Update `docs/App-Desc/contracts/api.md` and `docs/App-Desc/interfaces/visual-test-ui.md` for Context Pack, budget diagnostics, and the host-managed session message append API.
+- [x] 6.5 Update `docs/App-Research/designs/中控能力设计文档.md` only if implementation confirms a design correction or completed-state note.
 
 ## 7. Verification
 

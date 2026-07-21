@@ -26,6 +26,7 @@ from app.schemas.knowledge_assets import (
     KnowledgeSourceRef,
 )
 from app.schemas.plans import Plan, PlanActionResponse
+from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.routing import RouteRequest, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.registry_service import RegistryState
@@ -139,6 +140,10 @@ class RegistryApplicationPort(Protocol):
     async def delete_definition(
         self, agent_id: str, *, expected_revision: int | None = None
     ) -> bool: ...
+
+    async def mutate_definition(
+        self, command: RegistryMutationCommand
+    ) -> RegistryMutationResult: ...
 
 
 @runtime_checkable

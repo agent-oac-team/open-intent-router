@@ -55,7 +55,7 @@
 - [x] 6.2 Add debug/admin UI states for recalled memory, memory writes, memory conflicts, knowledge retrieval, denied sources, and retrieval timeouts.
 - [x] 6.3 Keep normal chat UI free of automatic memory-write prompts for this change.
 - [x] 6.4 Update API documentation for Agent context config, `memory_context`, `knowledge_context`, `/knowledge/search`, and controlled retrieval.
-- [x] 6.5 Update `docs/agent-definition.md`, `docs/evidence-provider.md`, and `docs/中控能力设计文档.md` with the finalized M5/M6 boundaries.
+- [x] 6.5 Update `docs/App-Desc/contracts/agent-definition.md`, `docs/App-Desc/architecture/evidence-provider.md`, and `docs/App-Research/designs/中控能力设计文档.md` with the finalized M5/M6 boundaries.
 
 ## 7. Tests And Validation
 

@@ -40,7 +40,7 @@
 
 ## 6. 文档与验收
 
-- [x] 6.1 更新 `docs/api.md` 或新增中文集成文档，说明 mem0 记忆闭环、Milvus Lite、PostgreSQL history、阿里 embedding、配置示例、失败策略和调试方式。
+- [x] 6.1 更新 `docs/App-Desc/contracts/api.md` 或新增中文集成文档，说明 mem0 记忆闭环、Milvus Lite、PostgreSQL history、阿里 embedding、配置示例、失败策略和调试方式。
 - [x] 6.2 更新测试报告或新增验收记录，标记真实 mem0、PostgreSQL、Milvus Lite、阿里 embedding 闭环的执行条件和结果记录格式。
 - [x] 6.3 增加可选真实基础设施 smoke test 命令或脚本说明，验证 PostgreSQL、Milvus Lite 和阿里 embedding 可用时的 add/search 闭环。
 - [x] 6.4 运行 `.venv/bin/python -m pytest`，确认默认无真实外部服务环境通过。

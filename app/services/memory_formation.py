@@ -20,7 +20,12 @@ from app.schemas.memory import (
     MemoryFormationTrigger,
     MemoryFormationTurn,
 )
-from app.schemas.turns import CanonicalTurn, TurnCapsule, TurnStatus
+from app.schemas.turns import (
+    CanonicalTurn,
+    FormationEligibilitySnapshot,
+    TurnCapsule,
+    TurnStatus,
+)
 
 _MAX_CAPSULE_REFS = 50
 _MAX_CAPSULE_REF_CHARS = 128
@@ -349,7 +354,8 @@ class TurnOutboxFormationConsumer:
             turn = await self.turn_repository.get_internal(event.turn_id)
             if turn is None:
                 raise ValueError("Canonical Turn referenced by Outbox does not exist")
-            skip_reason = self._skip_reason()
+            self._validate_event_owner(event, turn)
+            skip_reason = self._skip_reason(event)
             if skip_reason:
                 await self._record_skip(turn, reason=skip_reason)
                 await self._complete(event, now=now)
@@ -369,12 +375,32 @@ class TurnOutboxFormationConsumer:
             )
             return {"status": "retry", "processed": 0}
 
-    def _skip_reason(self) -> str | None:
+    def _skip_reason(self, event) -> str | None:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        eligibility = payload.get("formation_eligibility")
+        if eligibility is not None:
+            snapshot = FormationEligibilitySnapshot.model_validate(eligibility)
+            if snapshot.suppressed:
+                return snapshot.reason_code
         if self.settings.memory_execution_mode == "decision_shadow":
             return "decision_shadow_no_memory_side_effect"
         if self.settings.memory_formation_mode == "off":
             return "formation_mode_off"
         return None
+
+    @staticmethod
+    def _validate_event_owner(event, turn: CanonicalTurn) -> None:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        expected = {
+            "turn_id": turn.turn_id,
+            "tenant_id": turn.tenant_id,
+            "user_id": turn.user_id,
+            "request_id": turn.request_id,
+        }
+        for key, value in expected.items():
+            supplied = payload.get(key)
+            if supplied is not None and supplied != value:
+                raise ValueError("Turn Outbox ownership mismatch")
 
     async def _record_skip(self, turn: CanonicalTurn, *, reason: str) -> None:
         digest = hashlib.sha256(f"{turn.turn_id}\x1f{reason}".encode()).hexdigest()

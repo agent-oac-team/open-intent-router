@@ -37,8 +37,10 @@ from host_apps.oac.dependencies import (
 class RoutingPort:
     def __init__(self, action: str = "open_agent") -> None:
         self.action = action
+        self.last_request = None
 
     async def route(self, request):
+        self.last_request = request
         agent_id = "agent-1" if self.action in {"open_agent", "continue_agent"} else None
         plan = None
         if self.action == "show_plan":
@@ -209,8 +211,14 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
         principal_type="user",
         tenant_id="oac",
         user_id=user_id,
-        groups=("operator",),
+        groups=(),
         credential_class="oac_user",
+        claims_version="oac-principal-v1",
+        roles=("operator",),
+        active_bundle_id="oac-operations",
+        policy_version="oac-authz-v1",
+        signature_version="v2",
+        request_operation="route",
     )
     app = FastAPI()
     app.include_router(router)
@@ -233,7 +241,8 @@ def test_route_issues_ticket_and_completed_event_consumes_it() -> None:
         json={
             "request_id": "request-1",
             "session_id": "session-1",
-            "user_id": "forged-user",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
             "source": "central_chat",
             "user_query": "hello",
         },
@@ -347,6 +356,7 @@ def test_route_fallback_requires_not_accepted_proof(
             "request_id": "request-fallback",
             "session_id": "session-1",
             "user_id": "trusted-user",
+            "user_tags": ["运营版"],
             "source": "central_chat",
             "user_query": "hello",
         },
@@ -408,7 +418,8 @@ def test_legacy_agent_event_without_ticket_requires_unique_server_mapping() -> N
         json={
             "request_id": "request-1",
             "session_id": "session-1",
-            "user_id": "ignored",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
             "source": "central_chat",
             "user_query": "hello",
         },
@@ -447,7 +458,8 @@ def test_central_route_e2e_covers_all_legacy_actions(action, expects_ticket) -> 
     body = {
         "request_id": "request-1",
         "session_id": "session-1",
-        "user_id": "ignored",
+        "user_id": "trusted-user",
+        "user_tags": ["运营版"],
         "source": "agent_chat" if action == "continue_agent" else "central_chat",
         "user_query": "hello",
     }
@@ -467,7 +479,8 @@ def test_completed_agent_event_retry_returns_duplicate_without_second_effect() -
         json={
             "request_id": "request-1",
             "session_id": "session-1",
-            "user_id": "ignored",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
             "source": "central_chat",
             "user_query": "hello",
         },
@@ -484,3 +497,75 @@ def test_completed_agent_event_retry_returns_duplicate_without_second_effect() -
     second = client.post("/api/v1/central/events/agent", json=payload)
     assert first.json()["duplicate"] is False
     assert second.json()["duplicate"] is True
+
+
+def test_v2_route_projects_bundle_entitlement_and_rejects_body_mismatch() -> None:
+    client, _, _ = _client()
+    identity = TrustedHostIdentity(
+        key_id="key-v2",
+        audience="test",
+        principal_type="user",
+        tenant_id="oac",
+        user_id="trusted-user",
+        groups=(),
+        credential_class="oac_user",
+        claims_version="oac-principal-v1",
+        roles=("operator",),
+        active_bundle_id="oac-operations",
+        policy_version="oac-authz-v1",
+    )
+    client.app.dependency_overrides[get_trusted_host_identity] = lambda: identity
+    client.app.dependency_overrides[get_oac_host_settings] = lambda: OacHostSettings(
+        _env_file=None,
+        execution_ticket_secret="test-secret",
+    )
+    body = {
+        "request_id": "request-v2",
+        "session_id": "session-1",
+        "user_id": "trusted-user",
+        "user_tags": ["运营版"],
+        "source": "central_chat",
+        "user_query": "hello",
+    }
+    response = client.post("/api/v1/central/route", json=body)
+    assert response.status_code == 200
+    routing = client.app.dependency_overrides[get_oac_adapter_application_ports]().routing
+    assert routing.last_request.user.roles == ["operator"]
+    assert routing.last_request.user.entitlements == ["workspace.operations.access"]
+
+    mismatch = client.post(
+        "/api/v1/central/route",
+        json={**body, "request_id": "mismatch", "user_tags": ["展业版"]},
+    )
+    assert mismatch.status_code == 403
+    assert mismatch.json() == {"detail": "host_claims_mismatch"}
+
+
+def test_central_route_v2_gate_rejects_v1_identity() -> None:
+    client, _, _ = _client()
+    client.app.dependency_overrides[get_trusted_host_identity] = lambda: TrustedHostIdentity(
+        key_id="legacy-key",
+        audience="test",
+        principal_type="user",
+        tenant_id="oac",
+        user_id="trusted-user",
+        groups=("operator",),
+        credential_class="oac_user",
+    )
+    client.app.dependency_overrides[get_oac_host_settings] = lambda: OacHostSettings(
+        _env_file=None,
+        execution_ticket_secret="test-secret",
+    )
+    response = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-v1",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "hello",
+        },
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "host_authentication_failed"}

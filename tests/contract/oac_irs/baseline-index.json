@@ -1,6 +1,6 @@
 {
   "contract": "oac-irs-migration-baseline/v1",
-  "generated_at": "2026-07-16T11:37:11.518065+00:00",
+  "generated_at": "2026-07-20T08:39:23.901562+00:00",
   "irs_source_revision": "348cf93fa3441108481631b7768d5ab7670c706e",
   "oac_source_revision": "cd97c1b with working-tree evidence at 2026-07-16",
   "counts": {
@@ -14,8 +14,8 @@
   "artifacts": [
     {
       "path": "README.md",
-      "sha256": "da8003c6fd65031ddffa7b574ae65ef5549ace02ee899122663e7846d2296648",
-      "bytes": 1884
+      "sha256": "cb3adfc631611a737164578b4aebb455e49dc7aebf93748e6a0b16c9f245f0cf",
+      "bytes": 1921
     },
     {
       "path": "execution-ticket/v1/README.md",
@@ -38,14 +38,19 @@
       "bytes": 7729
     },
     {
-      "path": "identity/v1/contract.json",
-      "sha256": "7bf917104fe07035b450d472301510a40ca95ac9813400ea4da8476035898d9a",
-      "bytes": 2915
+      "path": "golden/route/v2/permission-dataset.json",
+      "sha256": "e2b3222b6c4b155142e7697256072bf7108c2d580ae4098251fe20e103c236b8",
+      "bytes": 2619
     },
     {
-      "path": "identity/v1/topology-validation.md",
-      "sha256": "44dddf876a92b156cfd7bc602206c7ff4e31117212d87bb186ee345d3a66a0a4",
-      "bytes": 2719
+      "path": "identity/v2/contract.json",
+      "sha256": "1f293078a1b0bd4ed6637c7e040827f6b670a68149a1aebd36e8711387ddabcd",
+      "bytes": 3418
+    },
+    {
+      "path": "identity/v2/topology-validation.md",
+      "sha256": "6a10b7cf9135fef724b1fe3947c92cf30e06cbc92d85ddb3e0508fab5e3a726b",
+      "bytes": 2444
     },
     {
       "path": "irs-baseline/v1/contract-differences.md",

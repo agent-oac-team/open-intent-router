@@ -4,14 +4,17 @@ import asyncio
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, select, text
 
 from app.core.redaction import redact_text, redact_value
 from app.db.models import (
+    CanonicalTurnModel,
     MemoryEventModel,
     MemoryFormationJobModel,
+    MemoryFormationTurnModel,
     MemoryIndexOperationModel,
     MemoryItemModel,
+    TurnOutboxModel,
 )
 from app.repositories.json_utils import loads
 from app.repositories.memory_revisions import DatabaseMemoryRevisionLedgerRepository
@@ -24,6 +27,7 @@ from app.schemas.memory import (
     MemoryFormationTraceView,
     MemoryItem,
     MemoryMetricsResponse,
+    MemoryRequestTraceView,
     MemoryRevisionView,
     MemoryRuntimeHealth,
     MemoryTraceLinks,
@@ -60,6 +64,8 @@ class MemoryObservabilityService:
         trace_repository,
         runtime_status=None,
         maintenance_status=None,
+        turn_repository=None,
+        outbox_repository=None,
     ) -> None:
         self.settings = settings
         self.memory_service = memory_service
@@ -69,6 +75,8 @@ class MemoryObservabilityService:
         self.trace_repository = trace_repository
         self.runtime_status = runtime_status
         self.maintenance_status = maintenance_status
+        self.turn_repository = turn_repository
+        self.outbox_repository = outbox_repository
         revision_repository = getattr(memory_service.lifecycle_store, "revision_repository", None)
         if revision_repository is None:
             session_factory = getattr(memory_service.lifecycle_store, "session_factory", None)
@@ -231,12 +239,21 @@ class MemoryObservabilityService:
             )
             revisions.extend(_safe_revision(value) for value in values)
         links = _context_trace_links(events)
+        request_trace = await self._request_trace(
+            request_id=request_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            traces=safe_traces,
+            items=items,
+            events=events,
+        )
         return MemoryDebugResponse(
             items=[_safe_item(item) for item in items],
             revisions=revisions[:limit],
             events=[_safe_event(event) for event in events],
             formation_traces=safe_traces,
             context_trace_links=links,
+            request_trace=request_trace,
             metadata={
                 "memory_enabled": self.settings.memory_enabled,
                 "strategy_provider": self.settings.memory_strategy_provider,
@@ -252,10 +269,153 @@ class MemoryObservabilityService:
             },
         )
 
+    async def _request_trace(
+        self,
+        *,
+        request_id: str | None,
+        tenant_id: str,
+        user_id: str | None,
+        traces: list[MemoryFormationTraceView],
+        items: list[MemoryItem],
+        events: list[MemoryEvent],
+    ) -> MemoryRequestTraceView | None:
+        if not request_id or not user_id or self.turn_repository is None:
+            return None
+        turn = await self.turn_repository.get_by_request(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
+        if turn is None:
+            return MemoryRequestTraceView(
+                request_id=request_id,
+                overall_stage="trace_missing",
+                retryable=True,
+                reason_code="canonical_turn_missing",
+            )
+        outboxes = await self._turn_outboxes(turn.turn_id)
+        formation_turns = await self._formation_turns(request_id, tenant_id, user_id)
+        memory_ids = sorted(
+            {
+                *[item.memory_id for item in items],
+                *[memory_id for trace in traces for memory_id in trace.links.memory_ids],
+            }
+        )[:100]
+        revision_ids = sorted(
+            {
+                *[item.current_revision_id for item in items if item.current_revision_id],
+                *[revision_id for trace in traces for revision_id in trace.revision_ids],
+            }
+        )[:100]
+        index_operations = []
+        for memory_id in memory_ids:
+            index_operations.extend(
+                await self.index_repository.list_for_memory(
+                    memory_id, tenant_id=tenant_id, limit=20
+                )
+            )
+        stage, terminal, retryable, reason = _request_trace_stage(
+            turn_status=turn.status.value,
+            outboxes=outboxes,
+            formation_turns=formation_turns,
+            traces=traces,
+            items=items,
+            index_operations=index_operations,
+            events=events,
+        )
+        timestamps = [turn.updated_at]
+        timestamps.extend(value.updated_at for value in outboxes if value.updated_at)
+        timestamps.extend(trace.job.updated_at for trace in traces)
+        return MemoryRequestTraceView(
+            request_id=request_id,
+            overall_stage=stage,
+            terminal=terminal,
+            retryable=retryable,
+            reason_code=_safe_error(reason),
+            turn_id=turn.turn_id,
+            turn_status=turn.status.value,
+            run_ids=list(turn.references.run_ids[:100]),
+            result_ids=list(turn.references.result_ids[:100]),
+            outbox_ids=[value.outbox_id for value in outboxes[:100]],
+            formation_turn_ids=[value.turn_id for value in formation_turns[:100]],
+            formation_job_ids=[trace.job.job_id for trace in traces[:100]],
+            memory_ids=memory_ids,
+            revision_ids=revision_ids,
+            index_operation_ids=sorted({value.index_operation_id for value in index_operations})[
+                :100
+            ],
+            updated_at=max(timestamps) if timestamps else None,
+        )
+
+    async def _turn_outboxes(self, turn_id: str):
+        if self.outbox_repository is None:
+            return []
+        values = getattr(self.outbox_repository, "events", None)
+        if values is not None:
+            return sorted(
+                [
+                    event.model_copy(deep=True)
+                    for event in values.values()
+                    if event.turn_id == turn_id
+                ],
+                key=lambda event: event.created_at or event.available_at,
+            )
+        session_factory = getattr(self.outbox_repository, "session_factory", None)
+        if session_factory is None:
+            return []
+        from app.repositories.turn_outbox import _event_from_row
+
+        async with session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(TurnOutboxModel).where(TurnOutboxModel.turn_id == turn_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [_event_from_row(row) for row in rows]
+
+    async def _formation_turns(self, request_id: str, tenant_id: str, user_id: str):
+        values = getattr(self.formation_repository, "turns", None)
+        if values is not None:
+            return [
+                turn.model_copy(deep=True)
+                for turn in values.values()
+                if turn.request_id == request_id
+                and turn.tenant_id == tenant_id
+                and turn.user_id == user_id
+            ]
+        session_factory = getattr(self.formation_repository, "session_factory", None)
+        if session_factory is None:
+            return []
+        from app.repositories.memory_formation import _turn_from_row
+
+        async with session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryFormationTurnModel).where(
+                            MemoryFormationTurnModel.request_id == request_id,
+                            MemoryFormationTurnModel.tenant_id == tenant_id,
+                            MemoryFormationTurnModel.user_id == user_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [_turn_from_row(row) for row in rows]
+
     async def health(self) -> MemoryRuntimeHealth:
         snapshot = await self._snapshot()
         return MemoryRuntimeHealth(
             worker_state=_worker_state(self.runtime_status, self.maintenance_status, self.settings),
+            pending_turn_count=snapshot["pending_turn_count"],
+            outbox_pending_count=snapshot["outbox_pending_count"],
+            outbox_oldest_pending_seconds=snapshot["outbox_oldest_pending_seconds"],
+            trace_missing_count=snapshot["trace_missing_count"],
             queue_depth=snapshot["queue_depth"],
             oldest_pending_seconds=snapshot["oldest_pending_seconds"],
             dead_letter_count=snapshot["formation_dead_letters"],
@@ -272,9 +432,11 @@ class MemoryObservabilityService:
         )
 
     async def metrics(self) -> MemoryMetricsResponse:
+        pipeline = await self._canonical_pipeline_snapshot()
         session_factory = getattr(self.formation_repository, "session_factory", None)
         if session_factory is not None:
-            return await _database_metrics(session_factory)
+            response = await _database_metrics(session_factory)
+            return response.model_copy(update=pipeline)
         data = await self._metric_rows()
         formation_series = _formation_metric_series(data)
         job_counts = Counter(f"{row['trigger']}:{row['status']}" for row in data["jobs"])
@@ -393,7 +555,79 @@ class MemoryObservabilityService:
             ),
             recall_used=recall_used,
             oldest_pending_seconds=_oldest_age(pending),
+            **pipeline,
         )
+
+    async def _canonical_pipeline_snapshot(self) -> dict:
+        empty = {
+            "pending_turn_count": 0,
+            "outbox_pending_count": 0,
+            "outbox_oldest_pending_seconds": None,
+            "trace_missing_count": 0,
+        }
+        if self.turn_repository is None or self.outbox_repository is None:
+            return empty
+        session_factory = getattr(self.turn_repository, "session_factory", None)
+        if session_factory is not None:
+            async with session_factory() as session:
+                pending_turn_count = await session.scalar(
+                    select(func.count())
+                    .select_from(CanonicalTurnModel)
+                    .where(
+                        CanonicalTurnModel.status.in_(("pending", "routing", "running", "blocked"))
+                    )
+                )
+                outbox_pending_count = await session.scalar(
+                    select(func.count())
+                    .select_from(TurnOutboxModel)
+                    .where(TurnOutboxModel.status.in_(("pending", "claimed", "retry")))
+                )
+                oldest_outbox = await session.scalar(
+                    select(func.min(TurnOutboxModel.available_at)).where(
+                        TurnOutboxModel.status.in_(("pending", "claimed", "retry"))
+                    )
+                )
+                trace_missing_count = await session.scalar(
+                    select(func.count())
+                    .select_from(CanonicalTurnModel)
+                    .where(
+                        CanonicalTurnModel.status == "completed",
+                        ~exists(
+                            select(TurnOutboxModel.outbox_id).where(
+                                TurnOutboxModel.turn_id == CanonicalTurnModel.turn_id
+                            )
+                        ),
+                    )
+                )
+            return {
+                "pending_turn_count": int(pending_turn_count or 0),
+                "outbox_pending_count": int(outbox_pending_count or 0),
+                "outbox_oldest_pending_seconds": (
+                    _oldest_age([oldest_outbox]) if oldest_outbox is not None else None
+                ),
+                "trace_missing_count": int(trace_missing_count or 0),
+            }
+
+        turns = getattr(self.turn_repository, "turns", {})
+        outboxes = getattr(self.outbox_repository, "events", {})
+        active_outboxes = [
+            event for event in outboxes.values() if event.status in {"pending", "claimed", "retry"}
+        ]
+        outbox_turn_ids = {event.turn_id for event in outboxes.values()}
+        return {
+            "pending_turn_count": sum(
+                turn.status.value in {"pending", "routing", "running", "blocked"}
+                for turn in turns.values()
+            ),
+            "outbox_pending_count": len(active_outboxes),
+            "outbox_oldest_pending_seconds": _oldest_age(
+                [event.available_at for event in active_outboxes]
+            ),
+            "trace_missing_count": sum(
+                turn.status.value == "completed" and turn.turn_id not in outbox_turn_ids
+                for turn in turns.values()
+            ),
+        }
 
     async def _filtered_items(
         self,
@@ -584,9 +818,10 @@ class MemoryObservabilityService:
         )
 
     async def _snapshot(self) -> dict:
+        pipeline = await self._canonical_pipeline_snapshot()
         session_factory = getattr(self.formation_repository, "session_factory", None)
         if session_factory is not None:
-            return await _database_health_snapshot(session_factory)
+            return {**(await _database_health_snapshot(session_factory)), **pipeline}
         data = await self._metric_rows()
         pending = [
             row["created_at"]
@@ -610,6 +845,7 @@ class MemoryObservabilityService:
                 row["lifecycle_status"] == "deletion_pending" for row in data["items"]
             ),
             "last_safe_error": _safe_error(max(errors)[1]) if errors else None,
+            **pipeline,
         }
 
     async def _metric_rows(self) -> dict[str, list[dict]]:
@@ -1279,6 +1515,77 @@ def _metric_scopes(summary) -> list[str]:
     }
     values = sorted({value for value in raw if isinstance(value, str) and value in allowed})
     return values or ["unknown"]
+
+
+def _request_trace_stage(
+    *,
+    turn_status: str,
+    outboxes,
+    formation_turns,
+    traces: list[MemoryFormationTraceView],
+    items: list[MemoryItem],
+    index_operations,
+    events: list[MemoryEvent],
+) -> tuple[str, bool, bool, str | None]:
+    if turn_status in {"pending", "routing"}:
+        return "turn_pending", False, True, None
+    if turn_status in {"running", "blocked"}:
+        return "turn_running", False, True, None
+    if turn_status != "completed":
+        return "turn_failed", True, False, f"turn_{turn_status}"
+
+    dead_outbox = next((value for value in outboxes if value.status == "dead_letter"), None)
+    if dead_outbox is not None:
+        return "outbox_dead_letter", True, False, dead_outbox.last_error_code
+    retry_outbox = next((value for value in outboxes if value.status == "retry"), None)
+    if retry_outbox is not None:
+        return "outbox_retry", False, True, retry_outbox.last_error_code
+    if any(value.status in {"pending", "claimed"} for value in outboxes):
+        return "outbox_pending", False, True, None
+
+    skipped = next((event for event in events if event.event_type == "formation_skipped"), None)
+    if skipped is not None:
+        reason = skipped.payload.get("reason_code") if isinstance(skipped.payload, dict) else None
+        return "formation_skipped", True, False, reason
+
+    if not formation_turns:
+        reason = "formation_turn_missing" if outboxes else "turn_outbox_missing"
+        return "trace_missing", False, True, reason
+    if not traces:
+        if any(value.status == "skipped" for value in formation_turns):
+            return "formation_skipped", True, False, "formation_turn_skipped"
+        return "formation_pending", False, True, None
+
+    dead_job = next((trace for trace in traces if trace.job.status == "dead_letter"), None)
+    if dead_job is not None:
+        return "formation_dead_letter", True, False, dead_job.job.last_error_code
+    retry_job = next((trace for trace in traces if trace.job.status == "retry"), None)
+    if retry_job is not None:
+        return "formation_retry", False, True, retry_job.job.last_error_code
+    if any(trace.job.status in {"pending", "claimed"} for trace in traces):
+        return "formation_pending", False, True, None
+
+    if items:
+        dead_index = next(
+            (value for value in index_operations if value.status == "dead_letter"), None
+        )
+        if dead_index is not None:
+            return "index_dead_letter", True, False, dead_index.last_error_code
+        retry_index = next((value for value in index_operations if value.status == "retry"), None)
+        if retry_index is not None:
+            return "index_retry", False, True, retry_index.last_error_code
+        if all(str(item.index_status) == "ready" for item in items):
+            return "persisted", True, False, None
+        return "memory_persisted_index_pending", False, True, None
+
+    if all(trace.candidate_count == 0 for trace in traces):
+        return "completed_no_candidate", True, False, None
+    accepted = any(
+        decision.decision_status == "accepted" for trace in traces for decision in trace.decisions
+    )
+    if not accepted:
+        return "policy_rejected", True, False, None
+    return "trace_missing", False, True, "accepted_memory_missing"
 
 
 def _formation_metric_series(data: dict[str, list[dict]]) -> dict[str, dict]:

@@ -8,12 +8,12 @@ import hmac
 import json
 from pathlib import Path
 
-CONTRACT = Path("tests/contract/oac_irs/identity/v1/contract.json")
+CONTRACT = Path("tests/contract/oac_irs/identity/v2/contract.json")
 
 
 def _signature(secret: str, canonical: str) -> str:
     digest = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
-    return f"v1={digest}"
+    return f"v2={digest}"
 
 
 def _timestamp_allowed(now: int, timestamp: int, max_clock_skew_seconds: int) -> bool:

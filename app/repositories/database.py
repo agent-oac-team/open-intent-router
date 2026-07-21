@@ -6,6 +6,7 @@ from sqlalchemy import and_, case, delete, desc, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.errors import RegistryVersionConflict
+from app.core.redaction import redact_value
 from app.db.models import (
     AgentDefinitionModel,
     AgentEventModel,
@@ -15,6 +16,7 @@ from app.db.models import (
     ConversationEventModel,
     PlanModel,
     PlanStepModel,
+    RegistryRevisionModel,
     RouteLogModel,
 )
 from app.repositories.json_utils import dumps, loads
@@ -22,6 +24,8 @@ from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
 from app.schemas.plans import Plan, PlanStep
+from app.schemas.registry_audit import RegistryAuditRecord
+from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.sessions import ChatMessage
 
 
@@ -105,6 +109,70 @@ class DatabaseAgentDefinitionRepository:
             )
             await session.commit()
             return bool(result.rowcount)
+
+    async def mutate(self, command: RegistryMutationCommand) -> RegistryMutationResult:
+        async with self.session_factory() as session, session.begin():
+            row = await session.scalar(
+                select(AgentDefinitionModel)
+                .where(AgentDefinitionModel.agent_id == command.agent_id)
+                .with_for_update()
+            )
+            before = _agent_from_row(row) if row is not None else None
+            current_revision = before.revision if before is not None else 0
+            if current_revision != command.expected_revision:
+                raise RegistryVersionConflict("Agent revision conflict")
+
+            if command.operation == "create":
+                if row is not None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                after = command.definition.model_copy(update={"revision": 1})
+                row = AgentDefinitionModel(**_agent_values(after, source="database"))
+                session.add(row)
+            elif command.operation == "update":
+                if row is None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                after = command.definition.model_copy(update={"revision": current_revision + 1})
+                for key, value in _agent_values(after, source="database").items():
+                    setattr(row, key, value)
+            elif command.operation in {"enable", "disable"}:
+                if row is None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                row.enabled = command.operation == "enable"
+                row.revision = current_revision + 1
+                after = before.model_copy(
+                    update={
+                        "enabled": command.operation == "enable",
+                        "revision": current_revision + 1,
+                    }
+                )
+            else:
+                if row is None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                after = None
+                await session.delete(row)
+
+            revision = after.revision if after is not None else current_revision + 1
+            audit = _mutation_audit(command, before=before, after=after, revision=revision)
+            session.add(
+                RegistryRevisionModel(
+                    revision_id=audit.revision_id,
+                    agent_id=audit.agent_id,
+                    revision=audit.revision,
+                    operation=audit.operation,
+                    operator_id=audit.operator_id,
+                    source=audit.source,
+                    before_text=dumps(audit.before) if audit.before is not None else None,
+                    after_text=dumps(audit.after) if audit.after is not None else None,
+                    created_at=audit.created_at,
+                )
+            )
+            await session.flush()
+            return RegistryMutationResult(
+                operation=command.operation,
+                before=before,
+                after=after,
+                audit=audit,
+            )
 
 
 class DatabaseMessageRepository:
@@ -843,6 +911,26 @@ def _agent_values(definition: AgentDefinition, *, source: str) -> dict:
         "metadata_text": dumps(definition.metadata),
         "source": source,
     }
+
+
+def _mutation_audit(
+    command: RegistryMutationCommand,
+    *,
+    before: AgentDefinition | None,
+    after: AgentDefinition | None,
+    revision: int,
+) -> RegistryAuditRecord:
+    return RegistryAuditRecord(
+        revision_id=command.revision_id,
+        agent_id=command.agent_id,
+        revision=revision,
+        operation=command.operation,
+        operator_id=command.actor_id,
+        source=command.source,
+        before=redact_value(before.model_dump(mode="json")) if before else None,
+        after=redact_value(after.model_dump(mode="json")) if after else None,
+        created_at=command.created_at,
+    )
 
 
 def _agent_from_row(row: AgentDefinitionModel) -> AgentDefinition:

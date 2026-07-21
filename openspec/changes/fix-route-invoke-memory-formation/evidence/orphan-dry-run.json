@@ -1,0 +1,30 @@
+{
+  "contract": "orphan-turn-reconcile/v1",
+  "dry_run": true,
+  "tenant_id": "tenant_a",
+  "user_id": "u1",
+  "records": [
+    {
+      "turn_id": "turn_910f02e1f06f4a1b90926cf3454c06ec",
+      "request_id": "req_13f95b1e21f2445cb6c49fe4e752e37b",
+      "category": "repairable_skipped",
+      "reason_code": "formation_suppressed",
+      "run_id": "run_7de64c6a329940e4997f58069217f609",
+      "result_id": "result_658e20b99d0c43a88421d4ab9d5bf7d2",
+      "result_status": "completed"
+    },
+    {
+      "turn_id": "turn_cb990df99f7c460d9dcf465d2de1b2de",
+      "request_id": "req_f5178fa0cdd54114831aee647080c3af",
+      "category": "repairable_enabled",
+      "reason_code": "unique_completed_result",
+      "run_id": "run_dd33edce24064efaa602687d4718a3df",
+      "result_id": "result_c3b2a729040e44f998663b48efa9013f",
+      "result_status": "completed"
+    }
+  ],
+  "counts": {
+    "repairable_enabled": 1,
+    "repairable_skipped": 1
+  }
+}

@@ -32,8 +32,8 @@ The current visual test UI is useful for debugging raw route and invocation payl
   - `web/src/types.ts`
   - `web/src/App.test.tsx`
 - Documentation:
-  - `docs/visual-test-ui.md`
-  - `docs/中控能力设计文档.md` only if implementation discovers a confirmed design correction
+  - `docs/App-Desc/interfaces/visual-test-ui.md`
+  - `docs/App-Research/designs/中控能力设计文档.md` only if implementation discovers a confirmed design correction
 - Backend:
   - No API contract change.
   - No schema change.

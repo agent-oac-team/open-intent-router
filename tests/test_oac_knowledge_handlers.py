@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
+import hmac
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,13 +17,17 @@ from host_adapters.oac.api.knowledge import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.fallback.circuit import CircuitBreaker
 from host_adapters.oac.fallback.gateway import IRSFallbackGateway
-from host_adapters.oac.identity.models import TrustedHostIdentity
+from host_adapters.oac.identity.canonical import canonicalize_host_request
+from host_adapters.oac.identity.models import SignedHostRequest, TrustedHostIdentity
 from host_apps.oac.dependencies import (
+    get_host_identity_verifier,
+    get_host_nonce_store,
     get_irs_fallback_gateway,
     get_irs_legacy_client,
     get_oac_adapter_application_ports,
     get_trusted_host_identity,
 )
+from host_apps.oac.main import create_app as create_oac_host_app
 
 
 async def _service() -> KnowledgeAssetService:
@@ -160,6 +167,92 @@ def test_coze_cannot_use_knowledge_admin_and_admin_can_upload_text() -> None:
     )
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
+
+
+def test_multipart_upload_crosses_real_host_verifier_with_wire_body_binding() -> None:
+    boundary = "oir-host-signature-boundary"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="source_name"\r\n\r\n'
+        "wire-body-fixture\r\n"
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="business_domain"\r\n\r\n'
+        "transport-test\r\n"
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="file"; filename="wire.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\n"
+        "signed multipart body\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+    timestamp = str(int(time.time()))
+    signed = SignedHostRequest(
+        method="POST",
+        path="/api/v1/admin/knowledge/files",
+        query="",
+        body=body,
+        key_id="test-admin-key",
+        audience="oac-oir-adapter-local",
+        timestamp=timestamp,
+        nonce="bm9uY2UtbXVsdGlwYXJ0LTAwMQ",
+        content_sha256=hashlib.sha256(body).hexdigest(),
+        principal_type="user",
+        user_id="admin-wire-1",
+        groups="",
+        credential_class="oac_admin",
+        signature="v2=" + "0" * 64,
+        claims_version="oac-admin-principal-v1",
+        roles="",
+        active_bundle_id="",
+        policy_version="oac-control-v1",
+    )
+    digest = hmac.new(
+        b"test-admin-secret",
+        canonicalize_host_request(signed, tenant_id="oac").encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "X-OIR-Host-Key-Id": signed.key_id,
+        "X-OIR-Host-Audience": signed.audience,
+        "X-OIR-Host-Timestamp": signed.timestamp,
+        "X-OIR-Host-Nonce": signed.nonce,
+        "X-OIR-Host-Content-SHA256": signed.content_sha256,
+        "X-OIR-Host-Principal-Type": signed.principal_type,
+        "X-OIR-Host-User-Id": signed.user_id,
+        "X-OIR-Host-Groups": "",
+        "X-OIR-Host-Credential-Class": signed.credential_class,
+        "X-OIR-Host-Claims-Version": signed.claims_version,
+        "X-OIR-Host-Roles": "",
+        "X-OIR-Host-Active-Bundle-Id": "",
+        "X-OIR-Host-Policy-Version": signed.policy_version,
+        "X-OIR-Host-Signature": f"v2={digest}",
+    }
+
+    service = asyncio.run(_service())
+    ports = OacAdapterApplicationPorts(
+        routing=SimpleNamespace(),
+        knowledge=SimpleNamespace(),
+        knowledge_assets=service,
+        registry=SimpleNamespace(load=lambda: None),
+        events=SimpleNamespace(),
+        plans=SimpleNamespace(),
+        delegated_runs=SimpleNamespace(),
+        turns=SimpleNamespace(),
+    )
+    get_host_identity_verifier.cache_clear()
+    get_host_nonce_store.cache_clear()
+    app = create_oac_host_app()
+    app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
+    try:
+        response = TestClient(app).post(
+            "/api/v1/admin/knowledge/files", content=body, headers=headers
+        )
+    finally:
+        get_host_identity_verifier.cache_clear()
+        get_host_nonce_store.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["asset"]["owner"] == "admin-wire-1"
 
 
 def test_coze_search_uses_irs_fallback_only_after_oir_read_failure() -> None:

@@ -17,6 +17,7 @@ from app.schemas.agents import (
     CandidateAgent,
 )
 from app.schemas.common import UserContext
+from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 
 RegistryStatus = Literal["ok", "degraded", "error"]
 
@@ -91,6 +92,12 @@ class AgentRegistryService:
         deleted = await repository.delete(agent_id, expected_revision=expected_revision)
         await self.reload()
         return deleted
+
+    async def mutate_definition(self, command: RegistryMutationCommand) -> RegistryMutationResult:
+        repository = self._require_writable_repository()
+        result = await repository.mutate(command)
+        await self.reload()
+        return result
 
     async def list_public(self) -> AgentListResponse:
         return AgentListResponse(

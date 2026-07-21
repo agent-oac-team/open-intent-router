@@ -83,13 +83,14 @@ def get_host_identity_verifier() -> HostIdentityVerifier:
         tenant_id=settings.tenant_id,
         keys=keys,
         key_credential_classes=key_credential_classes,
-        allowed_groups=settings.allowed_groups,
         nonce_store=get_host_nonce_store(),
     )
 
 
 async def get_trusted_host_identity(request: Request) -> TrustedHostIdentity:
-    body = await request.body()
+    body = request.scope.get("oac_host_wire_body")
+    if body is None:
+        body = await request.body()
     headers = request.headers
     signed = SignedHostRequest(
         method=request.method,
@@ -106,6 +107,10 @@ async def get_trusted_host_identity(request: Request) -> TrustedHostIdentity:
         groups=headers.get("X-OIR-Host-Groups", ""),
         credential_class=headers.get("X-OIR-Host-Credential-Class", ""),
         signature=headers.get("X-OIR-Host-Signature", ""),
+        claims_version=headers.get("X-OIR-Host-Claims-Version", ""),
+        roles=headers.get("X-OIR-Host-Roles", ""),
+        active_bundle_id=headers.get("X-OIR-Host-Active-Bundle-Id", ""),
+        policy_version=headers.get("X-OIR-Host-Policy-Version", ""),
     )
     try:
         return await get_host_identity_verifier().verify(signed)

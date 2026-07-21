@@ -10,7 +10,7 @@
 - `oac-sequences/v1`：OAC 新请求、直接回复、Agent、Plan、Event 和重试时序。
 - `golden/route/v1`：8 种 action 和权限/意图维度 Route Golden Dataset。
 - `golden/knowledge/v1`：Search/Grouped/Read/Assets/Chunks 与 6 份原始文件语义基线。
-- `identity/v1`：OAC Host HMAC 身份、重放防护和 key rotation 契约。
+- `identity/v2`：OAC Host HMAC current-only Envelope、credential profiles、重放防护和 key rotation 契约。
 - `execution-ticket/v1`：Ticket Wire/运行态字段位置和向后兼容规则。
 - `migration-records`：接口差异、URL 矩阵、IRS 性能基线与切换阈值。
 - `baseline-index.json`：以上文件的 SHA-256 和数量清单。

@@ -64,6 +64,7 @@ def _ensure_compatible_columns(sync_conn) -> None:
     if "plans" in tables:
         _ensure_plan_ownership(sync_conn, inspector, tables, dialect=dialect)
     _ensure_context_owner_columns(sync_conn, inspector, tables, dialect=dialect)
+    _ensure_canonical_pipeline_indexes(sync_conn, tables)
 
 
 def _column_names(inspector, table_name: str) -> set[str]:
@@ -135,6 +136,29 @@ def _context_owner_column_definitions(dialect: str) -> dict[str, dict[str, str]]
             "run_state_version": "INTEGER",
         },
     }
+
+
+def _ensure_canonical_pipeline_indexes(sync_conn, tables: set[str]) -> None:
+    statements = {
+        "canonical_turns": (
+            {"tenant_id", "user_id", "status", "updated_at"},
+            "CREATE INDEX IF NOT EXISTS idx_canonical_turns_owner_status_updated "
+            "ON canonical_turns (tenant_id, user_id, status, updated_at)",
+        ),
+        "agent_runs": (
+            {"tenant_id", "user_id", "request_id", "status"},
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_owner_request_status "
+            "ON agent_runs (tenant_id, user_id, request_id, status)",
+        ),
+        "agent_results": (
+            {"tenant_id", "user_id", "run_id", "status"},
+            "CREATE INDEX IF NOT EXISTS idx_agent_results_owner_run_status "
+            "ON agent_results (tenant_id, user_id, run_id, status)",
+        ),
+    }
+    for table, (required_columns, statement) in statements.items():
+        if table in tables and required_columns <= _column_names(inspect(sync_conn), table):
+            sync_conn.execute(text(statement))
 
 
 def _ensure_memory_item_columns(sync_conn, inspector) -> None:

@@ -10,23 +10,61 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
 from app.db.models import (
+    AgentResultModel,
+    AgentRunModel,
     Base,
+    CanonicalTurnModel,
+    MemoryEventModel,
     MemoryFormationJobModel,
     MemoryFormationTurnModel,
     MemoryIndexOperationModel,
     MemoryItemModel,
     MemoryRevisionModel,
+    TurnOutboxModel,
 )
 from app.db.session import _ensure_compatible_columns, create_all_tables, create_session_factory
+from app.llm.conversation_formation import (
+    ConversationFormationResponse,
+    FakeConversationFormationModel,
+)
+from app.repositories.canonical_invocations import DatabaseCanonicalInvocationStore
 from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.memory_formation import DatabaseMemoryFormationTurnJobRepository
 from app.repositories.memory_index_operations import DatabaseMemoryIndexOutboxRepository
 from app.repositories.memory_revisions import DatabaseMemoryRevisionLedgerRepository
-from app.schemas.memory import MemoryFormationTurn, MemoryIndexOperation, MemoryItem, MemoryRevision
+from app.repositories.memory_traces import DatabaseMemoryFormationTraceRepository
+from app.repositories.turn_outbox import DatabaseTurnOutboxRepository
+from app.repositories.turns import DatabaseTurnRepository
+from app.schemas.common import UserContext
+from app.schemas.logs import AgentResult, AgentRun
+from app.schemas.memory import (
+    MemoryCandidateSemantics,
+    MemoryEvidenceRef,
+    MemoryFormationCandidate,
+    MemoryFormationTurn,
+    MemoryIndexOperation,
+    MemoryItem,
+    MemoryRecallRequest,
+    MemoryRevision,
+)
+from app.schemas.turns import FormationEligibilitySnapshot, TurnUserInput
+from app.services.memory_adapter import (
+    MemoryIndexOperationResult,
+    MemoryProviderOperationStatus,
+    RepositoryMemoryAdapter,
+)
+from app.services.memory_candidate_policy import MemoryCandidatePolicy
 from app.services.memory_formation import (
     FormationIdleSweeper,
+    FormationJobWorker,
     FormationTriggerCoordinator,
+    TurnCapsuleBuilder,
+    TurnOutboxFormationConsumer,
 )
+from app.services.memory_integration import MemoryFormationProcessor
+from app.services.memory_observability import MemoryObservabilityService
+from app.services.memory_service import MemoryService
+from app.services.turn_service import TurnService
 
 
 def _postgresql_url() -> str:
@@ -250,6 +288,195 @@ def _run_schema_migration(sync_conn) -> None:
     _ensure_compatible_columns(sync_conn)
 
 
+class _ReadyDatabaseMemoryAdapter(RepositoryMemoryAdapter):
+    async def execute_index_operation(self, operation, *, item):
+        return MemoryIndexOperationResult(
+            operation=operation.operation,
+            status=MemoryProviderOperationStatus.SUCCESS,
+            memory_id=operation.memory_id,
+            external_memory_id=f"pg-index:{operation.memory_id}",
+        )
+
+
+async def test_real_postgresql_route_turn_to_recall_pork_preference() -> None:
+    suffix = uuid4().hex
+    tenant_id = f"pg_route_memory_tenant_{suffix}"
+    user_id = f"pg_route_memory_user_{suffix}"
+    session_id = f"pg_route_memory_session_{suffix}"
+    request_id = f"pg_route_memory_request_{suffix}"
+    settings = Settings(
+        storage_backend="database",
+        database_url=_postgresql_url(),
+        memory_strategy_provider="memory",
+        memory_formation_mode="enforced",
+        memory_formation_window_turns=1,
+        memory_formation_model_timeout_seconds=1,
+    )
+    await create_all_tables(settings)
+    factory = create_session_factory(settings)
+    turns = DatabaseTurnRepository(factory)
+    formation = DatabaseMemoryFormationTurnJobRepository(factory)
+    memories = DatabaseMemoryItemRepository(factory)
+    adapter = _ReadyDatabaseMemoryAdapter(memories)
+    memory = MemoryService(
+        settings=settings,
+        repository=memories,
+        adapter=adapter,
+        formation_repository=formation,
+    )
+    try:
+        started = await TurnService(turns).start_turn(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=request_id,
+            source="host_chat",
+            user_input=TurnUserInput(
+                text="明天要拜访一位关注稳健理财的客户，帮我做访前准备。我喜欢吃猪肉。"
+            ),
+        )
+        store = DatabaseCanonicalInvocationStore(factory)
+        now = datetime.now(UTC)
+        run, _, _ = await store.start_run(
+            AgentRun(
+                run_id=f"pg_route_memory_run_{suffix}",
+                request_id=request_id,
+                session_id=session_id,
+                agent_id="visit-preparation",
+                user_id=user_id,
+                tenant_id=tenant_id,
+                status="running",
+                invoker_type="mock",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        _, _, completed_turn = await store.complete_run(
+            run=run.model_copy(update={"status": "completed", "output": {"ok": True}}),
+            result=AgentResult(
+                result_id=f"pg_route_memory_result_{suffix}",
+                run_id=run.run_id,
+                session_id=session_id,
+                agent_id=run.agent_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                status="completed",
+                message="访前准备已完成",
+                output={"ok": True},
+                created_at=now,
+            ),
+            response_text="访前准备已完成",
+            eligibility=FormationEligibilitySnapshot(
+                mode="enforced",
+                policy_version="pg-route-memory-v1",
+            ),
+        )
+        assert completed_turn.turn_id == started.turn.turn_id
+
+        consumer = TurnOutboxFormationConsumer(
+            settings=settings,
+            outbox_repository=DatabaseTurnOutboxRepository(factory),
+            turn_repository=turns,
+            builder=TurnCapsuleBuilder(settings),
+            coordinator=FormationTriggerCoordinator(settings=settings, repository=formation),
+            event_repository=memories,
+            owner=f"pg-consumer-{suffix}",
+        )
+        assert (await consumer.run_once())["status"] == "captured"
+        candidate = MemoryFormationCandidate(
+            candidate_id=f"pg_pork_candidate_{suffix}",
+            proposed_operation="add",
+            scope="user_preference",
+            content="User likes eating pork.",
+            structured_value={"slot": "food_preference", "value": "pork"},
+            semantic=MemoryCandidateSemantics(
+                target="assistant_response",
+                slot="food_preference",
+                value="pork",
+                temporal_scope="long_term",
+                polarity="affirmed",
+                certainty="certain",
+                change_intent="set",
+            ),
+            subject_id_hint=user_id,
+            tenant_id_hint=tenant_id,
+            memory_key_hint="food_preference",
+            confidence=0.99,
+            evidence_refs=[
+                MemoryEvidenceRef(
+                    turn_id=completed_turn.turn_id,
+                    role="user",
+                    quote="我喜欢吃猪肉",
+                )
+            ],
+            reason="deterministic PostgreSQL E2E preference",
+        )
+        processor = MemoryFormationProcessor(
+            repository=formation,
+            memory_repository=memories,
+            model=FakeConversationFormationModel(
+                ConversationFormationResponse(candidates=[candidate])
+            ),
+            policy=MemoryCandidatePolicy(settings=settings, repository=memories),
+            lifecycle=memory.lifecycle,
+        )
+        job = await FormationJobWorker(
+            settings=settings,
+            repository=formation,
+            processor=processor,
+            owner=f"pg-formation-{suffix}",
+        ).run_once()
+        assert job is not None and job.status.value == "completed"
+        assert job.trace_summary.get("operation_counts") == {"add": 1}
+
+        indexed = await memory.index_worker.run_once()
+        assert indexed is not None and indexed.completed is True
+        assert await memory.index_worker.run_once() is None
+        formed = await memories.list_active(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            scopes=["user_preference"],
+            limit=10,
+        )
+        assert len(formed) == 1
+        assert formed[0].content == "User likes eating pork."
+        assert formed[0].index_status == "ready"
+
+        recall = await memory.recall(
+            MemoryRecallRequest(
+                query="我喜欢吃什么？",
+                user=UserContext(id=user_id, attributes={"tenant_id": tenant_id}),
+                scopes=["user_preference"],
+                metadata_filters={
+                    "request_id": f"pg_route_memory_recall_{suffix}",
+                    "session_id": session_id,
+                    "consumer": "agent:visit-preparation",
+                },
+            )
+        )
+        assert [item.memory_id for item in recall.context.items] == [formed[0].memory_id]
+
+        debug = await MemoryObservabilityService(
+            settings=settings,
+            memory_service=memory,
+            formation_repository=formation,
+            trace_repository=DatabaseMemoryFormationTraceRepository(factory),
+            turn_repository=turns,
+            outbox_repository=DatabaseTurnOutboxRepository(factory),
+        ).debug_state(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
+        assert debug.request_trace is not None
+        assert debug.request_trace.overall_stage == "persisted"
+        assert debug.request_trace.turn_id == completed_turn.turn_id
+        assert debug.request_trace.memory_ids == [formed[0].memory_id]
+    finally:
+        await _cleanup(factory, tenant_id=tenant_id)
+        await factory.kw["bind"].dispose()
+
+
 async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> None:
     suffix = uuid4().hex
     tenant_id = f"pg_acceptance_tenant_{suffix}"
@@ -434,14 +661,22 @@ def _revision(memory_id: str, memory_key: str, content: str, revision_id: str) -
 async def _cleanup(session_factory, *, tenant_id: str) -> None:
     async with session_factory() as session:
         memory_ids = select(MemoryItemModel.memory_id).where(MemoryItemModel.tenant_id == tenant_id)
+        turn_ids = select(CanonicalTurnModel.turn_id).where(
+            CanonicalTurnModel.tenant_id == tenant_id
+        )
+        await session.execute(delete(TurnOutboxModel).where(TurnOutboxModel.turn_id.in_(turn_ids)))
         await session.execute(
             delete(MemoryRevisionModel).where(MemoryRevisionModel.memory_id.in_(memory_ids))
         )
         for model in (
+            MemoryEventModel,
             MemoryIndexOperationModel,
             MemoryFormationJobModel,
             MemoryFormationTurnModel,
             MemoryItemModel,
+            AgentResultModel,
+            AgentRunModel,
+            CanonicalTurnModel,
         ):
             await session.execute(delete(model).where(model.tenant_id == tenant_id))
         await session.commit()

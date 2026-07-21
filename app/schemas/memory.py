@@ -566,12 +566,32 @@ class MemoryCleanupResult(StrictBaseModel):
     expired_count: int = 0
 
 
+class MemoryRequestTraceView(StrictBaseModel):
+    request_id: str
+    overall_stage: str = Field(min_length=1, max_length=64)
+    terminal: bool = False
+    retryable: bool = False
+    reason_code: str | None = Field(default=None, max_length=128)
+    turn_id: str | None = None
+    turn_status: str | None = Field(default=None, max_length=32)
+    run_ids: list[str] = Field(default_factory=list, max_length=100)
+    result_ids: list[str] = Field(default_factory=list, max_length=100)
+    outbox_ids: list[str] = Field(default_factory=list, max_length=100)
+    formation_turn_ids: list[str] = Field(default_factory=list, max_length=100)
+    formation_job_ids: list[str] = Field(default_factory=list, max_length=100)
+    memory_ids: list[str] = Field(default_factory=list, max_length=100)
+    revision_ids: list[str] = Field(default_factory=list, max_length=100)
+    index_operation_ids: list[str] = Field(default_factory=list, max_length=100)
+    updated_at: datetime | None = None
+
+
 class MemoryDebugResponse(StrictBaseModel):
     items: list[MemoryItem] = Field(default_factory=list)
     revisions: list[MemoryRevisionView] = Field(default_factory=list)
     events: list[MemoryEvent] = Field(default_factory=list)
     formation_traces: list[MemoryFormationTraceView] = Field(default_factory=list)
     context_trace_links: list[MemoryTraceLinks] = Field(default_factory=list)
+    request_trace: MemoryRequestTraceView | None = None
     metadata: JsonDict = Field(default_factory=dict)
 
 
@@ -609,6 +629,10 @@ class MemoryAdminActionRequest(StrictBaseModel):
 
 class MemoryRuntimeHealth(StrictBaseModel):
     worker_state: str
+    pending_turn_count: int = Field(default=0, ge=0)
+    outbox_pending_count: int = Field(default=0, ge=0)
+    outbox_oldest_pending_seconds: float | None = Field(default=None, ge=0)
+    trace_missing_count: int = Field(default=0, ge=0)
     queue_depth: int = Field(default=0, ge=0)
     oldest_pending_seconds: float | None = Field(default=None, ge=0)
     dead_letter_count: int = Field(default=0, ge=0)
@@ -637,6 +661,10 @@ class MemoryMetricsResponse(StrictBaseModel):
     decision_rates: dict[str, float] = Field(default_factory=dict)
     retries: int = Field(default=0, ge=0)
     dead_letters: int = Field(default=0, ge=0)
+    pending_turn_count: int = Field(default=0, ge=0)
+    outbox_pending_count: int = Field(default=0, ge=0)
+    outbox_oldest_pending_seconds: float | None = Field(default=None, ge=0)
+    trace_missing_count: int = Field(default=0, ge=0)
     queue_latency_ms_total: int = Field(default=0, ge=0)
     job_latency_ms_total: int = Field(default=0, ge=0)
     model_latency_ms_total: int = Field(default=0, ge=0)

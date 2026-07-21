@@ -181,7 +181,12 @@ async def list_knowledge_assets(
     async def primary() -> LegacyAssetListResponse:
         assets = await ports.knowledge_assets.list_assets(tenant_id=identity.tenant_id)
         visible = []
+        user = _user(identity)
         for asset in assets:
+            if asset.deleted_at is not None or not asset.access_policy.allows(
+                user, identity.tenant_id
+            ):
+                continue
             result = await ports.knowledge_assets.exact_read(
                 ExactReadRequest(
                     tenant_id=identity.tenant_id,
@@ -192,6 +197,8 @@ async def list_knowledge_assets(
             )
             if result.assets:
                 visible.append(admin_asset(result.assets[0], chunk_count=len(result.chunks)))
+            else:
+                visible.append(admin_asset(asset, chunk_count=0))
         return LegacyAssetListResponse(request_id=request_id, items=visible, total=len(visible))
 
     async def fallback() -> LegacyAssetListResponse:
@@ -335,14 +342,14 @@ async def get_knowledge_chunk(
 
 @router.post("/api/v1/admin/knowledge/files", response_model=LegacyAdminMutationResponse)
 async def upload_knowledge_file(
+    identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
+    ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
     file: UploadFile = File(...),
     source_name: str = Form(...),
     business_domain: str = Form(default=""),
     sensitivity: str = Form(default="internal"),
     allowed_user_tags: str = Form(default=""),
     replace_asset_id: str | None = Form(default=None),
-    identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
-    ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
 ) -> LegacyAdminMutationResponse:
     _authorize(identity, "control_write")
     data = await file.read()

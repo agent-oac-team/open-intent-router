@@ -2,7 +2,7 @@
 
 `open-intent-router` 是一个轻量级、可插拔的意图识别与 Agent 编排后端，面向多 Agent 应用、企业内部工具、AI 工作流入口和需要统一路由层的智能应用。
 
-它帮助宿主应用接收自然语言请求，识别用户意图，筛选可用 Agent / Tool / Workflow，返回结构化路由决策，并在需要时执行基础的后端调用。同时，项目提供会话上下文、事件、计划、执行结果和路由日志等后端能力。
+它帮助宿主应用接收自然语言请求，识别用户意图，筛选可用 Agent / Tool / Workflow，返回结构化路由决策，并在需要时执行后端调用。同时，项目提供受治理上下文、Canonical Turn、事件、计划、执行结果、长期记忆、知识检索和路由日志等能力。
 
 ## 适合解决的问题
 
@@ -15,15 +15,15 @@
 
 ## 不适合解决的问题
 
-- 不提供前端控制台或可视化搭建器。
-- 不内置飞书、多维表格、OAC、银行私行业务等专有系统耦合。
-- 不在 MVP 中内置 Coze、Dify、FastGPT、LangGraph 等平台适配器。
+- 不提供生产级前端控制台或可视化搭建器；`web/` 仅是本地开发测试台。
+- OIR Core 不内置飞书、多维表格、OAC 或银行业务耦合；OAC 专有契约隔离在 Host Adapter。
+- Core 不内置 Coze、Dify、FastGPT、LangGraph 等平台适配器。
 - 不替代 LangChain / LangGraph 的工作流编排能力，而是作为上游意图路由与调用入口。
-- 不提供完整知识库管理、向量索引构建或分布式任务调度系统。
+- 不提供通用知识库 SaaS 控制面或分布式任务调度平台；当前知识资产能力服务于 OIR 治理与 OAC 兼容接入。
 
-## MVP 范围
+## 当前能力
 
-当前已经实现的核心能力：
+当前已经实现：
 
 - FastAPI 后端服务。
 - 通用 Agent Definition Schema。
@@ -32,22 +32,27 @@
 - OpenAI-compatible LLM Client 和 Mock LLM。
 - 基础 Invoker：`mock`、`http`、`local_function`、`ui_handoff`。
 - 会话消息、Agent 事件、Agent Run / Result、Plan 和 Route Log。
+- Governed Context Pipeline，以及 Router / Agent 的预算、投影和 Trace。
+- Canonical Turn、Transactional Outbox、Delegated Run 和幂等收口。
+- PostgreSQL canonical memory lifecycle、自动 Formation 和可重建的 mem0 / Milvus 派生索引。
+- PostgreSQL canonical knowledge asset / chunk / import job，以及受治理检索和 Milvus 派生索引。
 - Admin Token 保护的注册表变更接口；local loopback 可选择免 token 开发。
 - 可选 Evidence Provider 插件，以及文件型固定问题命中插件。
 - 本地可视化测试 UI，用于配置 Agent/Intent 和对话调试。
+- 同仓 OAC Host Runtime，提供 IRS 兼容 API、`OIR-HOST-V2` 身份、Execution Ticket、Shadow、Fallback 和 Cutover 治理。
 
-暂未纳入 MVP 的能力：
+当前明确不提供：
 
 - 飞书同步注册表。
-- Coze / Dify / FastGPT / LangGraph 内置适配器。
-- Milvus 索引和完整知识文件管理。
-- 分布式 Worker。
+- OIR Core 内置的 Coze / Dify / FastGPT / LangGraph Adapter。
+- 通用低代码搭建器、生产管理控制台或完整知识平台。
+- 分布式任务 Worker / 调度集群。
 - 复杂会话状态机。
 
 ## 快速开始
 
 ```bash
-cd /Users/lijingtong/project/open_intent_router
+cd open_intent_router
 python -m venv .venv
 . .venv/bin/activate
 pip install -e ".[test]"
@@ -71,12 +76,12 @@ uvicorn app.main:app --reload
 
 ## 可视化测试 UI
 
-本地测试 UI 位于 [web](/Users/lijingtong/project/open_intent_router/web)，用于配置 Agent/Intent、切换 route-only / route-and-invoke 测试路径，并通过对话框查看 RouteResponse、InvocationResult、Evidence、UI Handoff 和 Plan。
+本地测试 UI 位于 [web](web)，用于配置 Agent/Intent、切换 route-only / route-and-invoke 测试路径，并通过对话框查看 RouteResponse、InvocationResult、Evidence、UI Handoff 和 Plan。
 
 启动前端：
 
 ```bash
-cd /Users/lijingtong/project/open_intent_router/web
+cd web
 npm install
 npm run dev
 ```
@@ -172,7 +177,7 @@ Agent 查询：
 
 OpenAI-compatible 路由器的 Prompt 已从 LLM Client 中拆出，默认配置文件位于：
 
-- [config/prompts/router.zh.yaml](/Users/lijingtong/project/open_intent_router/config/prompts/router.zh.yaml)
+- [config/prompts/router.zh.yaml](config/prompts/router.zh.yaml)
 
 可通过环境变量指定其他 Prompt 文件：
 
@@ -185,7 +190,7 @@ Prompt 模板支持两个字段：
 - `system_prompt`：系统提示词。
 - `user_template`：用户消息模板，使用 `{payload_json}` 占位符注入结构化路由输入。
 
-如果配置文件不存在，系统会回退到 [app/prompts/router_prompt.py](/Users/lijingtong/project/open_intent_router/app/prompts/router_prompt.py) 中的默认 Prompt。
+如果配置文件不存在，系统会回退到 [app/prompts/router_prompt.py](app/prompts/router_prompt.py) 中的默认 Prompt。
 
 ## Context Pack 预算配置
 
@@ -248,14 +253,11 @@ ROUTER_LLM_API_KEY=replace-with-real-key
 
 ## 文档
 
-- 需求分析：[docs/开源意图识别项目需求分析文档.md](/Users/lijingtong/project/open_intent_router/docs/开源意图识别项目需求分析文档.md)
-- Agent 定义：[docs/agent-definition.md](/Users/lijingtong/project/open_intent_router/docs/agent-definition.md)
-- API 概览：[docs/api.md](/Users/lijingtong/project/open_intent_router/docs/api.md)
-- CI/CD 验收：[docs/ci-cd-acceptance.md](/Users/lijingtong/project/open_intent_router/docs/ci-cd-acceptance.md)
-- 可视化测试 UI：[docs/visual-test-ui.md](/Users/lijingtong/project/open_intent_router/docs/visual-test-ui.md)
-- Evidence Provider：[docs/evidence-provider.md](/Users/lijingtong/project/open_intent_router/docs/evidence-provider.md)
-- OAC 迁移说明：[docs/oac-migration.md](/Users/lijingtong/project/open_intent_router/docs/oac-migration.md)
-- 中控系统交付说明：[docs/中控系统交付说明.md](/Users/lijingtong/project/open_intent_router/docs/中控系统交付说明.md)
+- [文档中心](docs/README.md)：全部文档的权威级别、阅读路径和维护规则。
+- [App-Desc 应用地图](docs/App-Desc/README.md)：模块、运行入口、依赖方向、事实源和治理区域。
+- [App-Adr 应用规约](docs/App-Adr/README.md)：研发 / 测试标准、作用域约束和技能目录。
+- [App-Research 研究索引](docs/App-Research/README.md)：需求、设计、会议和历史验收材料。
+- [API 概览](docs/App-Desc/contracts/api.md) 与 [Agent 定义](docs/App-Desc/contracts/agent-definition.md)：Native 契约快速入口。
 
 ## CI/CD 验收
 
@@ -275,7 +277,7 @@ cd web && npm ci && npm run test && npm run build
 openspec validate <change-name> --strict
 ```
 
-Workflow 文件只会产生 GitHub checks；要让它们真正阻止合并，需要在 GitHub repository settings 中把 `backend-regression`、`python-static-checks`、`frontend-regression`、`openspec-validation` 配置为 protected branch 的 required status checks。详细设置见 [docs/ci-cd-acceptance.md](/Users/lijingtong/project/open_intent_router/docs/ci-cd-acceptance.md)。
+Workflow 文件只会产生 GitHub checks；要让它们真正阻止合并，需要在 GitHub repository settings 中把 `backend-regression`、`python-static-checks`、`frontend-regression`、`openspec-validation` 配置为 protected branch 的 required status checks。详细设置见 [docs/App-Adr/test/test-standards/ci-cd-acceptance.md](docs/App-Adr/test/test-standards/ci-cd-acceptance.md)。
 
 ## 设计原则
 

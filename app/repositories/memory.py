@@ -3,16 +3,21 @@ import hashlib
 from datetime import UTC, datetime
 
 from app.core.errors import RegistryVersionConflict
+from app.core.redaction import redact_value
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
 from app.schemas.plans import Plan
+from app.schemas.registry_audit import RegistryAuditRecord
+from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.sessions import ChatMessage
 
 
 class MemoryAgentDefinitionRepository:
     def __init__(self, agents: list[AgentDefinition] | None = None) -> None:
         self.agents = {agent.agent_id: agent for agent in agents or []}
+        self.registry_audit: list[RegistryAuditRecord] = []
+        self._mutation_lock = asyncio.Lock()
 
     async def list(self, *, enabled_only: bool = False) -> list[AgentDefinition]:
         values = list(self.agents.values())
@@ -52,6 +57,54 @@ class MemoryAgentDefinitionRepository:
             if current.revision != expected_revision:
                 raise RegistryVersionConflict("Agent revision conflict")
         return self.agents.pop(agent_id, None) is not None
+
+    async def mutate(self, command: RegistryMutationCommand) -> RegistryMutationResult:
+        async with self._mutation_lock:
+            before = self.agents.get(command.agent_id)
+            current_revision = before.revision if before is not None else 0
+            if current_revision != command.expected_revision:
+                raise RegistryVersionConflict("Agent revision conflict")
+            if command.operation in {"create", "update"}:
+                if command.operation == "create" and before is not None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                if command.operation == "update" and before is None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                after = command.definition.model_copy(update={"revision": current_revision + 1})
+                self.agents[command.agent_id] = after
+            elif command.operation in {"enable", "disable"}:
+                if before is None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                after = before.model_copy(
+                    update={
+                        "enabled": command.operation == "enable",
+                        "revision": current_revision + 1,
+                    }
+                )
+                self.agents[command.agent_id] = after
+            else:
+                if before is None:
+                    raise RegistryVersionConflict("Agent revision conflict")
+                after = None
+                del self.agents[command.agent_id]
+            revision = after.revision if after is not None else current_revision + 1
+            audit = RegistryAuditRecord(
+                revision_id=command.revision_id,
+                agent_id=command.agent_id,
+                revision=revision,
+                operation=command.operation,
+                operator_id=command.actor_id,
+                source=command.source,
+                before=redact_value(before.model_dump(mode="json")) if before else None,
+                after=redact_value(after.model_dump(mode="json")) if after else None,
+                created_at=command.created_at,
+            )
+            self.registry_audit.append(audit)
+            return RegistryMutationResult(
+                operation=command.operation,
+                before=before,
+                after=after,
+                audit=audit,
+            )
 
 
 class MemoryMessageRepository:

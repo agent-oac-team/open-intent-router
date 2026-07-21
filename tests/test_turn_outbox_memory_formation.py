@@ -24,7 +24,12 @@ from app.repositories.turn_route_completion import (
 from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
 from app.schemas.common import UserContext
 from app.schemas.memory import MemoryRecallRequest
-from app.schemas.turns import CanonicalTurn, TurnOutboxEvent, TurnUserInput
+from app.schemas.turns import (
+    CanonicalTurn,
+    FormationEligibilitySnapshot,
+    TurnOutboxEvent,
+    TurnUserInput,
+)
 from app.services.memory_formation import (
     FormationTriggerCoordinator,
     TurnCapsuleBuilder,
@@ -160,6 +165,50 @@ async def test_outbox_consumer_audits_mode_off_without_memory_side_effect(
     assert formation.turns == {}
     assert formation.jobs == {}
     assert events.events[0].payload == {"reason_code": reason, "source": "turn_outbox"}
+
+
+async def test_outbox_consumer_honors_persisted_suppression_after_mode_changes() -> None:
+    settings = _settings(memory_formation_mode="enforced")
+    turns, outbox, _, completed = await _completed_turn_with_outbox(settings)
+    original = next(iter(outbox.events.values()))
+    snapshot = FormationEligibilitySnapshot(
+        mode="off",
+        suppressed=True,
+        reason_code="formation_mode_off",
+        policy_version="formation-policy-v1",
+    )
+    outbox.events[original.outbox_id] = original.model_copy(
+        update={
+            "payload": {
+                "turn_id": completed.turn_id,
+                "tenant_id": completed.tenant_id,
+                "user_id": completed.user_id,
+                "request_id": completed.request_id,
+                "formation_eligibility": snapshot.model_dump(mode="json"),
+            }
+        }
+    )
+    formation = MemoryFormationTurnJobRepository()
+    events = MemoryItemRepository()
+    consumer = TurnOutboxFormationConsumer(
+        settings=settings,
+        outbox_repository=outbox,
+        turn_repository=turns,
+        builder=TurnCapsuleBuilder(settings),
+        coordinator=FormationTriggerCoordinator(settings=settings, repository=formation),
+        event_repository=events,
+        owner="consumer-snapshot",
+    )
+
+    result = await consumer.run_once()
+
+    assert result == {
+        "status": "skipped",
+        "processed": 1,
+        "reason": "formation_mode_off",
+    }
+    assert formation.turns == {}
+    assert events.events[0].payload["reason_code"] == "formation_mode_off"
 
 
 async def test_database_route_completion_writes_turn_and_outbox_atomically(tmp_path) -> None:

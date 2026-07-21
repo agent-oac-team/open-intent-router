@@ -98,7 +98,7 @@
 ## 12. 兼容、文档与验收
 
 - [x] 12.1 完成 `tests/test_context_backward_compatibility.py`，覆盖现有 Route、Plan、Invocation、assistant message、Evidence override、Memory/Knowledge 和错误契约无破坏性回归
-- [x] 12.2 更新 `docs/api.md`、`docs/中控能力设计文档.md` 和上下文调试文档，说明 Candidate/Pack/Projection/Trace、rollout mode、直接回复和非目标边界
+- [x] 12.2 更新 `docs/App-Desc/contracts/api.md`、`docs/App-Research/designs/中控能力设计文档.md` 和上下文调试文档，说明 Candidate/Pack/Projection/Trace、rollout mode、直接回复和非目标边界
 - [x] 12.3 更新 runtime/debug 状态说明和 rollback 操作，明确 rollback 不放宽 Agent/Memory/Knowledge 权限
 - [x] 12.4 运行 `.venv/bin/python -m pytest` 并确保现有与新增后端测试全部通过
 - [x] 12.5 运行 `.venv/bin/python -m ruff check .` 和 `.venv/bin/python -m ruff format --check .`

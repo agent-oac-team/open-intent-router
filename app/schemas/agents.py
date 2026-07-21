@@ -1,11 +1,18 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.core.redaction import redact_value
 from app.schemas.agent_context import AgentContextSpec
-from app.schemas.common import AgentType, JsonDict, SchemaContract, StrictBaseModel, UserContext
+from app.schemas.common import (
+    AgentType,
+    JsonDict,
+    SchemaContract,
+    StrictBaseModel,
+    UserContext,
+    normalize_entitlements,
+)
 
 
 class TriggerSpec(StrictBaseModel):
@@ -21,7 +28,13 @@ class AccessPolicy(StrictBaseModel):
     deny_roles: list[str] = Field(default_factory=list)
     deny_groups: list[str] = Field(default_factory=list)
     deny_tenants: list[str] = Field(default_factory=list)
+    any_entitlements: list[str] = Field(default_factory=list)
     required_attributes: JsonDict = Field(default_factory=dict)
+
+    @field_validator("any_entitlements", mode="before")
+    @classmethod
+    def normalize_any_entitlements(cls, value: Any) -> list[str]:
+        return normalize_entitlements(value)
 
     def allows(self, user: UserContext) -> bool:
         tenant_id = user.tenant_id
@@ -39,6 +52,8 @@ class AccessPolicy(StrictBaseModel):
         if self.allow_tenants and "*" not in self.allow_tenants:
             if not tenant_id or tenant_id not in self.allow_tenants:
                 return False
+        if self.any_entitlements and not (set(user.entitlements) & set(self.any_entitlements)):
+            return False
 
         for key, expected in self.required_attributes.items():
             if user.attributes.get(key) != expected:

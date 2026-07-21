@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -18,6 +19,7 @@ from app.db.models import (
     PlanStepModel,
 )
 from app.db.session import create_all_tables, create_session_factory
+from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
 from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.database import DatabasePlanRepository
 from app.repositories.memory_formation import DatabaseMemoryFormationTurnJobRepository
@@ -121,6 +123,16 @@ async def main() -> int:
             user_id=user_id,
             suffix=suffix,
         )
+        if os.getenv("OIR_SMOKE_REAL_FORMATION") == "1":
+            await _verify_real_formation_provider(
+                settings=settings,
+                service=service,
+                repository=repository,
+                worker=worker,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                suffix=suffix,
+            )
         await _verify_plan_continuation(
             settings=settings,
             service=service,
@@ -229,6 +241,10 @@ def _preflight_error(settings: Settings) -> str | None:
         ("postgresql://", "postgresql+asyncpg://")
     ):
         return "真实 smoke 要求 STORAGE_BACKEND=database 和 PostgreSQL DATABASE_URL"
+    if os.getenv("OIR_SMOKE_REAL_FORMATION") == "1" and (
+        not settings.router_llm_base_url or not settings.router_llm_api_key
+    ):
+        return "OIR_SMOKE_REAL_FORMATION=1 要求 ROUTER_LLM_BASE_URL/ROUTER_LLM_API_KEY"
     return None
 
 
@@ -418,6 +434,103 @@ async def _verify_preference_lifecycle(
         await adapter.scan_provider_records(tenant_id=tenant_id, memory_id=added.item.memory_id)
     ).records:
         raise RuntimeError("preference delete 后 provider vector 仍存在")
+
+
+async def _verify_real_formation_provider(
+    *,
+    settings: Settings,
+    service: MemoryService,
+    repository: DatabaseMemoryItemRepository,
+    worker: MemoryIndexOperationWorker,
+    tenant_id: str,
+    user_id: str,
+    suffix: str,
+) -> None:
+    formation_settings = settings.model_copy(
+        update={
+            "memory_formation_mode": "enforced",
+            "memory_formation_window_turns": 1,
+            "memory_formation_max_attempts": 3,
+            "memory_formation_retry_base_seconds": 0.25,
+            "memory_formation_retry_max_seconds": 1.0,
+        }
+    )
+    formation = DatabaseMemoryFormationTurnJobRepository(repository.session_factory)
+    turn = _formation_turn(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        suffix=f"real_provider_{suffix}",
+        user_text="明天要拜访一位关注稳健理财的客户，帮我做访前准备。我喜欢吃猪肉。",
+    )
+    job = _formation_job(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        suffix=f"real_provider_{suffix}",
+        turn_id=turn.turn_id,
+    ).model_copy(
+        update={
+            "model_version": formation_settings.memory_formation_model_version,
+            "prompt_version": formation_settings.memory_formation_prompt_version,
+            "policy_version": formation_settings.memory_formation_policy_version,
+            "max_attempts": formation_settings.memory_formation_max_attempts,
+        }
+    )
+    await formation.append_turn(turn)
+    await formation.add_job(job)
+    processor = MemoryFormationProcessor(
+        repository=formation,
+        memory_repository=repository,
+        model=OpenAICompatibleConversationFormationModel(formation_settings),
+        policy=MemoryCandidatePolicy(settings=formation_settings, repository=repository),
+        lifecycle=service.lifecycle,
+    )
+    formation_worker = FormationJobWorker(
+        settings=formation_settings,
+        repository=formation,
+        processor=processor,
+        owner=f"smoke-real-formation-{suffix}",
+    )
+    completed = None
+    for attempt in range(formation_settings.memory_formation_max_attempts):
+        result = await formation_worker.run_once()
+        if result is not None and result.status == "completed":
+            completed = result
+            break
+        if result is not None and result.status == "dead_letter":
+            raise RuntimeError(f"真实 Formation Provider 重试耗尽: {result.last_error_code}")
+        await asyncio.sleep(min(0.25 * (2**attempt), 1.0))
+    if completed is None:
+        raise RuntimeError("真实 Formation Provider 未在受控重试内完成")
+    formed = await repository.list_active(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        scopes=["user_preference"],
+        limit=50,
+    )
+    provider_items = [item for item in formed if item.formation_job_id == job.job_id]
+    if not provider_items or not any(
+        "猪肉" in item.content or "pork" in item.content.lower() for item in provider_items
+    ):
+        raise RuntimeError("真实 Formation Provider 未形成猪肉偏好")
+    for item in provider_items:
+        await _run_until_memory_ready(
+            repository=repository,
+            worker=worker,
+            tenant_id=tenant_id,
+            memory_id=item.memory_id,
+        )
+    recalled = await service.recall(
+        MemoryRecallRequest(
+            query="我喜欢吃什么？ pork",
+            user=UserContext(id=user_id, attributes={"tenant_id": tenant_id}),
+            scopes=["user_preference"],
+            max_items=10,
+        )
+    )
+    if not {item.memory_id for item in provider_items} & {
+        item.memory_id for item in recalled.context.items
+    }:
+        raise RuntimeError("真实 Formation Provider 形成的猪肉偏好未被 mem0 召回")
 
 
 async def _verify_plan_continuation(

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.errors import RegistryVersionConflict
-from app.schemas.agents import AgentDefinition, InvocationSpec
+from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
 from host_adapters.oac.api.registry import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.identity.models import TrustedHostIdentity
@@ -18,6 +18,7 @@ from host_adapters.oac.mappers.registry import (
 )
 from host_adapters.oac.schemas.registry import RegistryAgent
 from host_apps.oac.dependencies import (
+    get_host_identity_verifier,
     get_oac_adapter_application_ports,
     get_trusted_host_identity,
 )
@@ -63,6 +64,22 @@ class RegistryPort:
             raise ValueError("revision conflict")
         return self.agents.pop(agent_id, None) is not None
 
+    async def mutate_definition(self, command):
+        if command.operation in {"create", "update"}:
+            saved = await self.upsert_definition(
+                command.definition, expected_revision=command.expected_revision
+            )
+            return SimpleNamespace(after=saved)
+        if command.operation in {"enable", "disable"}:
+            saved = await self.set_enabled(
+                command.agent_id,
+                command.operation == "enable",
+                expected_revision=command.expected_revision,
+            )
+            return SimpleNamespace(after=saved)
+        await self.delete_definition(command.agent_id, expected_revision=command.expected_revision)
+        return SimpleNamespace(after=None)
+
 
 def _fixture(name: str) -> dict:
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
@@ -94,6 +111,7 @@ def _client(*, credential_class="oac_admin", force_conflict=False) -> TestClient
     app.include_router(router)
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
+    app.state.registry = registry
     return TestClient(app)
 
 
@@ -105,7 +123,8 @@ def test_registry_fixtures_parse_and_mapper_round_trips_legacy_fields() -> None:
     assert projected == request
     assert native.invocation.provider_config == {}
     assert native.ui_handoff.route == "/fixture"
-    assert native.access_policy.allow_groups == ["运营版"]
+    assert native.access_policy.allow_groups == []
+    assert native.access_policy.any_entitlements == ["workspace.operations.access"]
     assert native.trigger.negative_examples == ["忽略"]
 
 
@@ -175,8 +194,60 @@ def test_registry_legacy_projection_does_not_expose_provider_secrets() -> None:
             type="provider_platform",
             provider_config={"bot_id": "bot-1", "access_token": "secret-token"},
         ),
+        access_policy=AccessPolicy(any_entitlements=["workspace.operations.access"]),
     )
     serialized = registry_agent_from_native(native).model_dump_json()
     assert "bot-1" in serialized
     assert "secret-token" not in serialized
     assert "access_token" not in serialized
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"allowed_user_tags": []},
+        {"allowed_user_tags": ["未知版"]},
+        {"bot_id": "", "route_path": ""},
+        {"bot_id": "bot-1", "route_path": "/fixture"},
+        {"route_path": "https://evil.example/agent"},
+    ],
+)
+def test_registry_handler_returns_stable_validation_error(updates) -> None:
+    body = {**_fixture("registry-create")["request"]["body"], **updates}
+    response = _client().post("/api/v1/admin/agent-registry", json=body)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "registry_validation_failed"}
+
+
+def test_registry_list_returns_conflict_for_unprojectable_policy() -> None:
+    client = _client()
+    client.app.state.registry.agents["foreign-policy"] = AgentDefinition(
+        agent_id="foreign-policy",
+        name="Foreign",
+        description="Cannot project to OAC tags",
+        type="provider_platform",
+        access_policy=AccessPolicy(
+            any_entitlements=["workspace.foreign.access"], allow_tenants=["oac"]
+        ),
+        invocation=InvocationSpec(type="provider_platform", provider_config={"bot_id": "bot-1"}),
+    )
+    response = client.get("/api/v1/admin/agent-registry")
+    assert response.status_code == 409
+    assert response.json() == {"detail": "registry_policy_not_legacy_projectable"}
+
+
+def test_registry_token_only_request_fails_real_host_verifier() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_oac_adapter_application_ports] = lambda: _client().app.state
+    get_host_identity_verifier.cache_clear()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/admin/agent-registry",
+            headers={"X-Admin-Sync-Token": "legacy-token"},
+        )
+    finally:
+        get_host_identity_verifier.cache_clear()
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "host_authentication_failed"}

@@ -5,6 +5,10 @@ from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
 from app.plugins.evidence import build_evidence_provider
+from app.repositories.canonical_invocations import (
+    DatabaseCanonicalInvocationStore,
+    MemoryCanonicalInvocationStore,
+)
 from app.repositories.context_stores import (
     DatabaseKnowledgeRepository,
     DatabaseMemoryItemRepository,
@@ -243,6 +247,8 @@ def get_memory_observability_service() -> MemoryObservabilityService:
         trace_repository=get_memory_trace_repository(),
         runtime_status=get_memory_formation_runtime_status(),
         maintenance_status=get_memory_maintenance_runtime_status(),
+        turn_repository=get_turn_repository(),
+        outbox_repository=get_turn_outbox_repository(),
     )
 
 
@@ -463,6 +469,24 @@ def get_invocation_service() -> InvocationService:
         structured_formation=get_structured_formation_publisher(),
         automatic_formation_enabled=settings.memory_formation_mode != "off",
         memory_service=get_memory_service(),
+        canonical_invocation_store=get_canonical_invocation_store(),
+        memory_formation_mode=settings.memory_formation_mode,
+        memory_execution_mode=settings.memory_execution_mode,
+        memory_formation_policy_version=settings.memory_formation_policy_version,
+    )
+
+
+@lru_cache
+def get_canonical_invocation_store():
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        return DatabaseCanonicalInvocationStore(create_session_factory(settings))
+    repositories = get_repository_bundle()
+    return MemoryCanonicalInvocationStore(
+        run_repository=repositories["runs"],
+        result_repository=repositories["results"],
+        turn_repository=get_turn_repository(),
+        outbox_repository=get_turn_outbox_repository(),
     )
 
 

@@ -49,8 +49,8 @@
 
 - [x] 7.1 Update the chat assistant text helper to prefer `assistant_message` and fall back to `decision.message`.
 - [x] 7.2 Keep `next_action.message`, invocation result messages, and `decision.reason` in right-side status areas rather than chat bubbles.
-- [x] 7.3 Update `docs/visual-test-ui.md` to describe the M3 chat source migration.
-- [x] 7.4 Update `docs/中控能力设计文档.md` only if implementation confirms a design correction or completed-state note.
+- [x] 7.3 Update `docs/App-Desc/interfaces/visual-test-ui.md` to describe the M3 chat source migration.
+- [x] 7.4 Update `docs/App-Research/designs/中控能力设计文档.md` only if implementation confirms a design correction or completed-state note.
 
 ## 8. Verification
 

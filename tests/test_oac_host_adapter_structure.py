@@ -12,6 +12,7 @@ from host_apps.oac.config import (
     OacHostProfile,
     OacHostSettings,
     build_oac_host_profile,
+    validate_host_credential_profiles,
     validate_registry_single_writer,
 )
 from host_apps.oac.dependencies import get_oac_adapter_application_ports
@@ -128,16 +129,43 @@ def test_host_capabilities_are_versioned_and_redacted() -> None:
         "modes",
         "dependencies",
         "governance",
+        "authorization",
     }
     assert body["governance"]["write_fence"] == "enabled"
     assert body["governance"]["circuit"] in {"closed", "open", "half_open"}
     assert set(body["versions"]) == {"adapter", "core", "schema", "policy"}
     assert set(body["modes"]) == {"knowledge", "memory", "shadow", "fallback"}
+    authorization = body["authorization"]
+    assert authorization == {
+        "current_signature_version": "v2",
+        "accepted_signature_versions": ["v2"],
+        "v1_compatibility_enabled": False,
+        "central_route_required_signature_version": "v2",
+        "claims_version": "oac-principal-v1",
+        "policy_version": "oac-authz-v1",
+        "bundle_catalog": "ok",
+        "credential_profile_catalog": "ok",
+        "signature_usage": authorization["signature_usage"],
+    }
+    assert all(
+        set(item)
+        == {
+            "signature_version",
+            "credential_class",
+            "operation",
+            "outcome",
+            "count",
+        }
+        for item in authorization["signature_usage"]
+    )
     serialized = response.text.lower()
-    assert "credential" not in serialized
     assert "signing_key" not in serialized
+    assert "key_id" not in serialized
+    assert "subject" not in serialized
+    assert 'signature":' not in serialized
     assert "token" not in serialized
     assert "ticket" not in serialized
+    assert "workspace.operations.access" not in serialized
 
 
 def test_registry_single_writer_gate_rejects_file_feishu_and_irs_restore_paths() -> None:
@@ -161,4 +189,40 @@ def test_registry_single_writer_gate_rejects_file_feishu_and_irs_restore_paths()
                 enforce_registry_single_writer=True,
                 feishu_registry_sync_enabled=True,
             ),
+        )
+
+
+def test_host_profile_rejects_claims_or_bundle_policy_version_drift() -> None:
+    with pytest.raises(ValueError, match="authorization policy version"):
+        build_oac_host_profile(
+            host=OacHostSettings(_env_file=None, authz_policy_version="unknown-policy")
+        )
+    with pytest.raises(ValueError, match="authorization policy version"):
+        build_oac_host_profile(
+            host=OacHostSettings(_env_file=None, claims_version="unknown-claims")
+        )
+
+
+def test_host_profile_requires_three_distinct_current_credentials() -> None:
+    with pytest.raises(ValueError, match="require a key"):
+        validate_host_credential_profiles(
+            OacHostProfile(
+                core=Settings(),
+                host=OacHostSettings(
+                    _env_file=None,
+                    identity_current_key_id=None,
+                    identity_current_key=None,
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="cannot cross credential classes"):
+        validate_host_credential_profiles(
+            OacHostProfile(
+                core=Settings(),
+                host=OacHostSettings(
+                    _env_file=None,
+                    identity_current_key_id="shared-key",
+                    oac_admin_key_id="shared-key",
+                ),
+            )
         )

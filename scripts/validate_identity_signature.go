@@ -22,7 +22,7 @@ type contractFile struct {
 }
 
 func main() {
-	payload, err := os.ReadFile("tests/contract/oac_irs/identity/v1/contract.json")
+	payload, err := os.ReadFile("tests/contract/oac_irs/identity/v2/contract.json")
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +37,7 @@ func main() {
 	}
 	mac := hmac.New(sha256.New, []byte(vector.Secret))
 	_, _ = mac.Write([]byte(vector.Canonical))
-	actual := "v1=" + hex.EncodeToString(mac.Sum(nil))
+	actual := "v2=" + hex.EncodeToString(mac.Sum(nil))
 	if !hmac.Equal([]byte(actual), []byte(vector.Signature)) {
 		panic("Go HMAC vector mismatch")
 	}

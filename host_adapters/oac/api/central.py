@@ -13,6 +13,7 @@ from app.schemas.execution_tickets import LegacyExecutionCorrelationQuery
 from app.schemas.turns import TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketError, ExecutionTicketService
 from host_adapters.oac.application import OacAdapterApplicationPorts
+from host_adapters.oac.authz import OAC_BUNDLE_CATALOG
 from host_adapters.oac.cutover import CutoverGuard
 from host_adapters.oac.fallback.gateway import (
     FallbackBlockedError,
@@ -21,7 +22,11 @@ from host_adapters.oac.fallback.gateway import (
 )
 from host_adapters.oac.fallback.policy import CommitStatus, classify_operation
 from host_adapters.oac.identity import HostOperation, authorize_host_operation
-from host_adapters.oac.identity.models import HostAuthorizationError, TrustedHostIdentity
+from host_adapters.oac.identity.models import (
+    HostAuthenticationError,
+    HostAuthorizationError,
+    TrustedHostIdentity,
+)
 from host_adapters.oac.mappers.central import (
     agent_event_to_native,
     navigation_event_to_native,
@@ -63,6 +68,17 @@ async def central_route(
     irs: IRSLegacyClient = Depends(get_irs_legacy_client),
 ) -> CentralRouteResponse:
     _authorize(identity, "route_stateful")
+    if not identity.claims_version:
+        raise HTTPException(status_code=401, detail="host_authentication_failed")
+    if request.user_id != identity.user_id:
+        raise HTTPException(status_code=403, detail="host_claims_mismatch")
+    if identity.active_bundle_id:
+        try:
+            legacy_tag = OAC_BUNDLE_CATALOG.by_id[identity.active_bundle_id].legacy_tag
+        except KeyError as exc:
+            raise HTTPException(status_code=401, detail="host_authentication_failed") from exc
+        if request.user_tags != [legacy_tag]:
+            raise HTTPException(status_code=403, detail="host_claims_mismatch")
     user = _user(identity)
     native_request = route_request_to_native(request, user=user)
 
@@ -381,9 +397,19 @@ async def confirm_plan(
 
 
 def _user(identity: TrustedHostIdentity) -> UserContext:
+    try:
+        entitlements = (
+            list(OAC_BUNDLE_CATALOG.entitlements_for_bundle(identity.active_bundle_id))
+            if identity.active_bundle_id
+            else []
+        )
+    except KeyError as exc:
+        raise HostAuthenticationError from exc
     return UserContext(
         id=identity.user_id,
+        roles=list(identity.roles),
         groups=list(identity.groups),
+        entitlements=entitlements,
         attributes={"tenant_id": identity.tenant_id},
     )
 

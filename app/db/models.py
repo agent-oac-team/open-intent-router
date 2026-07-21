@@ -133,6 +133,13 @@ class CanonicalTurnModel(Base):
             "status",
         ),
         Index("idx_canonical_turns_status_updated", "status", "updated_at"),
+        Index(
+            "idx_canonical_turns_owner_status_updated",
+            "tenant_id",
+            "user_id",
+            "status",
+            "updated_at",
+        ),
     )
 
     turn_id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -192,6 +199,15 @@ class TurnOutboxModel(Base):
 
 class AgentRunModel(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index(
+            "idx_agent_runs_owner_request_status",
+            "tenant_id",
+            "user_id",
+            "request_id",
+            "status",
+        ),
+    )
 
     run_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -267,6 +283,15 @@ class ExecutionTicketModel(Base):
 
 class AgentResultModel(Base):
     __tablename__ = "agent_results"
+    __table_args__ = (
+        Index(
+            "idx_agent_results_owner_run_status",
+            "tenant_id",
+            "user_id",
+            "run_id",
+            "status",
+        ),
+    )
 
     result_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     run_id: Mapped[str] = mapped_column(String(128), index=True)

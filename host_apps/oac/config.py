@@ -7,6 +7,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.config import Settings, get_settings
+from host_adapters.oac.authz import OAC_CLAIMS_VERSION, OAC_POLICY_VERSION
 
 HostEnvironment = Literal["local", "test"]
 ShadowMode = Literal["off", "decision", "state_rehearsal"]
@@ -25,6 +26,12 @@ class OacHostSettings(BaseSettings):
     adapter_version: str = "0.1.0"
     schema_version: str = "irs-contract-v1"
     policy_version: str = "oac-host-policy-v1"
+    authz_policy_version: str = "oac-authz-v1"
+    claims_version: str = "oac-principal-v1"
+    admin_claims_version: str = "oac-admin-principal-v1"
+    admin_policy_version: str = "oac-control-v1"
+    coze_claims_version: str = "oac-service-principal-v1"
+    coze_policy_version: str = "oac-readonly-v1"
 
     shadow_mode: ShadowMode = "off"
     fallback_mode: FallbackMode = "off"
@@ -110,6 +117,7 @@ def build_oac_host_profile(
     profile = OacHostProfile(core=core or get_settings(), host=host or get_oac_host_settings())
     validate_registry_single_writer(profile)
     validate_governance_profile(profile)
+    validate_host_credential_profiles(profile)
     return profile
 
 
@@ -128,6 +136,8 @@ def validate_registry_single_writer(profile: OacHostProfile) -> None:
 
 def validate_governance_profile(profile: OacHostProfile) -> None:
     host = profile.host
+    if host.claims_version != OAC_CLAIMS_VERSION or host.authz_policy_version != OAC_POLICY_VERSION:
+        raise ValueError("OAC claims or authorization policy version is unsupported")
     if host.write_fence_enabled:
         if host.oir_control_write_enabled and host.irs_control_write_enabled:
             raise ValueError("control writes cannot have dual writable primaries")
@@ -160,6 +170,33 @@ def validate_governance_profile(profile: OacHostProfile) -> None:
             raise ValueError("Cutover watermark must be an ISO-8601 datetime") from exc
         if watermark is None or watermark.tzinfo is None:
             raise ValueError("Cutover watermark must include a timezone")
+
+
+def validate_host_credential_profiles(profile: OacHostProfile) -> None:
+    host = profile.host
+    expected_versions = {
+        "user": ("oac-principal-v1", "oac-authz-v1"),
+        "admin": ("oac-admin-principal-v1", "oac-control-v1"),
+        "coze": ("oac-service-principal-v1", "oac-readonly-v1"),
+    }
+    actual_versions = {
+        "user": (host.claims_version, host.authz_policy_version),
+        "admin": (host.admin_claims_version, host.admin_policy_version),
+        "coze": (host.coze_claims_version, host.coze_policy_version),
+    }
+    if actual_versions != expected_versions:
+        raise ValueError("OAC Host credential profile versions are unsupported")
+
+    current_credentials = {
+        "oac_user": (host.identity_current_key_id, host.identity_current_key),
+        "oac_admin": (host.oac_admin_key_id, host.oac_admin_credential),
+        "coze_workflow": (host.coze_workflow_key_id, host.coze_workflow_credential),
+    }
+    if any(not key_id or credential is None for key_id, credential in current_credentials.values()):
+        raise ValueError("all current OAC Host credential profiles require a key")
+    key_ids = [key_id for key_id, _ in current_credentials.values()]
+    if len(set(key_ids)) != len(key_ids):
+        raise ValueError("OAC Host key IDs cannot cross credential classes")
 
 
 def _csv_values(value: str) -> frozenset[str]:

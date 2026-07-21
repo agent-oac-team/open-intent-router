@@ -17,6 +17,7 @@ from app.schemas.common import ErrorDetail
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
 from app.schemas.logs import AgentResult, AgentRun
 from app.schemas.routing import RouteRequest, RouteResponse
+from app.schemas.turns import FormationEligibilitySnapshot
 from app.services.memory_formation import formation_turn_id, request_prohibits_memory
 from app.services.memory_integration import (
     StructuredFormationSink,
@@ -40,6 +41,10 @@ class InvocationService:
         plan_claim_lease_seconds: float = 300,
         automatic_formation_enabled: bool | None = None,
         memory_service=None,
+        canonical_invocation_store=None,
+        memory_formation_mode: str | None = None,
+        memory_execution_mode: str = "live",
+        memory_formation_policy_version: str = "formation-policy-v1",
     ) -> None:
         self.registry = registry
         self.run_repository = run_repository
@@ -53,11 +58,17 @@ class InvocationService:
         self.memory_service = memory_service or getattr(
             agent_context_service, "memory_service", None
         )
+        self.canonical_invocation_store = canonical_invocation_store
         self.automatic_formation_enabled = (
             turn_capture is not None or structured_formation is not None
             if automatic_formation_enabled is None
             else automatic_formation_enabled
         )
+        self.memory_formation_mode = memory_formation_mode or (
+            "enforced" if self.automatic_formation_enabled else "off"
+        )
+        self.memory_execution_mode = memory_execution_mode
+        self.memory_formation_policy_version = memory_formation_policy_version
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
         definition = await self.registry.get_definition(request.agent_id)
@@ -119,7 +130,14 @@ class InvocationService:
             agent_id=preview.agent_id,
             user=route_request.user,
             input=preview.input,
-            context={"route_reason": route_response.decision.reason, **preview.metadata},
+            context={
+                "route_reason": route_response.decision.reason,
+                **preview.metadata,
+                "_canonical_turn_managed": self.canonical_invocation_store is not None,
+                "_canonical_response_text": (
+                    route_response.assistant_message or route_response.decision.message or ""
+                ),
+            },
         )
         return await self._invoke_definition(definition, invocation)
 
@@ -130,7 +148,12 @@ class InvocationService:
     ) -> AgentInvocationResult:
         invocation = await self._with_agent_context(definition, invocation)
         request_suppressed = request_prohibits_memory(invocation)
-        formation_suppressed = request_suppressed or not self.automatic_formation_enabled
+        canonical_managed = bool(invocation.context.get("_canonical_turn_managed"))
+        if canonical_managed and self.canonical_invocation_store is None:
+            raise InvocationError("Canonical invocation persistence is not configured")
+        formation_suppressed = request_suppressed or (
+            not canonical_managed and not self.automatic_formation_enabled
+        )
         started = time.perf_counter()
         started_at = datetime.now(UTC)
         run = AgentRun(
@@ -150,7 +173,16 @@ class InvocationService:
             created_at=started_at,
             updated_at=started_at,
         )
-        run = await self.run_repository.add_run(run)
+        replay_result = None
+        if canonical_managed:
+            proposed_run_id = run.run_id
+            run, _, replay_result = await self.canonical_invocation_store.start_run(run)
+            if run.run_id != proposed_run_id and replay_result is None:
+                raise InvocationError("Canonical invocation is already in progress")
+        else:
+            run = await self.run_repository.add_run(run)
+        if replay_result is not None:
+            return _invocation_result_from_record(replay_result)
         await self._link_router_recall(invocation)
         await self._publish_run(
             run,
@@ -184,12 +216,6 @@ class InvocationService:
                 "updated_at": datetime.now(UTC),
             }
         )
-        completed_run = await self.run_repository.update_run(completed_run)
-        await self._publish_run(
-            completed_run,
-            event_type=_run_event_type(result.status),
-            suppressed=formation_suppressed,
-        )
         result_record = AgentResult(
             result_id=f"result_{uuid4().hex}",
             run_id=invocation.run_id,
@@ -197,6 +223,7 @@ class InvocationService:
             agent_id=definition.agent_id,
             user_id=completed_run.user_id,
             tenant_id=completed_run.tenant_id,
+            turn_id=completed_run.turn_id,
             plan_id=_context_str(invocation.context, "plan_id"),
             step_id=_context_str(invocation.context, "step_id"),
             status=result.status,
@@ -208,7 +235,23 @@ class InvocationService:
             error=result.error.model_dump() if result.error else None,
             created_at=datetime.now(UTC),
         )
-        stored_result = await self.result_repository.add_result(result_record)
+        if canonical_managed:
+            completed_run, stored_result, _ = await self.canonical_invocation_store.complete_run(
+                run=completed_run,
+                result=result_record,
+                response_text=(
+                    _context_str(invocation.context, "_canonical_response_text") or result.message
+                ),
+                eligibility=self._formation_eligibility(request_suppressed),
+            )
+        else:
+            completed_run = await self.run_repository.update_run(completed_run)
+            stored_result = await self.result_repository.add_result(result_record)
+        await self._publish_run(
+            completed_run,
+            event_type=_run_event_type(result.status),
+            suppressed=formation_suppressed,
+        )
         await self._publish_result(
             stored_result,
             run=completed_run,
@@ -219,12 +262,31 @@ class InvocationService:
             result,
             suppress_formation=formation_suppressed,
         )
-        await self._capture_turn(
-            invocation=invocation,
-            result=result,
-            result_id=stored_result.result_id,
-        )
+        if not canonical_managed:
+            await self._capture_turn(
+                invocation=invocation,
+                result=result,
+                result_id=stored_result.result_id,
+            )
         return result
+
+    def _formation_eligibility(self, request_suppressed: bool) -> FormationEligibilitySnapshot:
+        mode = self.memory_formation_mode
+        if mode not in {"off", "observe", "enforced"}:
+            mode = "off"
+        suppressed = request_suppressed or mode == "off"
+        reason = (
+            "temporary_request"
+            if request_suppressed
+            else ("formation_mode_off" if mode == "off" else None)
+        )
+        return FormationEligibilitySnapshot(
+            mode=mode,
+            execution_mode=self.memory_execution_mode,
+            suppressed=suppressed,
+            reason_code=reason,
+            policy_version=self.memory_formation_policy_version,
+        )
 
     async def _link_router_recall(self, invocation: AgentInvocation) -> None:
         if self.memory_service is None or not invocation.user.tenant_id:
@@ -529,6 +591,20 @@ def _current_plan_step(plan):
     if not plan.current_step_id:
         return None
     return next((step for step in plan.steps if step.step_id == plan.current_step_id), None)
+
+
+def _invocation_result_from_record(result: AgentResult) -> AgentInvocationResult:
+    return AgentInvocationResult.model_validate(
+        {
+            "run_id": result.run_id,
+            "agent_id": result.agent_id,
+            "status": result.status,
+            "message": result.message,
+            "output": result.output,
+            "artifact_refs": result.artifact_refs,
+            "error": result.error,
+        }
+    )
 
 
 def _query_text(input_values: dict) -> str:

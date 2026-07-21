@@ -21,6 +21,11 @@ def create_app() -> FastAPI:
     host_app = create_oir_app(api_prefix=profile.host.native_mount_prefix)
 
     @host_app.middleware("http")
+    async def capture_host_wire_body(request: Request, call_next):
+        request.scope["oac_host_wire_body"] = await request.body()
+        return await call_next(request)
+
+    @host_app.middleware("http")
     async def enforce_write_fence(request: Request, call_next):
         try:
             operation = classify_operation(request.method, request.url.path)

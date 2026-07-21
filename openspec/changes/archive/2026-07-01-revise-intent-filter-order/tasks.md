@@ -18,7 +18,7 @@
 
 ## 3. Documentation
 
-- [x] 3.1 Update `docs/api.md` to describe the new order: access filtering, strong deterministic rules, tag/semantic observe-only signals, LLM routing.
+- [x] 3.1 Update `docs/App-Desc/contracts/api.md` to describe the new order: access filtering, strong deterministic rules, tag/semantic observe-only signals, LLM routing.
 - [x] 3.2 Update Evidence or handoff documentation to state that strong fixed-question matches are strong routes and bypass LLM when access-allowed.
 - [x] 3.3 Document that strong fixed-question matches rejected by access filtering return a no-permission prompt.
 - [x] 3.4 Update any demo or delivery docs that describe tag filtering as candidate pruning.

@@ -44,8 +44,8 @@
   - `web/src/App.test.tsx`
   - 聊天区优先展示 `assistant_message`，缺失时兼容回退到 `decision.message`；Plan 展示继续以 `plan` 存在为准。
 - Documentation:
-  - `docs/api.md`
-  - `docs/visual-test-ui.md`
-  - 必要时更新 `docs/中控能力设计文档.md` 中 M3 已落地状态。
+  - `docs/App-Desc/contracts/api.md`
+  - `docs/App-Desc/interfaces/visual-test-ui.md`
+  - 必要时更新 `docs/App-Research/designs/中控能力设计文档.md` 中 M3 已落地状态。
 - Tests:
   - Router、Mock LLM、OpenAI-compatible 解析、Prompt、前端聊天气泡和 Plan 展示测试。

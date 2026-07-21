@@ -4,6 +4,7 @@ These schemas are transport contracts and must not become OIR core schemas.
 """
 
 from host_adapters.oac.schemas.capabilities import (
+    AuthorizationCapability,
     CapabilityModes,
     CapabilityVersions,
     DependencyHealth,
@@ -12,6 +13,7 @@ from host_adapters.oac.schemas.capabilities import (
 )
 
 __all__ = [
+    "AuthorizationCapability",
     "CapabilityModes",
     "CapabilityVersions",
     "DependencyHealth",

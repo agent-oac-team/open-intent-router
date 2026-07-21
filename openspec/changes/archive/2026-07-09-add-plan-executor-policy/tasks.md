@@ -60,6 +60,6 @@
 ## 8. Documentation
 
 - [x] 8.1 Update README to describe the new plan contract and execution policies in Chinese.
-- [x] 8.2 Update `docs/api.md` with new route-and-execute and plan execution endpoints.
-- [x] 8.3 Update `docs/visual-test-ui.md` with plan execution controls.
+- [x] 8.2 Update `docs/App-Desc/contracts/api.md` with new route-and-execute and plan execution endpoints.
+- [x] 8.3 Update `docs/App-Desc/interfaces/visual-test-ui.md` with plan execution controls.
 - [x] 8.4 Document that `show_plan` is compatibility behavior and `plan` is the primary multi-intent contract.

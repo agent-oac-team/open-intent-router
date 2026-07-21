@@ -70,7 +70,7 @@ The helper should be named and isolated so M3 can switch it to prefer top-level 
 
 Rationale:
 
-- This follows the confirmed M1/M3 evolution path in `docs/中控能力设计文档.md`.
+- This follows the confirmed M1/M3 evolution path in `docs/App-Research/designs/中控能力设计文档.md`.
 - It avoids introducing backend protocol churn before M3.
 - It gives the user a real answer in the chat area while preserving route details in the inspector.
 
@@ -142,7 +142,7 @@ Alternative considered:
 3. Refactor `ResultPanel` and `PlanPanel` into a unified status inspector with tabs.
 4. Move existing route summary, evidence, invocation preview/result, UI handoff, full JSON, plan controls, and event submission into the appropriate tabs.
 5. Update frontend tests for chat bubbles, no visible "第 N 轮", Plan display by presence, and tabbed status rendering.
-6. Update `docs/visual-test-ui.md` to describe the chat-style test UI and status tabs.
+6. Update `docs/App-Desc/interfaces/visual-test-ui.md` to describe the chat-style test UI and status tabs.
 7. Run `cd web && npm run test` and `cd web && npm run build`.
 
 Rollback is straightforward because this change is frontend-only: restore the previous `ConversationPanel`, `ConversationTimeline`, `ResultPanel`, and `PlanPanel` implementation if needed. Backend APIs and stored data are unaffected.

@@ -32,6 +32,18 @@ class GovernanceStatus(BaseModel):
     fallback_event_count: int
 
 
+class AuthorizationCapability(BaseModel):
+    current_signature_version: Literal["v2"]
+    accepted_signature_versions: list[str]
+    v1_compatibility_enabled: bool
+    central_route_required_signature_version: str
+    claims_version: str
+    policy_version: str
+    bundle_catalog: Literal["ok", "degraded"]
+    credential_profile_catalog: Literal["ok", "degraded"]
+    signature_usage: list[dict[str, str | int]]
+
+
 class HostCapabilityResponse(BaseModel):
     status: Literal["ok", "degraded"]
     host: Literal["oac"] = "oac"
@@ -39,3 +51,4 @@ class HostCapabilityResponse(BaseModel):
     modes: CapabilityModes
     dependencies: DependencyHealth
     governance: GovernanceStatus
+    authorization: AuthorizationCapability

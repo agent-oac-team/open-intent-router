@@ -12,7 +12,10 @@ if str(ROOT) not in sys.path:
 
 from app.dependencies import get_registry_service  # noqa: E402
 from app.schemas.agents import AgentDefinition, SchemaContract  # noqa: E402
-from host_adapters.oac.mappers.registry import registry_agent_to_native  # noqa: E402
+from host_adapters.oac.mappers.registry import (  # noqa: E402
+    registry_agent_from_native,
+    registry_agent_to_native,
+)
 from host_adapters.oac.schemas.registry import RegistryAgent  # noqa: E402
 
 DEFAULT_SOURCE = Path("/Users/lijingtong/project/intent_recon_sys/sql/agent_registry.csv")
@@ -57,12 +60,14 @@ async def import_agents(agents: list[AgentDefinition], *, dry_run: bool) -> list
 def build_reconciliation_report(agents: list[AgentDefinition]) -> dict[str, Any]:
     rows = []
     for agent in agents:
+        compat = registry_agent_from_native(agent)
         rows.append(
             {
                 "agent_id": agent.agent_id,
                 "name": agent.name,
                 "enabled": agent.enabled,
-                "permission_groups": agent.access_policy.allow_groups,
+                "permission_groups": compat.allowed_user_tags,
+                "permission_entitlements": agent.access_policy.any_entitlements,
                 "positive_triggers": agent.trigger.positive_examples,
                 "negative_triggers": agent.trigger.negative_examples,
                 "invocation_type": agent.invocation.type,
@@ -71,7 +76,7 @@ def build_reconciliation_report(agents: list[AgentDefinition]) -> dict[str, Any]
                 "checks": {
                     "stable_id": True,
                     "name": bool(agent.name),
-                    "permission": bool(agent.access_policy.allow_groups),
+                    "permission": bool(agent.access_policy.any_entitlements),
                     "positive_trigger": bool(agent.trigger.positive_examples),
                     "invocation": bool(
                         agent.invocation.provider_config.get("bot_id") or agent.ui_handoff.route

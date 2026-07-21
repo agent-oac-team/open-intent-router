@@ -27,6 +27,10 @@ class SignedHostRequest:
     groups: str
     credential_class: str
     signature: str
+    claims_version: str = ""
+    roles: str = ""
+    active_bundle_id: str = ""
+    policy_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,3 +42,9 @@ class TrustedHostIdentity:
     user_id: str
     groups: tuple[str, ...]
     credential_class: str
+    claims_version: str = ""
+    roles: tuple[str, ...] = ()
+    active_bundle_id: str = ""
+    policy_version: str = ""
+    signature_version: str = ""
+    request_operation: str = ""

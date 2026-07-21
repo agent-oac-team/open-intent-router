@@ -69,6 +69,9 @@ def test_postgresql_schema_contains_canonical_turn_and_outbox_contract() -> None
     assert "CONSTRAINT uq_turn_outbox_idempotency" in schema_sql
     assert "REFERENCES canonical_turns (turn_id) ON DELETE RESTRICT" in schema_sql
     assert "idx_turn_outbox_claim" in schema_sql
+    assert "idx_canonical_turns_owner_status_updated" in schema_sql
+    assert "idx_agent_runs_owner_request_status" in schema_sql
+    assert "idx_agent_results_owner_run_status" in schema_sql
 
 
 def test_postgresql_schema_contains_hashed_execution_ticket_contract() -> None:
@@ -147,6 +150,7 @@ async def test_create_all_tables_builds_canonical_turn_and_outbox_constraints(tm
     assert {
         "idx_canonical_turns_owner_session_status",
         "idx_canonical_turns_status_updated",
+        "idx_canonical_turns_owner_status_updated",
     } <= schema["turn_indexes"]
     assert ["idempotency_key"] in schema["outbox_unique_constraints"]
     assert {"idx_turn_outbox_claim", "idx_turn_outbox_turn_status"} <= schema["outbox_indexes"]

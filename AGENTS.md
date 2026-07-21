@@ -6,7 +6,15 @@
 
 `open-intent-router` 是一个面向企业应用和聊天系统的轻量级意图识别与 Agent 编排后端。项目目标是接收自然语言输入，识别用户意图，筛选可用 Agent / Tool / Workflow，返回稳定的结构化路由结果，并在安全可控的情况下执行后端可调用能力。
 
-项目必须保持通用，不绑定 OAC、银行业务、飞书、Coze、Dify、FastGPT 或任何单一宿主系统。业务示例只能作为 sample、fixture 或文档示例，不应进入核心逻辑。
+`app/` Core 必须保持通用，不绑定 OAC、银行业务、飞书、Coze、Dify、FastGPT 或任何单一宿主系统。OAC / IRS 专有语义只允许出现在 `host_adapters/oac`、`host_apps/oac`、兼容 fixture 和迁移材料中；业务示例不能进入核心逻辑。
+
+## Harness 与文档路由
+
+- 文档统一入口：`docs/README.md`。
+- 跨模块或不熟悉目录时先读 `docs/App-Desc/README.md`。
+- 研发 / 测试规约与技能目录见 `docs/App-Adr/README.md`。
+- 复杂问题和历史决策按需从 `docs/App-Research/README.md` 选择，不要全量加载。
+- `app/`、`host_adapters/oac/`、`host_apps/oac/`、`tests/`、`web/` 各有作用域化 `AGENTS.md`；修改文件前必须读取路径上最近的规则。
 
 ## 常用命令
 
@@ -52,6 +60,7 @@ uvicorn app.main:app --reload
 前端本地启动：
 
 ```bash
+cd web
 npm run dev
 ```
 
@@ -59,6 +68,7 @@ npm run dev
 
 - `app/api`：FastAPI HTTP 接口，只做协议适配、依赖注入和错误转换。
 - `app/schemas`：Pydantic 请求、响应和领域模型，API 契约变更应先从这里明确。
+- `app/application`：供 Host Adapter 调用的通用应用端口，禁止宿主专有类型。
 - `app/services/router_service.py`：意图识别、候选 Agent 裁剪、路由决策和 Plan 生成。
 - `app/services/invocation_service.py`：单 Agent 调用执行，是 PlanExecutor 复用的底层能力。
 - `app/services/plan_service.py`：Plan 保存、确认、取消和事件驱动状态更新。
@@ -66,7 +76,9 @@ npm run dev
 - `app/services/registry_service.py`：Agent Registry 加载、合并和候选过滤。
 - `app/llm`：Mock 与 OpenAI-compatible LLM Client。
 - `app/invokers`：Agent 调用器实现。
-- `app/plugins/evidence.py`：可选 Evidence Provider，只提供证据、候选收窄或固定问命中。
+- `app/plugins/evidence.py`：可选 Evidence Provider，只提供证据、弱意图提示或固定问命中。
+- `host_adapters/oac`：IRS 兼容协议、V2 身份、映射、Fallback、Shadow 和 Cutover，只能调用应用端口。
+- `host_apps/oac`：OAC Host 组合根、配置和启动门禁，不复制领域状态机。
 - `config/prompts/router.zh.yaml`：默认中文路由 Prompt 模板。
 - `web`：本地可视化测试 UI，不是核心 Host App 实现。
 - `openspec/changes`：变更提案、设计、规格和任务。
@@ -86,7 +98,7 @@ npm run dev
 
 - 修改前先阅读相关 schema、service、repository 和测试，遵循当前分层。
 - 保持改动范围最小，不做与任务无关的重构、格式化或依赖升级。
-- 新增或修改 API 契约时，同步更新 schema、测试和 `docs/api.md`。
+- 新增或修改 API 契约时，同步更新 schema、测试和 `docs/App-Desc/contracts/api.md`。
 - 新增执行路径时，优先复用 `InvocationService` 和已有 invoker，不创建第二套调用逻辑。
 - 新增 Agent 类型时，应同时考虑 Registry schema、invoker 注册、输入构造、输出校验和测试。
 - 不把业务专有名称写入核心模块、默认 Prompt 或公共 schema。
@@ -117,7 +129,7 @@ npm run dev
 - 自动化巡检分层处理：secret scanning 使用 GitHub 原生能力，依赖漏洞和依赖新鲜度首版作为 scheduled / advisory，不默认阻塞普通 PR。
 - CI 不依赖 `.env`、`.venv`、`web/node_modules`、真实 LLM 凭证、真实外部系统或本地数据库；需要外部服务的集成检查必须单独设计 protected environment。
 - Workflow 文件本身不会阻止合并；仓库管理员必须在 GitHub branch protection 中把稳定 job 配置为 required status checks。
-- 详细操作和分层说明见 `docs/ci-cd-acceptance.md`。
+- 详细操作和分层说明见 `docs/App-Adr/test/test-standards/ci-cd-acceptance.md`。
 
 ## 安全与配置
 
@@ -130,5 +142,6 @@ npm run dev
 
 - README 和 `docs/` 下关键文档默认使用中文。
 - 面向开发者和维护者写文档，避免业务汇报式表述。
+- 新文档必须在 `docs/README.md` 登记状态；历史方案不得伪装成当前操作说明。
 - 涉及多意图时，明确说明 `plan` 是主契约，`next_action` 是 Host 协作指令，`show_plan` 是兼容行为。
 - 涉及前端测试台时，说明它用于本地调试，不代表所有 Host App 都必须采用同样 UI。

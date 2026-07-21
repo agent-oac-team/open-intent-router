@@ -1,0 +1,85 @@
+{
+  "version": "oac-agent-entitlement-replay/v1",
+  "policy_version": "oac-authz-v1",
+  "blocking_diffs": [
+    "permission_expansion",
+    "cross_edition_agent_exposure",
+    "authorized_positive_route_failure"
+  ],
+  "cases": [
+    {
+      "id": "operator-operations-production",
+      "role": "operator",
+      "edition": "运营版",
+      "trusted_bundle": "oac-operations",
+      "entitlements": ["workspace.operations.access"],
+      "expected_visible": ["production_schedule", "strategy_analysis"],
+      "expected_route": "production_schedule",
+      "expected_status": 200
+    },
+    {
+      "id": "admin-sales-dual-only",
+      "role": "admin",
+      "edition": "展业版",
+      "trusted_bundle": "oac-sales-enablement",
+      "entitlements": ["workspace.sales_enablement.access"],
+      "expected_visible": ["strategy_analysis"],
+      "forbidden_visible": ["production_schedule"],
+      "expected_route": "strategy_analysis",
+      "expected_status": 200
+    },
+    {
+      "id": "user-sales-dual",
+      "role": "user",
+      "edition": "展业版",
+      "trusted_bundle": "oac-sales-enablement",
+      "entitlements": ["workspace.sales_enablement.access"],
+      "expected_visible": ["strategy_analysis"],
+      "forbidden_visible": ["production_schedule"],
+      "expected_route": "strategy_analysis",
+      "expected_status": 200
+    },
+    {
+      "id": "user-operations-rejected-by-go",
+      "role": "user",
+      "edition": "运营版",
+      "expected_status": 403,
+      "adapter_called": false
+    },
+    {
+      "id": "unknown-edition-rejected-by-go",
+      "role": "operator",
+      "edition": "未知版",
+      "expected_status": 422,
+      "adapter_called": false
+    },
+    {
+      "id": "body-claims-mismatch",
+      "role": "operator",
+      "edition": "展业版",
+      "trusted_bundle": "oac-operations",
+      "expected_status": 403,
+      "router_called": false
+    },
+    {
+      "id": "v1-central-route-rejected-after-gate",
+      "role": "operator",
+      "edition": "运营版",
+      "signature_version": "v1",
+      "central_route_v2_required": true,
+      "expected_status": 401,
+      "router_called": false
+    },
+    {
+      "id": "unauthorized-route-evidence-plan-continuation",
+      "role": "operator",
+      "edition": "展业版",
+      "trusted_bundle": "oac-sales-enablement",
+      "entitlements": ["workspace.sales_enablement.access"],
+      "forbidden_visible": ["production_schedule"],
+      "forbidden_surfaces": ["trigger", "evidence", "llm", "continue_agent", "plan_step"],
+      "expected_status": 200,
+      "expected_action": "unsupported"
+    }
+  ]
+}

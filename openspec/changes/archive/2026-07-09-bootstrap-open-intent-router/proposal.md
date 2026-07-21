@@ -2,7 +2,7 @@
 
 The existing `intent_recon_sys` has proven the value of an intent-recognition control plane, but it is tightly coupled to OAC, private-banking scenarios, Feishu registry sync, Coze-style bot routing, and business-specific agents. This change turns the reusable core into `open-intent-router`: a lightweight, pluggable framework for routing user intent to Agents, Tools, and Workflows in any host application.
 
-The project now has a concrete requirements document in `docs/开源意图识别项目需求分析文档.md`; the next step is to convert those requirements into an implementation-ready refactor plan without carrying OAC-specific assumptions into the open-source core.
+The project now has a concrete requirements document in `docs/App-Research/requirements/开源意图识别项目需求分析文档.md`; the next step is to convert those requirements into an implementation-ready refactor plan without carrying OAC-specific assumptions into the open-source core.
 
 ## What Changes
 

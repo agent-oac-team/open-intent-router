@@ -5,23 +5,29 @@ from host_adapters.oac.identity.models import SignedHostRequest
 
 def canonicalize_host_request(request: SignedHostRequest, *, tenant_id: str) -> str:
     groups = sorted({item.strip() for item in request.groups.split(",") if item.strip()})
-    lines = [
-        "OIR-HOST-V1",
-        request.key_id,
-        request.audience,
-        request.timestamp,
-        request.nonce,
-        request.method.upper(),
-        normalize_path(request.path),
-        normalize_query(request.query),
-        request.content_sha256.lower(),
-        request.principal_type,
-        tenant_id,
-        request.user_id,
-        ",".join(groups),
-        request.credential_class,
-    ]
-    return "\n".join(lines)
+    roles = sorted({item.strip() for item in request.roles.split(",") if item.strip()})
+    return "\n".join(
+        [
+            "OIR-HOST-V2",
+            request.key_id,
+            request.audience,
+            request.timestamp,
+            request.nonce,
+            request.method.upper(),
+            normalize_path(request.path),
+            normalize_query(request.query),
+            request.content_sha256.lower(),
+            request.principal_type,
+            tenant_id,
+            request.user_id,
+            ",".join(roles),
+            ",".join(groups),
+            request.active_bundle_id,
+            request.claims_version,
+            request.policy_version,
+            request.credential_class,
+        ]
+    )
 
 
 def normalize_path(path: str) -> str:

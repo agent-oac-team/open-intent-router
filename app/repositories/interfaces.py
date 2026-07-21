@@ -16,8 +16,9 @@ from app.schemas.memory import (
     MemoryRevision,
 )
 from app.schemas.plans import Plan
+from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.sessions import ChatMessage
-from app.schemas.turns import CanonicalTurn
+from app.schemas.turns import CanonicalTurn, FormationEligibilitySnapshot
 
 
 class TurnRepository(Protocol):
@@ -52,6 +53,8 @@ class AgentDefinitionRepository(Protocol):
     ) -> AgentDefinition | None: ...
 
     async def delete(self, agent_id: str, *, expected_revision: int | None = None) -> bool: ...
+
+    async def mutate(self, command: RegistryMutationCommand) -> RegistryMutationResult: ...
 
 
 class MessageRepository(Protocol):
@@ -109,6 +112,21 @@ class ResultRepository(Protocol):
     async def mark_formation_published(self, result_id: str) -> None: ...
 
     async def mark_turn_captured(self, result_id: str) -> None: ...
+
+
+class CanonicalInvocationStore(Protocol):
+    async def start_run(
+        self, run: AgentRun
+    ) -> tuple[AgentRun, CanonicalTurn, AgentResult | None]: ...
+
+    async def complete_run(
+        self,
+        *,
+        run: AgentRun,
+        result: AgentResult,
+        response_text: str,
+        eligibility: FormationEligibilitySnapshot,
+    ) -> tuple[AgentRun, AgentResult, CanonicalTurn]: ...
 
 
 class PlanRepository(Protocol):

@@ -200,7 +200,11 @@
 
 ## 15. 文档、CI 与最终验收
 
-- [x] 15.1 更新 OIR `docs/api.md`、数据模型、Host Adapter 边界、Identity、Ticket 和 capability 文档
+> Agent Route 的 edition 权限词汇断层由 `fix-oac-agent-routing-entitlements` 修复；该 change 不包含 AuthorizationContext、在途撤权或知识权限。
+>
+> Registry/Knowledge Admin HMAC、三类 V2 credential profile 与 V1 下线由 `fix-admin-hmac-and-retire-host-v1` 收敛；本 change 的既有完成证据不因此改写。
+
+- [x] 15.1 更新 OIR `docs/App-Desc/contracts/api.md`、数据模型、Host Adapter 边界、Identity、Ticket 和 capability 文档
 - [x] 15.2 生成 Legacy/Native API 兼容矩阵、JSON Schema 快照索引与变更记录
 - [x] 15.3 编写本地/测试启动、Shadow Replay、State Rehearsal、Circuit/Write Fence 与故障处置 Runbook
 - [x] 15.4 编写 IRS 冻结、排空、cutover watermark、迟到回调隔离、回滚和下线 Runbook

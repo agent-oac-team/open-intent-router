@@ -1,7 +1,11 @@
 from app.core.config import Settings
 from host_adapters.oac.application import OacAdapterApplicationPorts
+from host_adapters.oac.authz import OAC_BUNDLE_CATALOG
 from host_adapters.oac.fallback.gateway import IRSFallbackGateway
+from host_adapters.oac.identity.observability import HOST_SIGNATURE_METRICS
+from host_adapters.oac.identity.profiles import credential_profile_catalog_healthy
 from host_adapters.oac.schemas import (
+    AuthorizationCapability,
     CapabilityModes,
     CapabilityVersions,
     DependencyHealth,
@@ -51,5 +55,18 @@ class OacHostCapabilityProvider:
                 circuit=self.fallback_gateway.circuit.snapshot.state,
                 circuit_failure_count=self.fallback_gateway.circuit.snapshot.failure_count,
                 fallback_event_count=len(self.fallback_gateway.metrics.audit),
+            ),
+            authorization=AuthorizationCapability(
+                current_signature_version="v2",
+                accepted_signature_versions=["v2"],
+                v1_compatibility_enabled=False,
+                central_route_required_signature_version="v2",
+                claims_version=self.host.claims_version,
+                policy_version=OAC_BUNDLE_CATALOG.policy_version,
+                bundle_catalog="ok",
+                credential_profile_catalog=(
+                    "ok" if credential_profile_catalog_healthy() else "degraded"
+                ),
+                signature_usage=HOST_SIGNATURE_METRICS.snapshot(),
             ),
         )

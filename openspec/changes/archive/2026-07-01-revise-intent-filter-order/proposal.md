@@ -29,4 +29,4 @@
 - 影响 `app/services/router_service.py` 中权限过滤、标签筛选、Evidence 固定问和 LLM 调用的顺序。
 - 影响 `app/plugins/evidence.py` 与固定问配置的语义说明，但不要求破坏现有 YAML 配置格式。
 - 影响 Router 相关测试，尤其是候选集、固定问强命中、LLM 调用次数和上下文 metadata 断言。
-- 影响 `docs/api.md`、`docs/evidence-provider.md`、`docs/中控能力设计文档.md` 或交付说明中关于候选筛选顺序的描述。
+- 影响 `docs/App-Desc/contracts/api.md`、`docs/App-Desc/architecture/evidence-provider.md`、`docs/App-Research/designs/中控能力设计文档.md` 或交付说明中关于候选筛选顺序的描述。
