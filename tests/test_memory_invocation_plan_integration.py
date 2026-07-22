@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
+from app.core.memory_runtime import build_memory_runtime_policy
 from app.db.session import create_all_tables, create_session_factory
 from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
 from app.invokers.registry import AgentInvokerRegistry
@@ -88,11 +89,8 @@ def _settings(**updates) -> Settings:
     values = {
         "storage_backend": "memory",
         "memory_strategy_provider": "memory",
-        "memory_formation_mode": "enforced",
-        "memory_formation_worker_enabled": True,
+        "memory_mode": "on",
         "context_pipeline_mode": "enforced",
-        "context_route_memory_enabled": True,
-        "context_route_memory_scopes": "task_memory,user_preference,stable_fact",
         "context_route_knowledge_enabled": False,
         "knowledge_enabled": False,
     }
@@ -397,14 +395,14 @@ async def test_structured_job_survives_database_process_restart(tmp_path) -> Non
 
 @pytest.mark.parametrize(
     ("mode", "expected_items", "expected_status"),
-    [("observe", 0, "observed"), ("enforced", 1, "accepted")],
+    [("observe", 0, "observed"), ("on", 1, "accepted")],
 )
 async def test_real_processor_runs_conversation_jobs_through_rollout_mode(
     mode,
     expected_items,
     expected_status,
 ) -> None:
-    settings = _settings(memory_formation_mode=mode, memory_formation_window_turns=1)
+    settings = _settings(memory_mode=mode, memory_formation_window_turns=1)
     formation = MemoryFormationTurnJobRepository()
     memories = MemoryItemRepository()
     memory_service = MemoryService(settings=settings, repository=memories)
@@ -1319,7 +1317,7 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
 ) -> None:
     formation = MemoryFormationTurnJobRepository()
     memories = MemoryItemRepository()
-    off = _settings(memory_formation_mode="off")
+    off = _settings(memory_mode="off")
     service = InvocationService(
         registry=registry_service,
         run_repository=MemoryRunRepository(),
@@ -1383,7 +1381,7 @@ async def test_production_off_records_are_not_backfilled_after_enable(
     await PlanService(
         plans,
         structured_formation=None,
-        automatic_formation_enabled=False,
+        runtime_policy=build_memory_runtime_policy("off"),
     ).save_plan(_plan(plan_id="plan_created_off"))
     off_service = InvocationService(
         registry=registry_service,
@@ -1392,7 +1390,7 @@ async def test_production_off_records_are_not_backfilled_after_enable(
         invokers=build_default_invoker_registry(settings),
         turn_capture=None,
         structured_formation=None,
-        automatic_formation_enabled=False,
+        runtime_policy=build_memory_runtime_policy("off"),
     )
     response = await off_service.invoke(
         InvokeRequest(
@@ -1448,7 +1446,7 @@ async def test_private_skip_trace_is_reconciled_without_structured_jobs(
             settings=enabled,
             repository=formation,
         ),
-        automatic_formation_enabled=True,
+        runtime_policy=build_memory_runtime_policy("on"),
     )
     response = await service.invoke(
         InvokeRequest(
@@ -1522,7 +1520,7 @@ async def test_private_skip_event_is_idempotent_when_marker_fails(
         invokers=build_default_invoker_registry(settings),
         turn_capture=capture,
         structured_formation=publisher,
-        automatic_formation_enabled=True,
+        runtime_policy=build_memory_runtime_policy("on"),
     )
     response = await service.invoke(
         InvokeRequest(
@@ -1555,13 +1553,13 @@ async def test_private_plan_claim_suppression_is_atomic() -> None:
     repository = MemoryPlanRepository()
     off_service = PlanService(
         repository,
-        automatic_formation_enabled=False,
+        runtime_policy=build_memory_runtime_policy("off"),
     )
     await off_service.save_plan(_plan(plan_id="private_plan_claim"))
     service = PlanService(
         repository,
         structured_formation=CapturingStructuredSink(),
-        automatic_formation_enabled=True,
+        runtime_policy=build_memory_runtime_policy("on"),
     )
     claim = await service.claim_step(
         "private_plan_claim",

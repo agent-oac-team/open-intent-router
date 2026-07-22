@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -24,7 +25,10 @@ from app.dependencies import (
     build_memory_formation_runtime,
     build_memory_maintenance_runtime,
     get_memory_data_settings,
+    get_memory_runtime_policy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -35,8 +39,23 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         memory_settings = get_memory_data_settings()
         if memory_settings.database_url != settings.database_url:
             await create_all_tables(memory_settings)
-    formation_runtime = build_memory_formation_runtime(settings=settings)
-    maintenance_runtime = build_memory_maintenance_runtime(settings=settings)
+    policy = get_memory_runtime_policy()
+    logger.info(
+        "memory_runtime mode=%s policy=%s source=%s execution=%s recall=%s formation=%s "
+        "formation_worker=%s index_worker=%s ttl_sweeper=%s context_memory=%s",
+        policy.mode,
+        policy.version,
+        policy.config_source,
+        policy.execution_plane,
+        policy.effective_recall_enabled,
+        policy.effective_formation_mode,
+        policy.effective_formation_worker_enabled,
+        policy.effective_index_worker_enabled,
+        policy.effective_ttl_sweeper_enabled,
+        policy.effective_governed_context_memory_enabled,
+    )
+    formation_runtime = build_memory_formation_runtime()
+    maintenance_runtime = build_memory_maintenance_runtime()
     await formation_runtime.start()
     await maintenance_runtime.start()
     try:

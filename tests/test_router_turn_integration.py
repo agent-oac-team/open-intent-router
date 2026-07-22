@@ -1,6 +1,7 @@
 import pytest
 
 from app.core.config import Settings
+from app.core.memory_runtime import build_memory_runtime_policy
 from app.llm.conversation_formation import (
     ConversationFormationResponse,
     FakeConversationFormationModel,
@@ -219,8 +220,7 @@ async def test_route_and_invoke_completes_canonical_turn_and_creates_outbox(
             turn_repository=turns,
             outbox_repository=outbox,
         ),
-        automatic_formation_enabled=True,
-        memory_formation_mode="enforced",
+        runtime_policy=build_memory_runtime_policy("on"),
     )
     request = RouteRequest.model_validate(
         {
@@ -269,7 +269,7 @@ async def test_route_invoke_pork_preference_reaches_index_and_recall_after_resta
     settings = Settings(
         storage_backend="memory",
         memory_strategy_provider="memory",
-        memory_formation_mode="enforced",
+        memory_mode="on",
         memory_formation_window_turns=1,
         memory_formation_model_timeout_seconds=1,
     )
@@ -293,8 +293,7 @@ async def test_route_invoke_pork_preference_reaches_index_and_recall_after_resta
             turn_repository=turns,
             outbox_repository=outbox,
         ),
-        automatic_formation_enabled=True,
-        memory_formation_mode="enforced",
+        runtime_policy=build_memory_runtime_policy("on"),
     )
     request = RouteRequest.model_validate(
         {

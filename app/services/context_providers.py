@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.schemas.agents import AgentDefinition, CandidateAgent
 from app.schemas.common import JsonDict
 from app.schemas.context import ContextCandidate
@@ -458,8 +459,16 @@ class ArtifactProvider(BaseContextProvider):
 class MemoryRetrievalProvider(BaseContextProvider):
     cacheable = True
 
-    def __init__(self, settings: Settings, memory_service, *, stage: str) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        memory_service,
+        *,
+        stage: str,
+        runtime_policy: MemoryRuntimePolicy | None = None,
+    ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
         self.stage = stage
         self.name = f"{stage}_memory"
@@ -469,8 +478,13 @@ class MemoryRetrievalProvider(BaseContextProvider):
         if self.memory_service is None:
             return False
         if self.stage == "route":
-            return self.settings.context_route_memory_enabled
-        return bool(context.agent and context.agent.context.memory.mode == "prefetch")
+            return self.runtime_policy.effective_governed_context_memory_enabled
+        return bool(
+            self.runtime_policy.effective_recall_enabled
+            and context.agent
+            and context.agent.context.memory.mode == "prefetch"
+            and context.agent.context.memory.scopes
+        )
 
     def cache_key(self, context: ContextProviderContext) -> str:
         active_plan = _active_plan_value(context)
@@ -567,7 +581,7 @@ class MemoryRetrievalProvider(BaseContextProvider):
     def _scopes(self, context: ContextProviderContext) -> list[str]:
         if self.stage == "agent" and context.agent:
             return [str(item) for item in context.agent.context.memory.scopes]
-        return _csv(self.settings.context_route_memory_scopes)
+        return list(self.runtime_policy.route_memory_scopes)
 
 
 class KnowledgeRetrievalProvider(BaseContextProvider):

@@ -20,6 +20,14 @@ def test_loads_all_nine_irs_agents_with_stable_ids_and_mappings() -> None:
     assert all(
         agent.invocation.provider_config.get("bot_id") or agent.ui_handoff.route for agent in agents
     )
+    memory_by_agent = {row["agent_id"]: row["memory_context"] for row in report["agents"]}
+    assert memory_by_agent["strategy_analysis"] == {
+        "mode": "prefetch",
+        "scopes": ["user_preference", "stable_fact"],
+        "max_items": 5,
+        "controlled_retrieval": None,
+        "metadata": {},
+    }
 
 
 def test_empty_route_provider_agent_does_not_gain_fake_ui_handoff() -> None:
@@ -29,3 +37,22 @@ def test_empty_route_provider_agent_does_not_gain_fake_ui_handoff() -> None:
     assert strategy.invocation.provider_config["bot_id"] == "7613696818723848192"
     assert strategy.ui_handoff.mode == "none"
     assert strategy.ui_handoff.route is None
+
+
+def test_initial_memory_rollout_is_explicit_for_exactly_two_agents() -> None:
+    agents = {agent.agent_id: agent for agent in load_irs_agents(SOURCE)}
+    enabled = {
+        agent_id: agent.context.memory
+        for agent_id, agent in agents.items()
+        if agent.context.memory.mode == "prefetch"
+    }
+
+    assert set(enabled) == {"strategy_analysis", "compliance_review"}
+    for memory in enabled.values():
+        assert memory.scopes == ["user_preference", "stable_fact"]
+        assert memory.max_items == 5
+    assert all(
+        agent.context.memory.mode == "disabled"
+        for agent_id, agent in agents.items()
+        if agent_id not in enabled
+    )

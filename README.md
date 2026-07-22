@@ -206,7 +206,7 @@ CONTEXT_PER_ITEM_CHAR_LIMIT=2000
 CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE=true
 CONTEXT_ALLOW_SUMMARY_PLACEHOLDER=true
 CONTEXT_PIPELINE_MODE=legacy
-CONTEXT_ROUTE_MEMORY_ENABLED=false
+MEMORY_MODE=off
 CONTEXT_ROUTE_KNOWLEDGE_ENABLED=false
 CONTEXT_POLICY_VERSION=context-policy-v1
 CONTEXT_BUDGET_VERSION=context-budget-v1
@@ -221,10 +221,11 @@ CONTEXT_PROJECTION_VERSION=context-projection-v1
 - `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE`：是否允许请求或 `frontend_context` 覆盖预算。
 - `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER`：截断时是否标记 summary placeholder；M4 不调用额外 LLM 做摘要。
 - `CONTEXT_PIPELINE_MODE`：`legacy` 保持旧 Prompt，`observe` 只构建和比较新 Projection，`enforced` 只使用 governed Projection。
-- `CONTEXT_ROUTE_MEMORY_ENABLED` / `CONTEXT_ROUTE_KNOWLEDGE_ENABLED`：Router 阶段检索默认关闭，必须显式启用。
+- `MEMORY_MODE`：唯一记忆行为开关；`on` 固定启用 Governed route Memory，并只召回 `user_preference`、`stable_fact`。
+- `CONTEXT_ROUTE_KNOWLEDGE_ENABLED`：是否启用 Router 阶段 Knowledge 检索。
 - version 字段会进入 Context Trace 和 Route Log，用于后续比较与回放。
 
-Context Pipeline 将 Candidate、Pack、Projection 和 Trace 分离。Router Prompt 在 `enforced` 模式不读取完整请求 metadata、Debug Pack 或 dropped items；Agent 仍通过稳定的 `memory_context`、`knowledge_context` 和 `RouteResponse.invocation.input` 接收上下文。
+Context Pipeline 将 Candidate、Pack、Projection 和 Trace 分离。Router Prompt 在 `enforced` 模式不读取完整请求 metadata、Debug Pack 或 dropped items；`MEMORY_MODE=on` 即使在 `CONTEXT_PIPELINE_MODE=legacy` 下也会对 Memory 路径强制使用 Governed Context。Agent 仍通过稳定的 `memory_context`、`knowledge_context` 和 `RouteResponse.invocation.input` 接收上下文。
 
 ## DeepSeek 配置
 
@@ -253,6 +254,7 @@ ROUTER_LLM_API_KEY=replace-with-real-key
 
 ## 文档
 
+- [领域语言](CONTEXT.md)：OIR、Host、路由、运行事实、Context、Memory、Knowledge 和迁移治理的稳定术语。
 - [文档中心](docs/README.md)：全部文档的权威级别、阅读路径和维护规则。
 - [App-Desc 应用地图](docs/App-Desc/README.md)：模块、运行入口、依赖方向、事实源和治理区域。
 - [App-Adr 应用规约](docs/App-Adr/README.md)：研发 / 测试标准、作用域约束和技能目录。

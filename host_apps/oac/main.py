@@ -1,12 +1,14 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.core.memory_runtime import build_memory_runtime_policy
+from app.dependencies import configure_memory_runtime, get_memory_runtime_policy
 from app.main import create_app as create_oir_app
 from host_adapters.oac.api import router as oac_adapter_router
 from host_adapters.oac.api.capabilities import build_capability_router
 from host_adapters.oac.fallback.policy import classify_operation, write_fence_blocked
 from host_apps.oac.capabilities import OacHostCapabilityProvider
-from host_apps.oac.config import build_oac_host_profile
+from host_apps.oac.config import build_oac_host_profile, memory_execution_plane_for_shadow
 from host_apps.oac.dependencies import (
     get_adapter_governance_metrics,
     get_irs_fallback_gateway,
@@ -17,6 +19,16 @@ from host_apps.oac.dependencies import (
 def create_app() -> FastAPI:
     """Compose the generic OIR runtime with the OAC protocol adapter."""
     profile = build_oac_host_profile()
+    execution_plane = memory_execution_plane_for_shadow(profile.host.shadow_mode)
+    configure_memory_runtime(
+        build_memory_runtime_policy(
+            profile.core.memory_mode,
+            execution_plane=execution_plane,
+            config_source="OAC_HOST_SHADOW_MODE",
+        ),
+        database_url=profile.host.state_rehearsal_database_url,
+        collection=profile.host.state_rehearsal_memory_collection,
+    )
     ports = get_oac_adapter_application_ports()
     host_app = create_oir_app(api_prefix=profile.host.native_mount_prefix)
 
@@ -51,6 +63,7 @@ def create_app() -> FastAPI:
         host=profile.host,
         ports=ports,
         fallback_gateway=get_irs_fallback_gateway(),
+        memory_policy=get_memory_runtime_policy(),
     )
     host_app.include_router(build_capability_router(capability_provider.snapshot))
     host_app.state.host_runtime = profile.host.profile

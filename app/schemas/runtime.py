@@ -22,6 +22,9 @@ class RuntimeConfigResponse(StrictBaseModel):
     evidence_provider_enabled: bool
     evidence_fixed_questions_path: str | None = None
     agent_http_timeout_seconds: float
+    memory_mode: str
+    memory_policy_version: str
+    memory_config_source: str
     memory_enabled: bool
     memory_recall_enabled: bool
     memory_formation_mode: str
@@ -35,6 +38,8 @@ class RuntimeConfigResponse(StrictBaseModel):
     memory_index_worker_enabled: bool
     memory_ttl_sweeper_enabled: bool
     memory_consolidation_enabled: bool
+    memory_governed_context_enabled: bool
+    memory_route_scopes: list[str]
     memory_formation_queue_depth: int = 0
     memory_formation_oldest_pending_seconds: float | None = None
     memory_formation_dead_letter_count: int = 0

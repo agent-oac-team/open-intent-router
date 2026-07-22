@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import RoutingError
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.core.redaction import redact_value
 from app.llm.client import LLMClient
 from app.llm.mock import MockLLMClient
@@ -48,8 +49,10 @@ class RouterService:
         agent_context_service=None,
         plan_continuation_resolver=None,
         turn_service: TurnService | None = None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.registry = registry
         self.llm_client = llm_client or _llm_client(settings)
         self.context_service = context_service or ContextService(settings)
@@ -181,7 +184,10 @@ class RouterService:
                 candidates=candidates,
                 context=base_context,
                 projection=(
-                    projection if self.settings.context_pipeline_mode == "enforced" else None
+                    projection
+                    if self.settings.context_pipeline_mode == "enforced"
+                    or self.runtime_policy.effective_governed_context_memory_enabled
+                    else None
                 ),
             )
         )

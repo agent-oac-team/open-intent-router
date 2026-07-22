@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.core.redaction import redact_text, redact_value
 from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.memory_index_operations import (
@@ -52,8 +53,10 @@ class MemoryService:
         index_outbox=None,
         index_worker: MemoryIndexOperationWorker | None = None,
         formation_repository=None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.repository = repository or MemoryItemRepository()
         self.adapter = adapter or build_memory_adapter(settings, self.repository)
         self.formation_repository = formation_repository
@@ -73,16 +76,16 @@ class MemoryService:
 
     async def recall(self, request: MemoryRecallRequest) -> MemoryRecallResponse:
         if (
-            not self.settings.memory_enabled
-            or not self.settings.memory_recall_enabled
+            not self.runtime_policy.memory_enabled
+            or not self.runtime_policy.effective_recall_enabled
             or request.max_items == 0
         ):
             return MemoryRecallResponse(
                 context=MemoryContext(
                     status="disabled",
                     metadata={
-                        "memory_enabled": self.settings.memory_enabled,
-                        "memory_recall_enabled": self.settings.memory_recall_enabled,
+                        "memory_enabled": self.runtime_policy.memory_enabled,
+                        "memory_recall_enabled": self.runtime_policy.effective_recall_enabled,
                     },
                 )
             )
@@ -280,7 +283,7 @@ class MemoryService:
         user_id: str,
         tenant_id: str | None = None,
     ) -> list[MemoryWriteDecision]:
-        if not self.settings.memory_enabled:
+        if not self.runtime_policy.memory_enabled:
             return [
                 MemoryWriteDecision(
                     candidate=candidate, status="rejected", reason="memory_disabled"
@@ -554,7 +557,7 @@ class MemoryService:
             items=safe_items,
             events=safe_events,
             metadata={
-                "memory_enabled": self.settings.memory_enabled,
+                "memory_enabled": self.runtime_policy.memory_enabled,
                 "strategy_provider": self.settings.memory_strategy_provider,
                 "item_count": len(items),
                 "event_count": len(events),

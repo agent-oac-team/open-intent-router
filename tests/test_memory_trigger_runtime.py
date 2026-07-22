@@ -33,7 +33,7 @@ async def _dispose_test_engines():
 def _settings(**updates) -> Settings:
     values = {
         "storage_backend": "memory",
-        "memory_formation_mode": "observe",
+        "memory_mode": "observe",
         "memory_formation_window_turns": 5,
         "memory_formation_idle_seconds": 30,
         "memory_formation_model_timeout_seconds": 0.1,
@@ -296,10 +296,10 @@ async def _idle_job(repository, settings):
     return deadline, jobs[0]
 
 
-@pytest.mark.parametrize(("mode", "execute_lifecycle"), [("observe", False), ("enforced", True)])
+@pytest.mark.parametrize(("mode", "execute_lifecycle"), [("observe", False), ("on", True)])
 async def test_worker_rollout_mode_controls_lifecycle_execution(mode, execute_lifecycle) -> None:
     repository = MemoryFormationTurnJobRepository()
-    settings = _settings(memory_formation_mode=mode)
+    settings = _settings(memory_mode=mode)
     now, _ = await _idle_job(repository, settings)
     processor = RecordingProcessor()
     worker = FormationJobWorker(
@@ -419,10 +419,7 @@ async def test_duplicate_workers_have_one_processor_winner() -> None:
 
 async def test_runtime_starts_and_stops_worker_and_sweeper_gracefully() -> None:
     repository = MemoryFormationTurnJobRepository()
-    settings = _settings(
-        memory_formation_worker_enabled=True,
-        memory_formation_sweeper_enabled=True,
-    )
+    settings = _settings(memory_mode="observe")
     worker = FormationJobWorker(
         settings=settings,
         repository=repository,
@@ -448,10 +445,7 @@ async def test_runtime_starts_and_stops_worker_and_sweeper_gracefully() -> None:
 
 
 async def test_runtime_loops_recover_from_transient_repository_errors() -> None:
-    settings = _settings(
-        memory_formation_worker_enabled=True,
-        memory_formation_sweeper_enabled=True,
-    )
+    settings = _settings(memory_mode="observe")
 
     class FlakyWorker:
         def __init__(self) -> None:
@@ -490,9 +484,7 @@ async def test_runtime_loops_recover_from_transient_repository_errors() -> None:
 
 async def test_maintenance_runtime_consumes_index_and_ttl_work_when_formation_is_off() -> None:
     settings = _settings(
-        memory_formation_mode="off",
-        memory_index_worker_enabled=True,
-        memory_ttl_sweeper_enabled=True,
+        memory_mode="off",
         memory_maintenance_interval_seconds=0.01,
     )
 
@@ -523,10 +515,7 @@ async def test_maintenance_runtime_consumes_index_and_ttl_work_when_formation_is
 
 
 async def test_reconciler_runs_when_idle_sweeper_is_disabled() -> None:
-    settings = _settings(
-        memory_formation_worker_enabled=False,
-        memory_formation_sweeper_enabled=False,
-    )
+    settings = _settings(memory_mode="off")
 
     class Reconciler:
         def __init__(self) -> None:

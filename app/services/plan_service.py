@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.schemas.events import AgentEvent
 from app.schemas.plans import Plan, PlanActionResponse
 
@@ -15,15 +16,18 @@ class PlanService:
         repository,
         *,
         structured_formation=None,
-        automatic_formation_enabled: bool | None = None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.repository = repository
         self.structured_formation = structured_formation
-        self.automatic_formation_enabled = (
-            structured_formation is not None
-            if automatic_formation_enabled is None
-            else automatic_formation_enabled
+        self.runtime_policy = runtime_policy or build_memory_runtime_policy(
+            "on" if structured_formation is not None else "off",
+            config_source="service_composition",
         )
+
+    @property
+    def automatic_formation_enabled(self) -> bool:
+        return self.runtime_policy.effective_formation_mode != "off"
 
     async def save_plan(
         self,

@@ -50,11 +50,8 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
             "DATABASE_URL": rehearsal_database_url,
             "STORAGE_BACKEND": "database",
             "REGISTRY_BACKEND": "database",
-            "MEMORY_EXECUTION_MODE": "live",
+            "MEMORY_MODE": "on",
             "MEMORY_STRATEGY_PROVIDER": "memory",
-            "MEMORY_FORMATION_MODE": "off",
-            "MEMORY_INDEX_WORKER_ENABLED": "false",
-            "MEMORY_TTL_SWEEPER_ENABLED": "false",
             "KNOWLEDGE_VECTOR_BACKEND": "memory",
         }
     )

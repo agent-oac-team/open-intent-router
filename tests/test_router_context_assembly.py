@@ -1,4 +1,5 @@
 from app.core.config import Settings
+from app.core.memory_runtime import build_memory_runtime_policy
 from app.db.session import create_all_tables, create_session_factory
 from app.plugins.evidence import EvidenceResult
 from app.repositories.database import DatabaseEventRepository, DatabasePlanRepository
@@ -405,6 +406,7 @@ async def test_observe_mode_builds_projection_but_calls_router_llm_once(
         settings=settings.model_copy(update={"context_pipeline_mode": "observe"}),
         registry=registry_service,
         llm_client=llm,
+        runtime_policy=build_memory_runtime_policy("observe"),
     )
 
     response = await service.route(

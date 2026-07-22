@@ -7,6 +7,7 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 
 from app.core.errors import InvocationError
+from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.invokers.http import HttpAgentInvoker
 from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
 from app.invokers.mock import MockAgentInvoker
@@ -39,11 +40,9 @@ class InvocationService:
         turn_capture: TurnCaptureSink | None = None,
         structured_formation: StructuredFormationSink | None = None,
         plan_claim_lease_seconds: float = 300,
-        automatic_formation_enabled: bool | None = None,
         memory_service=None,
         canonical_invocation_store=None,
-        memory_formation_mode: str | None = None,
-        memory_execution_mode: str = "live",
+        runtime_policy: MemoryRuntimePolicy | None = None,
         memory_formation_policy_version: str = "formation-policy-v1",
     ) -> None:
         self.registry = registry
@@ -59,15 +58,11 @@ class InvocationService:
             agent_context_service, "memory_service", None
         )
         self.canonical_invocation_store = canonical_invocation_store
-        self.automatic_formation_enabled = (
-            turn_capture is not None or structured_formation is not None
-            if automatic_formation_enabled is None
-            else automatic_formation_enabled
+        self.runtime_policy = runtime_policy or build_memory_runtime_policy(
+            "on" if turn_capture is not None or structured_formation is not None else "off",
+            config_source="service_composition",
         )
-        self.memory_formation_mode = memory_formation_mode or (
-            "enforced" if self.automatic_formation_enabled else "off"
-        )
-        self.memory_execution_mode = memory_execution_mode
+        self.automatic_formation_enabled = self.runtime_policy.effective_formation_mode != "off"
         self.memory_formation_policy_version = memory_formation_policy_version
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
@@ -271,7 +266,7 @@ class InvocationService:
         return result
 
     def _formation_eligibility(self, request_suppressed: bool) -> FormationEligibilitySnapshot:
-        mode = self.memory_formation_mode
+        mode = self.runtime_policy.effective_formation_mode
         if mode not in {"off", "observe", "enforced"}:
             mode = "off"
         suppressed = request_suppressed or mode == "off"
@@ -282,7 +277,7 @@ class InvocationService:
         )
         return FormationEligibilitySnapshot(
             mode=mode,
-            execution_mode=self.memory_execution_mode,
+            execution_mode=self.runtime_policy.execution_plane,
             suppressed=suppressed,
             reason_code=reason,
             policy_version=self.memory_formation_policy_version,

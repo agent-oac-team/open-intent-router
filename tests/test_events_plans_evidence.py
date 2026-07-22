@@ -403,7 +403,7 @@ async def test_plan_event_uses_stored_run_owner_and_invalid_retry_does_not_poiso
 
 
 async def test_private_run_agent_event_suppresses_plan_projection_atomically() -> None:
-    settings = Settings(memory_formation_mode="enforced")
+    settings = Settings(memory_mode="on")
     formation = MemoryFormationTurnJobRepository()
     publisher = StructuredFormationPublisher(settings=settings, repository=formation)
     events = MemoryEventRepository()

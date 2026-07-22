@@ -84,9 +84,8 @@ Context Pack 默认预算可通过 `.env` 配置，修改后需要重启后端�
 | `CONTEXT_ALLOW_REQUEST_BUDGET_OVERRIDE` | `true` | 是否允许请求或 `frontend_context` 覆盖预算 |
 | `CONTEXT_ALLOW_SUMMARY_PLACEHOLDER` | `true` | 截断时是否记录摘要占位标记 |
 | `CONTEXT_PIPELINE_MODE` | `legacy` | `legacy`、`observe` 或 `enforced` |
-| `CONTEXT_ROUTE_MEMORY_ENABLED` | `false` | 是否启用 route-stage Memory Provider |
+| `MEMORY_MODE` | `off` | 唯一记忆行为模式：`off`、`observe` 或 `on` |
 | `CONTEXT_ROUTE_KNOWLEDGE_ENABLED` | `false` | 是否启用 route-stage Knowledge Provider |
-| `CONTEXT_ROUTE_MEMORY_SCOPES` | 空 | Router 可请求的 Memory scopes，逗号分隔 |
 | `CONTEXT_ROUTE_KNOWLEDGE_SOURCE_IDS` | 空 | Router 可请求的 Knowledge source IDs |
 | `CONTEXT_POLICY_VERSION` | `context-policy-v1` | 治理策略版本 |
 | `CONTEXT_BUDGET_VERSION` | `context-budget-v1` | 预算策略版本 |
@@ -94,7 +93,7 @@ Context Pack 默认预算可通过 `.env` 配置，修改后需要重启后端�
 
 Rollout 语义：
 
-- `legacy`：保留旧 Router Prompt 输入，用于紧急回滚；Agent access、Memory subject isolation 和 Knowledge source policy 不会放宽。
+- `legacy`：保留旧 Router Prompt 输入；但 `MEMORY_MODE=on` 的 Memory 路径仍强制使用 Governed Context，不能借此关闭记忆治理。
 - `observe`：构建新 Pack/Projection/Trace，记录 `legacy_input_hash` 和 `projection_hash`，Router LLM 仍只调用一次并使用旧输入。
 - `enforced`：Router Prompt 和 Agent context 只由 governed Projection 生成。
 
@@ -103,9 +102,9 @@ M5/M6 起，路由器和 Invoker 会根据目标 Agent 的 `context` 配置组�
 - `memory_context`：包含 `summary`、结构化 `items`、`status`、`truncated`、`errors` 和调试 `metadata`。
 - `knowledge_context`：包含 `summary`、结构化 `items`、`citations`、`source_ids`、`status`、`truncated`、`errors` 和调试 `metadata`。
 
-当 `context.memory.mode=prefetch` 时，Agent execution Pack 会按声明 scope 预召回记忆。当前输入只控制本轮执行，不会直接改写长期记忆；当前轮覆盖、去重和冲突结果记录在 Context Trace。
+当 `MEMORY_MODE=on` 且 `context.memory.mode=prefetch` 并显式声明非空 scopes 时，Agent execution Pack 才会按声明 scope 预召回记忆。全局 `on` 不向 Agent 继承 route defaults；当前输入只控制本轮执行，不会直接改写长期记忆。
 
-Agent 知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型任意决定检索。Router 阶段 Memory/Knowledge 也默认关闭，只有显式 route policy 启用；可靠 Knowledge 可使用现有 `decision.action=reply + assistant_message` 直接回复，不新增公共 Citation 字段。
+Agent 知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型任意决定检索。Router 阶段 Memory 只在 `MEMORY_MODE=on` 时启用并固定 scopes 为 `user_preference,stable_fact`；Knowledge 仍由显式 route policy 控制。
 
 同一个 Route/Invoke 流程使用 request-scoped assembly cache。Router 检索候选可被目标 Agent 复用，但 Agent 阶段必须重新应用 Agent visibility、声明 source/scope 和预算；不同请求、用户或租户之间不复用。
 

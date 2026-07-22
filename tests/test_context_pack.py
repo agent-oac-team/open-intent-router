@@ -1,4 +1,5 @@
 from app.core.config import Settings
+from app.core.memory_runtime import build_memory_runtime_policy
 from app.schemas.logs import AgentResult
 from app.schemas.routing import (
     LLMRouteInput,
@@ -156,9 +157,11 @@ async def test_router_attaches_context_pack_to_llm_input_response_and_route_log(
         settings=settings,
         registry=registry_service,
         llm_client=llm,
+        context_service=ContextService(settings, runtime_policy=build_memory_runtime_policy("off")),
         chat_history_service=chat_history,
         result_repository=repositories["results"],
         route_log_repository=repositories["route_logs"],
+        runtime_policy=build_memory_runtime_policy("off"),
     )
 
     response = await service.route(

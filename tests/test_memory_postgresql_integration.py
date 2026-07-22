@@ -313,7 +313,7 @@ async def test_real_postgresql_route_turn_to_recall_pork_preference() -> None:
         storage_backend="database",
         database_url=_postgresql_url(),
         memory_strategy_provider="memory",
-        memory_formation_mode="enforced",
+        memory_mode="on",
         memory_formation_window_turns=1,
         memory_formation_model_timeout_seconds=1,
     )
@@ -490,7 +490,7 @@ async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> N
     settings = Settings(
         storage_backend="database",
         database_url=_postgresql_url(),
-        memory_formation_mode="observe",
+        memory_mode="observe",
         memory_formation_window_turns=5,
         memory_formation_idle_seconds=30,
         memory_formation_model_timeout_seconds=1,
@@ -639,7 +639,7 @@ async def test_real_postgresql_request_trace_resolves_pending_update_and_delete(
         storage_backend="database",
         database_url=_postgresql_url(),
         memory_strategy_provider="memory",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)

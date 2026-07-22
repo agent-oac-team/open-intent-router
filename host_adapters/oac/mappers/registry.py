@@ -24,7 +24,10 @@ class RegistryPolicyProjectionError(ValueError):
 
 
 def registry_agent_to_native(
-    agent: RegistryAgent, *, catalog: BundleCatalog = OAC_BUNDLE_CATALOG
+    agent: RegistryAgent,
+    *,
+    catalog: BundleCatalog = OAC_BUNDLE_CATALOG,
+    existing: AgentDefinition | None = None,
 ) -> AgentDefinition:
     has_bot = bool(agent.bot_id.strip())
     has_route = bool(agent.route_path.strip())
@@ -46,7 +49,7 @@ def registry_agent_to_native(
     if agent.route_path:
         validate_route_path(agent.route_path)
     agent_type = "provider_platform" if has_bot else "ui_handoff"
-    return AgentDefinition(
+    projected = AgentDefinition(
         agent_id=agent.agent_id,
         name=agent.name,
         description=agent.description,
@@ -71,6 +74,20 @@ def registry_agent_to_native(
         ),
         metadata={"legacy_contract": "irs-agent-registry-v1"},
         source="database",
+    )
+    if existing is None:
+        return projected
+    return existing.model_copy(
+        update={
+            "name": projected.name,
+            "description": projected.description,
+            "enabled": projected.enabled,
+            "type": projected.type,
+            "trigger": projected.trigger,
+            "access_policy": projected.access_policy,
+            "invocation": projected.invocation,
+            "ui_handoff": projected.ui_handoff,
+        }
     )
 
 

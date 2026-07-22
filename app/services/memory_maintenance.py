@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from app.core.memory_runtime import MemoryRuntimePolicy
+
 
 @dataclass
 class MemoryMaintenanceRuntimeStatus:
@@ -13,8 +15,16 @@ class MemoryMaintenanceRuntimeStatus:
 
 
 class MemoryMaintenanceRuntime:
-    def __init__(self, *, settings, memory_service, status=None) -> None:
+    def __init__(
+        self,
+        *,
+        settings,
+        memory_service,
+        status=None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
+    ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
         self.status = status or MemoryMaintenanceRuntimeStatus()
         self._stop = asyncio.Event()
@@ -24,12 +34,12 @@ class MemoryMaintenanceRuntime:
         if self._tasks:
             return
         self._stop.clear()
-        if self.settings.memory_index_worker_enabled:
+        if self.runtime_policy.effective_index_worker_enabled:
             self._tasks.append(asyncio.create_task(self._index_loop(), name="memory-index-worker"))
-        if self.settings.memory_ttl_sweeper_enabled:
+        if self.runtime_policy.effective_ttl_sweeper_enabled:
             self._tasks.append(asyncio.create_task(self._ttl_loop(), name="memory-ttl-sweeper"))
-        self.status.index_worker_running = self.settings.memory_index_worker_enabled
-        self.status.ttl_sweeper_running = self.settings.memory_ttl_sweeper_enabled
+        self.status.index_worker_running = self.runtime_policy.effective_index_worker_enabled
+        self.status.ttl_sweeper_running = self.runtime_policy.effective_ttl_sweeper_enabled
         self.status.state = "running" if self._tasks else "disabled"
 
     async def stop(self) -> None:

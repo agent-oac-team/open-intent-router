@@ -38,7 +38,7 @@ async def test_route_memory_and_knowledge_are_disabled_by_default_and_explicitly
     memory = StubMemoryService()
     knowledge = StubKnowledgeService(status="empty")
     disabled = ContextService(
-        Settings(context_pipeline_mode="observe"),
+        Settings(context_pipeline_mode="observe", memory_mode="off"),
         memory_service=memory,
         knowledge_service=knowledge,
     )
@@ -56,9 +56,8 @@ async def test_route_memory_and_knowledge_are_disabled_by_default_and_explicitly
     enabled = ContextService(
         Settings(
             context_pipeline_mode="observe",
-            context_route_memory_enabled=True,
+            memory_mode="on",
             context_route_knowledge_enabled=True,
-            context_route_memory_scopes="user_preference,stable_fact",
             context_route_knowledge_source_ids="policy_docs",
         ),
         memory_service=memory,

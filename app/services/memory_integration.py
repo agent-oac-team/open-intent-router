@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.llm.conversation_formation import validate_conversation_candidates
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.logs import AgentResult, AgentRun
@@ -71,8 +72,10 @@ class StructuredFormationPublisher:
         repository,
         projector: StructuredEventProjector | None = None,
         clock: Callable[[], datetime] | None = None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.repository = repository
         self.projector = projector or StructuredEventProjector()
         self.clock = clock or (lambda: datetime.now(UTC))
@@ -87,7 +90,7 @@ class StructuredFormationPublisher:
         occurred_at: datetime | None = None,
         source_order: int | None = None,
     ) -> MemoryFormationJob | None:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return None
         occurred = occurred_at or self.clock()
         version = source_version or _source_version(
@@ -122,7 +125,7 @@ class StructuredFormationPublisher:
         event_id: str | None = None,
         source_version: str | None = None,
     ) -> MemoryFormationJob | None:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return None
         version = source_version or _source_version(
             {"event_type": event_type, "run": run.model_dump(mode="json")}
@@ -147,7 +150,7 @@ class StructuredFormationPublisher:
         event_id: str | None = None,
         source_version: str | None = None,
     ) -> MemoryFormationJob | None:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return None
         version = source_version or _source_version(
             {
@@ -193,7 +196,7 @@ class StructuredFormationPublisher:
         job = MemoryFormationJob(
             job_id=f"mfjob_struct_{digest[:32]}",
             trigger=MemoryFormationTrigger.STRUCTURED_EVENT,
-            mode=self.settings.memory_formation_mode,
+            mode=self.runtime_policy.effective_formation_mode,
             tenant_id=projection.tenant_id,
             user_id=projection.user_id,
             session_id=session_id,

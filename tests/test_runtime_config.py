@@ -1,7 +1,8 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
-from app.dependencies import get_registry_service
+from app.core.memory_runtime import build_memory_runtime_policy
+from app.dependencies import get_memory_runtime_policy, get_registry_service
 from app.main import create_app
 from app.repositories.memory import MemoryAgentDefinitionRepository
 from app.schemas.agents import AgentDefinition
@@ -18,22 +19,22 @@ def test_runtime_config_exposes_safe_status() -> None:
         router_llm_api_key="secret-key",
         admin_api_token="admin-secret",
         context_pipeline_mode="observe",
-        context_route_memory_enabled=True,
         context_route_knowledge_enabled=True,
         context_policy_version="policy-test",
         context_budget_version="budget-test",
         context_projection_version="projection-test",
-        memory_formation_mode="observe",
+        memory_mode="observe",
         memory_formation_model="private-provider-model-name",
         memory_formation_model_version="formation-model-test",
         memory_formation_prompt_version="formation-prompt-test",
         memory_formation_policy_version="formation-policy-test",
-        memory_formation_worker_enabled=True,
-        memory_formation_sweeper_enabled=True,
     )
     repository = MemoryAgentDefinitionRepository()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_runtime_policy] = lambda: build_memory_runtime_policy(
+        "observe"
+    )
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=repository,
@@ -51,8 +52,9 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert body["admin_api_token_configured"] is True
     assert body["admin_auth_mode"] == "token_required"
     assert body["registry_mutation_mode"] == "token_required"
-    assert body["memory_enabled"] is True
-    assert body["memory_recall_enabled"] is True
+    assert body["memory_mode"] == "observe"
+    assert body["memory_enabled"] is False
+    assert body["memory_recall_enabled"] is False
     assert body["memory_strategy_provider"] == "memory"
     assert body["memory_formation_mode"] == "observe"
     assert body["memory_execution_mode"] == "live"
@@ -66,7 +68,7 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert body["knowledge_enabled"] is True
     assert body["knowledge_vector_backend"] == "memory"
     assert body["context_pipeline_mode"] == "observe"
-    assert body["context_route_memory_enabled"] is True
+    assert body["context_route_memory_enabled"] is False
     assert body["context_route_knowledge_enabled"] is True
     assert body["context_policy_version"] == "policy-test"
     assert body["context_budget_version"] == "budget-test"
@@ -96,6 +98,29 @@ async def test_runtime_config_reports_registry_agent_count(settings, summarizer_
     assert body["registry_agent_count"] == 1
     assert body["admin_auth_mode"] == "token_required"
     assert body["registry_mutation_mode"] == "token_required"
+
+
+def test_runtime_config_reports_effective_decision_shadow_worker_states() -> None:
+    settings = Settings(storage_backend="memory", memory_mode="on")
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_runtime_policy] = lambda: build_memory_runtime_policy(
+        "on", execution_plane="decision_shadow"
+    )
+    app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
+        settings=settings,
+        repository=MemoryAgentDefinitionRepository(),
+    )
+
+    response = TestClient(app).get("/api/v1/runtime/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["memory_execution_mode"] == "decision_shadow"
+    assert body["memory_formation_worker_enabled"] is False
+    assert body["memory_formation_sweeper_enabled"] is False
+    assert body["memory_index_worker_enabled"] is False
+    assert body["memory_ttl_sweeper_enabled"] is False
 
 
 def test_runtime_config_reports_local_dev_write_mode() -> None:

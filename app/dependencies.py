@@ -2,6 +2,7 @@ from functools import lru_cache
 from uuid import uuid4
 
 from app.core.config import get_settings
+from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.db.session import create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
 from app.plugins.evidence import build_evidence_provider
@@ -106,27 +107,60 @@ from app.services.router_service import RouterService
 from app.services.task_continuation import TaskMemoryPlanResolver
 from app.services.turn_service import TurnService
 
+_memory_runtime_policy_override: MemoryRuntimePolicy | None = None
+_memory_runtime_database_url: str | None = None
+_memory_runtime_collection: str | None = None
 
-def _memory_data_settings(settings):
-    if settings.memory_execution_mode == "decision_shadow":
+
+def configure_memory_runtime(
+    policy: MemoryRuntimePolicy,
+    *,
+    database_url: str | None = None,
+    collection: str | None = None,
+) -> None:
+    global _memory_runtime_policy_override
+    global _memory_runtime_database_url
+    global _memory_runtime_collection
+    _memory_runtime_policy_override = policy
+    _memory_runtime_database_url = database_url
+    _memory_runtime_collection = collection
+    get_memory_runtime_policy.cache_clear()
+    get_memory_data_settings.cache_clear()
+
+
+@lru_cache
+def get_memory_runtime_policy() -> MemoryRuntimePolicy:
+    return _memory_runtime_policy_override or build_memory_runtime_policy(
+        get_settings().memory_mode
+    )
+
+
+def _memory_data_settings(
+    settings,
+    policy: MemoryRuntimePolicy | None = None,
+    *,
+    database_url: str | None = None,
+    collection: str | None = None,
+):
+    resolved_policy = policy or get_memory_runtime_policy()
+    if resolved_policy.execution_plane == "state_rehearsal":
+        resolved_database_url = database_url or _memory_runtime_database_url
+        resolved_collection = collection or _memory_runtime_collection
+        if not resolved_database_url:
+            raise ValueError("State Rehearsal requires an isolated Memory database URL")
+        if resolved_database_url == settings.database_url:
+            raise ValueError("State Rehearsal Memory database must differ from canonical database")
+        if not resolved_collection or resolved_collection in {
+            settings.memory_milvus_collection,
+            settings.knowledge_milvus_collection,
+        }:
+            raise ValueError("State Rehearsal Memory collection must be isolated")
         return settings.model_copy(
             update={
-                "memory_enabled": False,
-                "memory_recall_enabled": False,
-                "memory_formation_mode": "off",
-                "memory_formation_worker_enabled": False,
-                "memory_formation_sweeper_enabled": False,
-                "memory_index_worker_enabled": False,
-                "memory_ttl_sweeper_enabled": False,
-            }
-        )
-    if settings.memory_execution_mode == "state_rehearsal":
-        return settings.model_copy(
-            update={
-                "database_url": settings.memory_rehearsal_database_url,
-                "memory_milvus_collection": settings.memory_rehearsal_milvus_collection,
-                "memory_mem0_milvus_collection": settings.memory_rehearsal_milvus_collection,
-                "memory_mem0_history_database_url": settings.memory_rehearsal_database_url,
+                "database_url": resolved_database_url,
+                "memory_milvus_collection": resolved_collection,
+                "memory_mem0_milvus_collection": resolved_collection,
+                "memory_mem0_history_database_url": resolved_database_url,
             }
         )
     return settings
@@ -198,6 +232,7 @@ def get_memory_service() -> MemoryService:
         settings=settings,
         repository=repositories["memory_items"],
         formation_repository=get_memory_formation_repository(),
+        runtime_policy=get_memory_runtime_policy(),
     )
 
 
@@ -220,10 +255,17 @@ def get_memory_maintenance_runtime_status() -> MemoryMaintenanceRuntimeStatus:
 
 
 def build_memory_maintenance_runtime(*, settings=None, memory_service=None):
+    resolved_settings = settings or get_settings()
+    runtime_policy = (
+        get_memory_runtime_policy()
+        if settings is None
+        else build_memory_runtime_policy(resolved_settings.memory_mode)
+    )
     return MemoryMaintenanceRuntime(
-        settings=settings or get_settings(),
+        settings=resolved_settings,
         memory_service=memory_service or get_memory_service(),
         status=get_memory_maintenance_runtime_status(),
+        runtime_policy=runtime_policy,
     )
 
 
@@ -249,6 +291,7 @@ def get_memory_observability_service() -> MemoryObservabilityService:
         maintenance_status=get_memory_maintenance_runtime_status(),
         turn_repository=get_turn_repository(),
         outbox_repository=get_turn_outbox_repository(),
+        runtime_policy=get_memory_runtime_policy(),
     )
 
 
@@ -261,8 +304,13 @@ def build_memory_formation_runtime(
     *, settings=None, processor=None, repository=None, reconciler=None
 ) -> MemoryFormationRuntime:
     resolved_settings = settings or get_settings()
-    memory_settings = _memory_data_settings(resolved_settings)
-    if resolved_settings.memory_formation_mode == "off":
+    runtime_policy = (
+        get_memory_runtime_policy()
+        if settings is None
+        else build_memory_runtime_policy(resolved_settings.memory_mode)
+    )
+    memory_settings = _memory_data_settings(resolved_settings, runtime_policy)
+    if runtime_policy.effective_formation_mode == "off":
         resolved_repository = repository or MemoryFormationTurnJobRepository()
         resolved_processor = processor or UnavailableFormationJobProcessor()
     else:
@@ -278,9 +326,11 @@ def build_memory_formation_runtime(
             coordinator=FormationTriggerCoordinator(
                 settings=resolved_settings,
                 repository=resolved_repository,
+                runtime_policy=runtime_policy,
             ),
             event_repository=get_memory_service().repository,
             owner=f"turn-outbox-formation-{uuid4().hex}",
+            runtime_policy=runtime_policy,
         )
     return MemoryFormationRuntime(
         settings=memory_settings,
@@ -289,13 +339,16 @@ def build_memory_formation_runtime(
             repository=resolved_repository,
             processor=resolved_processor,
             owner=f"formation-worker-{uuid4().hex}",
+            runtime_policy=runtime_policy,
         ),
         sweeper=FormationIdleSweeper(
             settings=resolved_settings,
             repository=resolved_repository,
+            runtime_policy=runtime_policy,
         ),
         reconciler=resolved_reconciler,
         status=get_memory_formation_runtime_status(),
+        runtime_policy=runtime_policy,
     )
 
 
@@ -325,6 +378,7 @@ def get_agent_context_service() -> AgentContextAssemblyService:
         settings=settings,
         memory_service=get_memory_service(),
         knowledge_service=get_knowledge_service(),
+        runtime_policy=get_memory_runtime_policy(),
     )
 
 
@@ -371,6 +425,7 @@ def get_router_service() -> RouterService:
             settings,
             memory_service=get_memory_service(),
             knowledge_service=get_knowledge_service(),
+            runtime_policy=get_memory_runtime_policy(),
         ),
         chat_history_service=get_chat_history_service(),
         result_repository=repositories["results"],
@@ -381,6 +436,7 @@ def get_router_service() -> RouterService:
         agent_context_service=get_agent_context_service(),
         plan_continuation_resolver=get_task_memory_plan_resolver(),
         turn_service=get_turn_service(),
+        runtime_policy=get_memory_runtime_policy(),
     )
 
 
@@ -467,11 +523,9 @@ def get_invocation_service() -> InvocationService:
         plan_service=get_plan_service(),
         turn_capture=get_turn_capture_service(),
         structured_formation=get_structured_formation_publisher(),
-        automatic_formation_enabled=settings.memory_formation_mode != "off",
         memory_service=get_memory_service(),
         canonical_invocation_store=get_canonical_invocation_store(),
-        memory_formation_mode=settings.memory_formation_mode,
-        memory_execution_mode=settings.memory_execution_mode,
+        runtime_policy=get_memory_runtime_policy(),
         memory_formation_policy_version=settings.memory_formation_policy_version,
     )
 
@@ -515,7 +569,7 @@ def get_plan_service() -> PlanService:
     return PlanService(
         repositories["plans"],
         structured_formation=get_structured_formation_publisher(),
-        automatic_formation_enabled=get_settings().memory_formation_mode != "off",
+        runtime_policy=get_memory_runtime_policy(),
     )
 
 

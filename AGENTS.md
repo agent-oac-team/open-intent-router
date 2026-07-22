@@ -10,6 +10,7 @@
 
 ## Harness 与文档路由
 
+- 稳定领域语言：`CONTEXT.md`；需求、设计和命名出现术语冲突时，以该词汇表为准并先纠正用词。
 - 文档统一入口：`docs/README.md`。
 - 跨模块或不熟悉目录时先读 `docs/App-Desc/README.md`。
 - 研发 / 测试规约与技能目录见 `docs/App-Adr/README.md`。

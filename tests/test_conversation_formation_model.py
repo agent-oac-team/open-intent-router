@@ -317,7 +317,7 @@ async def test_model_error_marks_job_retry_without_advancing_watermark() -> None
             raise FormationModelInvalidResponse("invalid strict JSON")
 
     worker = FormationJobWorker(
-        settings=_settings(memory_formation_mode="observe"),
+        settings=_settings(memory_mode="observe"),
         repository=repository,
         processor=InvalidProcessor(),
         owner="worker-1",

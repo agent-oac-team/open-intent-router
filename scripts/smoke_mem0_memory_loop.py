@@ -448,7 +448,7 @@ async def _verify_real_formation_provider(
 ) -> None:
     formation_settings = settings.model_copy(
         update={
-            "memory_formation_mode": "enforced",
+            "memory_mode": "on",
             "memory_formation_window_turns": 1,
             "memory_formation_max_attempts": 3,
             "memory_formation_retry_base_seconds": 0.25,
@@ -546,7 +546,7 @@ async def _verify_plan_continuation(
 ) -> None:
     formation_settings = settings.model_copy(
         update={
-            "memory_formation_mode": "enforced",
+            "memory_mode": "on",
             "memory_formation_model_timeout_seconds": min(
                 settings.memory_formation_model_timeout_seconds,
                 settings.memory_formation_lease_seconds / 2,

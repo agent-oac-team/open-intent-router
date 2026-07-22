@@ -24,4 +24,4 @@
 - 双可写主源配置：启动失败。
 - `write_freeze_enabled=true`：Route/control/runtime write 返回 503，Knowledge read 保持可用。
 - OIR 超时且提交未知：返回 `fallback_blocked=ambiguous_commit`，使用同一 request ID 查询状态，不向 IRS 重放。
-- Formation/Recall/Worker 可分别 mode-off；Outbox/Formation/Index 使用既有 dead-letter 和 repair 工具。
+- 通过 `MEMORY_MODE=off` 一次关闭 Recall 和新 Formation；不得恢复独立 worker 开关。Outbox 审计与 delete/TTL/index maintenance 继续使用既有 dead-letter 和 repair 工具。

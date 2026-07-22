@@ -202,7 +202,7 @@ def _operation(
 
 
 def _services(settings: Settings | None = None):
-    settings = settings or Settings(storage_backend="memory", memory_formation_mode="observe")
+    settings = settings or Settings(storage_backend="memory", memory_mode="observe")
     items = MemoryItemRepository()
     memory = MemoryService(settings=settings, repository=items)
     formation = MemoryFormationTurnJobRepository()
@@ -497,7 +497,7 @@ async def test_recall_only_debug_builds_context_links_without_formation_trace() 
 
 
 async def test_mode_off_router_recall_is_linked_to_turn_without_formation_buffer() -> None:
-    settings = Settings(storage_backend="memory", memory_formation_mode="off")
+    settings = Settings(storage_backend="memory", memory_mode="off")
     items, memory, formation, observability, _ = _services(settings)
     await items.add(
         MemoryItem(
@@ -545,7 +545,7 @@ async def test_mode_off_router_recall_is_linked_to_turn_without_formation_buffer
 
 
 async def test_health_and_metrics_include_canonical_pipeline_backlog() -> None:
-    settings = Settings(storage_backend="memory", memory_formation_mode="enforced")
+    settings = Settings(storage_backend="memory", memory_mode="on")
     items = MemoryItemRepository()
     memory = MemoryService(settings=settings, repository=items)
     formation = MemoryFormationTurnJobRepository()
@@ -993,7 +993,7 @@ async def test_database_hard_delete_replay_survives_restart_with_omitted_precond
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'completed-delete-replay.db'}",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     memory = MemoryService(
@@ -1590,7 +1590,7 @@ async def test_database_health_uses_aggregates_without_loading_event_ledger(tmp_
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'health-aggregate.db'}",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)
@@ -1630,7 +1630,7 @@ async def test_database_metrics_are_full_aggregates_beyond_snapshot_limit(tmp_pa
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'metrics-aggregate.db'}",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)
@@ -1733,7 +1733,7 @@ async def test_database_association_filters_hydrate_job_level_pending_decision(t
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'job-decision-association.db'}",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)
@@ -1837,7 +1837,7 @@ async def test_database_pending_resolution_and_trace_survive_service_restart(tmp
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'management-restart.db'}",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)
@@ -1967,7 +1967,7 @@ async def test_database_pending_delete_recovers_after_claim_only_restart(tmp_pat
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'delete-resolution-crash.db'}",
-        memory_formation_mode="observe",
+        memory_mode="observe",
     )
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)

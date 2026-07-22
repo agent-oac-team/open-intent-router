@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from app.dependencies import get_registry_service  # noqa: E402
 from app.schemas.agents import AgentDefinition, SchemaContract  # noqa: E402
+from app.schemas.registry_mutation import RegistryMutationCommand  # noqa: E402
 from host_adapters.oac.mappers.registry import (  # noqa: E402
     registry_agent_from_native,
     registry_agent_to_native,
@@ -19,6 +20,7 @@ from host_adapters.oac.mappers.registry import (  # noqa: E402
 from host_adapters.oac.schemas.registry import RegistryAgent  # noqa: E402
 
 DEFAULT_SOURCE = Path("/Users/lijingtong/project/intent_recon_sys/sql/agent_registry.csv")
+INITIAL_MEMORY_AGENT_IDS = frozenset({"strategy_analysis", "compliance_review"})
 
 
 def load_irs_agents(path: Path) -> list[AgentDefinition]:
@@ -31,17 +33,30 @@ def load_irs_agents(path: Path) -> list[AgentDefinition]:
     return agents
 
 
-async def import_agents(agents: list[AgentDefinition], *, dry_run: bool) -> list[dict[str, Any]]:
+async def import_agents(
+    agents: list[AgentDefinition], *, dry_run: bool, actor_id: str
+) -> list[dict[str, Any]]:
     service = get_registry_service()
     results = []
     for agent in agents:
         existing = await service.get_definition(agent.agent_id)
         expected_revision = existing.revision if existing else 0
-        saved = (
-            agent
-            if dry_run
-            else await service.upsert_definition(agent, expected_revision=expected_revision)
-        )
+        if dry_run:
+            saved = agent
+        else:
+            result = await service.mutate_definition(
+                RegistryMutationCommand(
+                    operation="update" if existing else "create",
+                    agent_id=agent.agent_id,
+                    actor_id=actor_id,
+                    source="oac_memory_mode_migration",
+                    expected_revision=expected_revision,
+                    definition=agent,
+                )
+            )
+            saved = result.after
+            if saved is None:
+                raise RuntimeError("Registry mutation did not return the saved definition")
         results.append(
             {
                 "agent_id": agent.agent_id,
@@ -73,6 +88,7 @@ def build_reconciliation_report(agents: list[AgentDefinition]) -> dict[str, Any]
                 "invocation_type": agent.invocation.type,
                 "bot_id_present": bool(agent.invocation.provider_config.get("bot_id")),
                 "ui_handoff_route": agent.ui_handoff.route,
+                "memory_context": agent.context.memory.model_dump(mode="json"),
                 "checks": {
                     "stable_id": True,
                     "name": bool(agent.name),
@@ -116,12 +132,26 @@ def _row_to_agent(row: dict[str, str]) -> AgentDefinition:
     )
     agent = registry_agent_to_native(legacy)
     output_fields = _json_list(row.get("output_schema"))
+    context = agent.context
+    if agent.agent_id in INITIAL_MEMORY_AGENT_IDS:
+        context = context.model_copy(
+            update={
+                "memory": context.memory.model_copy(
+                    update={
+                        "mode": "prefetch",
+                        "scopes": ["user_preference", "stable_fact"],
+                        "max_items": 5,
+                    }
+                )
+            }
+        )
     return agent.model_copy(
         update={
             "domain": row.get("domain", "").strip() or None,
             "required_inputs": _json_list(row.get("required_inputs")),
             "optional_inputs": _json_list(row.get("optional_inputs")),
             "output_schema": SchemaContract(properties={field: {} for field in output_fields}),
+            "context": context,
         }
     )
 
@@ -137,8 +167,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--actor")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
+    if not args.dry_run and not args.actor:
+        parser.error("--actor is required when applying Registry mutations")
     agents = load_irs_agents(args.source)
     report = build_reconciliation_report(agents)
     if args.report:
@@ -147,7 +180,9 @@ def main() -> None:
             json.dumps(report, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-    results = asyncio.run(import_agents(agents, dry_run=args.dry_run))
+    results = asyncio.run(
+        import_agents(agents, dry_run=args.dry_run, actor_id=args.actor or "dry-run")
+    )
     print(json.dumps({"report": report, "imports": results}, ensure_ascii=False, indent=2))
     if not report["passed"]:
         raise SystemExit(1)

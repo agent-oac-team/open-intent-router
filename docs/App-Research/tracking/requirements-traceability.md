@@ -15,6 +15,7 @@
 | 空 `03` 客群槽位 | Manifest `deferred`、0 Chunk/Vector | 通过 |
 | Coze Knowledge | Search/Grouped/Read/Access transport tests | 通过；不覆盖 Workflow 后处理 |
 | Memory 从 completed Turn 形成 | Turn Outbox formation、幂等、mode-off、repair tests | 通过 |
+| Memory 单一运行模式 | `simplify-memory-runtime-mode` 本地验收：三态 policy、9 Agent Registry、Runtime/Capability | 本地自动化通过；真实登录 Recall 与测试环境待完成 |
 | Fallback/Write Fence | operation policy、Circuit、commit proof、write block tests | 通过 |
 | Decision Shadow 无副作用 | `route_decision_shadow` 及 side-effect dependency tests | 通过 |
 | 迟到回调隔离 | cutover guard、脱敏 repository、Central Handler test | 通过 |

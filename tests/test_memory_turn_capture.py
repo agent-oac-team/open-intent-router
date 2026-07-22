@@ -18,7 +18,7 @@ from app.services.memory_formation import (
 def _settings(**updates) -> Settings:
     values = {
         "storage_backend": "memory",
-        "memory_formation_mode": "observe",
+        "memory_mode": "observe",
         "memory_formation_capsule_user_chars": 20,
         "memory_formation_capsule_assistant_chars": 40,
         "memory_formation_capsule_summary_chars": 16,
@@ -184,7 +184,7 @@ async def test_temporary_request_skips_buffer_and_records_only_redacted_event() 
 
 
 async def test_formation_mode_off_has_no_automatic_capture_or_trace_side_effect() -> None:
-    settings = _settings(memory_formation_mode="off")
+    settings = _settings(memory_mode="off")
     turns = MemoryFormationTurnJobRepository()
     events = MemoryItemRepository()
     service = TurnCaptureService(

@@ -4,29 +4,42 @@
 
 ## 配置边界
 
-配置项以 `.env.example` 为准，分为六组：
+配置项以 `.env.example` 为准，分为五组：
 
-- 形成策略：`MEMORY_FORMATION_MODE`、5-turn/30-second、model/prompt/policy version、0.90/0.70 thresholds。
+- 行为模式：`MEMORY_MODE=off|observe|on` 是唯一启停入口。
+- 形成策略：5-turn/30-second、model/prompt/policy version、0.90/0.70 thresholds。
 - 恢复语义：model timeout、lease、max attempts、指数 retry 范围。
-- 后台进程：formation worker/sweeper、index worker、TTL sweeper、maintenance/sweep interval、consolidation。
+- 后台进程参数：maintenance/sweep/consolidation interval；进程是否运行由模式固定派生。
 - 内容上限：user/assistant/summary capsule chars 和 prompt max chars。
-- 独立关闭：`MEMORY_FORMATION_MODE` 控制自动形成，`MEMORY_RECALL_ENABLED` 控制召回，
-  `MEMORY_FORMATION_WORKER_ENABLED` 控制形成 Job Worker；三者互不替代。
-- 隔离执行：`MEMORY_EXECUTION_MODE=decision_shadow` 禁止 Memory 召回和写副作用；
-  `state_rehearsal` 必须配置独立 `MEMORY_REHEARSAL_DATABASE_URL` 和
-  `MEMORY_REHEARSAL_MILVUS_COLLECTION`，且不得指向主数据域。
+- 隔离执行：通用 OIR 固定 `live`；OAC 使用 `OAC_HOST_SHADOW_MODE=decision|state_rehearsal`。
+  State Rehearsal 的 database 和 collections 必须由 OAC Host 配置且不得指向主数据域。
 
 自动 Formation 的唯一可信入口是已完成 Canonical Turn 的 `turn.completed` Transactional
 Outbox。Consumer 重新读取 Turn 并验证 tenant/user/session/request 所有权、终态、最终语义响应和
 Result 引用后才构造 Capsule。Plan、Run、Result、Event 或 Host 消息不能脱离 completed Turn 自动
 形成记忆。重复 Outbox 投递按 canonical `turn_id`、policy version 和冻结 window 收敛。
 
-`MEMORY_FORMATION_MODE=off` 是终态 skipped，不是可恢复 pause：Turn、Run/Result 和 Outbox 审计仍
+`MEMORY_MODE=off` 是终态 skipped，不是可恢复 pause：Turn、Run/Result 和 Outbox 审计仍
 正常收口，consumer 写 `formation_mode_off` 后完成事件，不在配置重新开启时回放历史正文。
-`observe` 可生成候选和决策但不写 Item/Revision/provider；只有 `enforced` 允许 lifecycle 和 index
-副作用。
+`observe` 可生成候选和决策但不写 Item/Revision/provider；只有 `on` 允许 enforced lifecycle、
+Recall 和 index 副作用。三种模式都继续 delete、TTL、index repair 和已提交 operation maintenance。
 
 `GET /api/v1/runtime/config` 只暴露非敏感模式、版本、worker 开关、queue/dead-letter/index/delete health。管理员使用 `GET /api/v1/admin/memories/health` 和 `GET /api/v1/admin/memories/metrics` 查看完整无正文聚合；响应不得包含 API key、token、数据库密码、prompt 或候选原文。
+
+### 旧配置迁移
+
+部署前删除以下退役变量；即使值为空也会导致启动失败。不要逐项翻译布尔组合，只按目标行为设置一个 `MEMORY_MODE`。
+
+| 旧变量 | 迁移目标 |
+| --- | --- |
+| `MEMORY_ENABLED`、`MEMORY_RECALL_ENABLED` | `MEMORY_MODE=off|on` |
+| `MEMORY_FORMATION_MODE` | `off -> off`、`observe -> observe`、`enforced -> on` |
+| `MEMORY_EXECUTION_MODE` | 通用 OIR 固定 live；OAC 使用 `OAC_HOST_SHADOW_MODE` |
+| `MEMORY_TURN_OUTBOX_CONSUMER_ENABLED` | 删除；Outbox 审计固定开启 |
+| `MEMORY_FORMATION_WORKER_ENABLED`、`MEMORY_FORMATION_SWEEPER_ENABLED` | 删除；observe/on 自动开启 |
+| `MEMORY_INDEX_WORKER_ENABLED`、`MEMORY_TTL_SWEEPER_ENABLED` | 删除；三种模式固定开启 |
+| `MEMORY_CONSOLIDATION_ENABLED` | 删除；首版固定关闭 |
+| `CONTEXT_ROUTE_MEMORY_ENABLED`、`CONTEXT_ROUTE_MEMORY_SCOPES` | 删除；on 固定 scopes 为 `user_preference,stable_fact` |
 
 health/metrics 还提供 `pending_turn_count`、`outbox_pending_count`、
 `outbox_oldest_pending_seconds`、`trace_missing_count`，与既有 Formation dead-letter、index
@@ -38,21 +51,21 @@ out-of-sync/dead-letter 一起作为扩量门禁。指标不得把 tenant/user/r
 
 ### 1. Schema 与 mode off
 
-1. 部署 PostgreSQL schema 和服务，保持 `MEMORY_FORMATION_MODE=off`、formation worker/sweeper 关闭。
-2. 保持 `MEMORY_INDEX_WORKER_ENABLED=true`、`MEMORY_TTL_SWEEPER_ENABLED=true`，让显式写入、删除和已有 maintenance 正常工作。
+1. 部署 PostgreSQL schema 和服务，设置 `MEMORY_MODE=off`。
+2. 确认 Runtime Config 显示 Recall/Formation worker 关闭，Outbox 审计和 index/TTL maintenance 开启。
 3. 验证 legacy active memory 的 deterministic key/revision-1 backfill 可重跑，Plan ownership schema 拒绝无 owner 数据。
 4. 验证 `/runtime/config` 无凭证、formation queue/dead-letter 为零，显式 write-candidates 和既有 `memory_context` 无回归。
 
 ### 2. Observe
 
-1. 设置 `MEMORY_FORMATION_MODE=observe`，开启 formation worker/sweeper；consolidation 初始关闭。
+1. 设置 `MEMORY_MODE=observe`；formation worker/sweeper 自动开启，Recall 和写副作用保持关闭。
 2. 至少覆盖完整 5-turn、30-second idle、无 session close、重复 Turn Outbox 和 temporary/private 流量。
 3. 抽样审查 evidence、scope、subject、memory key、ADD/UPDATE/DELETE/NOOP/REJECT/PENDING reason；observe 不允许 current/revision/provider side effect。
-4. 连续观察一个有代表性的流量周期，并用下方 gate 决定是否进入 enforced。
+4. 连续观察一个有代表性的流量周期，并用下方 gate 决定是否进入 on。
 
-### 3. 隔离 Enforced
+### 3. On
 
-1. 为单独服务实例或流量分区配置 `MEMORY_FORMATION_MODE=enforced`，只接收一个明确的 tenant allowlist；当前配置是实例级开关，隔离必须在流量入口完成，不能假定应用内存在 tenant feature flag。
+1. 为单独服务实例或流量分区配置 `MEMORY_MODE=on`，只接收一个明确的 tenant allowlist；隔离必须在流量入口完成。
 2. 先启用 preference 和 structured task 场景，保持 consolidation 关闭。
 3. 验证 canonical commit 先于 provider operation、stable-ID UPDATE、deletion pending fail-closed、repair/rebuild 和 owner-scoped Plan continuation。
 4. gate 连续通过后再扩大 tenant 范围；任何阶段不通过都回到 off 或 observe，不回滚 canonical schema。
@@ -103,11 +116,11 @@ precision review 表至少包含 `job_id/scope/operation/reviewer/correct`；`pr
 
 ## Emergency Mode-Off Drill
 
-1. 将 `MEMORY_FORMATION_MODE=off`、`MEMORY_FORMATION_WORKER_ENABLED=false`、`MEMORY_FORMATION_SWEEPER_ENABLED=false`、`MEMORY_CONSOLIDATION_ENABLED=false` 后滚动重启。
-2. 保持 index worker 和 TTL sweeper 开启，以完成已接受的 index/delete/TTL maintenance；off 不是撤销已提交 canonical operation。
+1. 将 `MEMORY_MODE=off` 后滚动重启；若退役变量仍存在，启动会 fail-fast 并只报告变量名。
+2. 确认 index worker 和 TTL sweeper 仍开启，以完成已接受的 index/delete/TTL maintenance；off 不是撤销已提交 canonical operation。
 3. 发起一个完整 Turn 并消费其 Outbox，确认记录 `formation_mode_off` 跳过原因，且没有新的
    formation turn/job/decision side effect。
-4. 验证显式 write-candidates、recall、用户删除、operation status、repair 和 runtime/debug 查询仍工作。
+4. 验证 recall 和新 write-candidates 已关闭，用户删除、operation status、repair 和 runtime/debug 查询仍工作。
 5. 观察 queue/dead-letter/index/delete health，保存切换时间、最后处理 job、未完成 operation 和恢复决策。
 
 回退不删除 PostgreSQL schema、revision 或 tombstone，也不从 mem0 history恢复 canonical 内容。

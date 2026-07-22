@@ -1,8 +1,16 @@
 from functools import lru_cache
 from typing import Literal
 
+from dotenv import dotenv_values
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.memory_runtime import (
+    RETIRED_MEMORY_BEHAVIOR_VARIABLES,
+    MemoryMode,
+    build_memory_runtime_policy,
+    reject_retired_memory_behavior_variables,
+)
 
 RegistryBackend = Literal["database", "file", "hybrid"]
 StorageBackend = Literal["memory", "database"]
@@ -20,11 +28,26 @@ PlanExecutionPolicy = Literal[
     "host_managed",
 ]
 ContextPipelineMode = Literal["legacy", "observe", "enforced"]
-MemoryFormationMode = Literal["off", "observe", "enforced"]
-MemoryExecutionMode = Literal["live", "decision_shadow", "state_rehearsal"]
 
 
 class Settings(BaseSettings):
+    def __init__(self, **values) -> None:
+        retired_field_names = {name.lower() for name in RETIRED_MEMORY_BEHAVIOR_VARIABLES}
+        retired_fields = retired_field_names.intersection(str(name).lower() for name in values)
+        if retired_fields:
+            names = ", ".join(sorted(name.upper() for name in retired_fields))
+            raise ValueError(
+                f"Retired Memory behavior settings detected: {names}. "
+                "Use memory_mode or an explicit MemoryRuntimePolicy."
+            )
+        reject_retired_memory_behavior_variables()
+        env_file = values.get("_env_file", self.model_config.get("env_file"))
+        if env_file is not None:
+            env_files = env_file if isinstance(env_file, list | tuple) else [env_file]
+            for path in env_files:
+                reject_retired_memory_behavior_variables(dotenv_values(path))
+        super().__init__(**values)
+
     app_env: str = "local"
     log_level: str = "INFO"
     cors_allow_origins: str = (
@@ -66,11 +89,9 @@ class Settings(BaseSettings):
     context_allow_request_budget_override: bool = True
     context_allow_summary_placeholder: bool = True
     context_pipeline_mode: ContextPipelineMode = "legacy"
-    context_route_memory_enabled: bool = False
     context_route_knowledge_enabled: bool = False
     context_route_knowledge_direct_reply_enabled: bool = False
     context_route_knowledge_min_score: float = 0.85
-    context_route_memory_scopes: str = ""
     context_route_knowledge_source_ids: str = ""
     context_policy_version: str = "context-policy-v1"
     context_budget_version: str = "context-budget-v1"
@@ -84,11 +105,7 @@ class Settings(BaseSettings):
 
     agent_http_timeout_seconds: float = 30.0
 
-    memory_enabled: bool = True
-    memory_recall_enabled: bool = True
-    memory_formation_mode: MemoryFormationMode = "off"
-    memory_execution_mode: MemoryExecutionMode = "live"
-    memory_turn_outbox_consumer_enabled: bool = True
+    memory_mode: MemoryMode = "off"
     memory_import_legacy_history_enabled: bool = False
     memory_rehearsal_database_url: str | None = None
     memory_rehearsal_milvus_collection: str = "oir_memory_vectors_rehearsal"
@@ -105,13 +122,8 @@ class Settings(BaseSettings):
     memory_formation_max_attempts: int = Field(default=5, ge=1)
     memory_formation_retry_base_seconds: float = Field(default=5.0, gt=0)
     memory_formation_retry_max_seconds: float = Field(default=300.0, gt=0)
-    memory_formation_worker_enabled: bool = False
-    memory_formation_sweeper_enabled: bool = False
-    memory_index_worker_enabled: bool = True
-    memory_ttl_sweeper_enabled: bool = True
     memory_maintenance_interval_seconds: float = Field(default=1.0, gt=0)
     memory_formation_sweep_interval_seconds: float = Field(default=5.0, gt=0)
-    memory_consolidation_enabled: bool = False
     memory_consolidation_interval_seconds: float = Field(default=3600.0, gt=0)
     memory_formation_capsule_user_chars: int = Field(default=2000, ge=1, le=20000)
     memory_formation_capsule_assistant_chars: int = Field(default=2000, ge=1, le=20000)
@@ -195,19 +207,61 @@ class Settings(BaseSettings):
             raise ValueError("deterministic Knowledge embeddings are limited to local/test")
         if self.memory_import_legacy_history_enabled:
             raise ValueError("legacy history import is not supported")
-        if self.memory_execution_mode == "state_rehearsal":
-            if not self.memory_rehearsal_database_url:
-                raise ValueError("state rehearsal requires an isolated Memory database URL")
-            if self.memory_rehearsal_database_url == self.database_url:
-                raise ValueError(
-                    "state rehearsal Memory database must differ from canonical database"
-                )
-            if self.memory_rehearsal_milvus_collection in {
-                self.memory_milvus_collection,
-                self.knowledge_milvus_collection,
-            }:
-                raise ValueError("state rehearsal Memory collection must be isolated")
         return self
+
+    @property
+    def memory_runtime_policy(self):
+        return build_memory_runtime_policy(self.memory_mode)
+
+    # Compatibility projections. These are deliberately not Pydantic fields and
+    # therefore cannot be configured independently through environment variables.
+    @property
+    def memory_enabled(self) -> bool:
+        return self.memory_runtime_policy.memory_enabled
+
+    @property
+    def memory_recall_enabled(self) -> bool:
+        return self.memory_runtime_policy.effective_recall_enabled
+
+    @property
+    def memory_formation_mode(self) -> str:
+        return self.memory_runtime_policy.effective_formation_mode
+
+    @property
+    def memory_execution_mode(self) -> str:
+        return self.memory_runtime_policy.execution_plane
+
+    @property
+    def memory_turn_outbox_consumer_enabled(self) -> bool:
+        return self.memory_runtime_policy.turn_outbox_consumer_enabled
+
+    @property
+    def memory_formation_worker_enabled(self) -> bool:
+        return self.memory_runtime_policy.formation_worker_enabled
+
+    @property
+    def memory_formation_sweeper_enabled(self) -> bool:
+        return self.memory_runtime_policy.formation_sweeper_enabled
+
+    @property
+    def memory_index_worker_enabled(self) -> bool:
+        return self.memory_runtime_policy.index_worker_enabled
+
+    @property
+    def memory_ttl_sweeper_enabled(self) -> bool:
+        return self.memory_runtime_policy.ttl_sweeper_enabled
+
+    @property
+    def memory_consolidation_enabled(self) -> bool:
+        return self.memory_runtime_policy.consolidation_enabled
+
+    @property
+    def context_route_memory_enabled(self) -> bool:
+        return self.memory_runtime_policy.effective_governed_context_memory_enabled
+
+    @property
+    def context_route_memory_scopes(self) -> str:
+        return ",".join(self.memory_runtime_policy.route_memory_scopes)
 
     @property
     def memory_mem0_fail_closed_effective(self) -> bool:

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from app.core.config import Settings
+from app.core.memory_runtime import build_memory_runtime_policy
 from app.db.session import create_all_tables, create_engine, create_session_factory
 from app.dependencies import (
     _memory_data_settings,
@@ -37,12 +38,17 @@ from app.services.memory_formation import (
 )
 from app.services.memory_service import MemoryService
 from app.services.turn_service import TurnService
+from host_apps.oac.config import (
+    OacHostProfile,
+    OacHostSettings,
+    validate_governance_profile,
+)
 
 
 def _settings(**overrides) -> Settings:
     values = {
         "storage_backend": "memory",
-        "memory_formation_mode": "observe",
+        "memory_mode": "observe",
         "memory_formation_window_turns": 1,
         **overrides,
     }
@@ -133,19 +139,17 @@ def test_turn_capsule_builder_rejects_nonterminal_turn() -> None:
 
 
 @pytest.mark.parametrize(
-    ("overrides", "reason"),
+    ("policy", "reason"),
     [
-        ({"memory_formation_mode": "off"}, "formation_mode_off"),
+        (build_memory_runtime_policy("off"), "formation_mode_off"),
         (
-            {"memory_execution_mode": "decision_shadow"},
+            build_memory_runtime_policy("on", execution_plane="decision_shadow"),
             "decision_shadow_no_memory_side_effect",
         ),
     ],
 )
-async def test_outbox_consumer_audits_mode_off_without_memory_side_effect(
-    overrides, reason
-) -> None:
-    settings = _settings(**overrides)
+async def test_outbox_consumer_audits_mode_off_without_memory_side_effect(policy, reason) -> None:
+    settings = _settings(memory_mode=policy.mode)
     turns, outbox, _, _ = await _completed_turn_with_outbox(settings)
     formation = MemoryFormationTurnJobRepository()
     events = MemoryItemRepository()
@@ -154,9 +158,12 @@ async def test_outbox_consumer_audits_mode_off_without_memory_side_effect(
         outbox_repository=outbox,
         turn_repository=turns,
         builder=TurnCapsuleBuilder(settings),
-        coordinator=FormationTriggerCoordinator(settings=settings, repository=formation),
+        coordinator=FormationTriggerCoordinator(
+            settings=settings, repository=formation, runtime_policy=policy
+        ),
         event_repository=events,
         owner="consumer-off",
+        runtime_policy=policy,
     )
 
     result = await consumer.run_once()
@@ -168,7 +175,7 @@ async def test_outbox_consumer_audits_mode_off_without_memory_side_effect(
 
 
 async def test_outbox_consumer_honors_persisted_suppression_after_mode_changes() -> None:
-    settings = _settings(memory_formation_mode="enforced")
+    settings = _settings(memory_mode="on")
     turns, outbox, _, completed = await _completed_turn_with_outbox(settings)
     original = next(iter(outbox.events.values()))
     snapshot = FormationEligibilitySnapshot(
@@ -249,9 +256,9 @@ async def test_database_route_completion_writes_turn_and_outbox_atomically(tmp_p
     assert claimed.event_type == "turn.completed"
 
 
-async def test_recall_can_be_disabled_independently() -> None:
+async def test_off_mode_disables_recall() -> None:
     service = MemoryService(
-        settings=_settings(memory_recall_enabled=False),
+        settings=_settings(memory_mode="off"),
         repository=MemoryItemRepository(),
     )
 
@@ -263,31 +270,36 @@ async def test_recall_can_be_disabled_independently() -> None:
     )
 
     assert response.context.status == "disabled"
-    assert response.context.metadata["memory_enabled"] is True
+    assert response.context.metadata["memory_enabled"] is False
     assert response.context.metadata["memory_recall_enabled"] is False
 
 
 def test_state_rehearsal_and_legacy_history_configuration_are_fail_closed() -> None:
-    with pytest.raises(ValidationError, match="isolated Memory database"):
-        Settings(memory_execution_mode="state_rehearsal")
-    with pytest.raises(ValidationError, match="must differ from canonical database"):
-        Settings(
-            database_url="sqlite+aiosqlite:///main.db",
-            memory_execution_mode="state_rehearsal",
-            memory_rehearsal_database_url="sqlite+aiosqlite:///main.db",
+    core = Settings(database_url="sqlite+aiosqlite:///main.db")
+    with pytest.raises(ValueError, match="isolated database URL"):
+        validate_governance_profile(
+            OacHostProfile(core=core, host=OacHostSettings(shadow_mode="state_rehearsal"))
+        )
+    with pytest.raises(ValueError, match="must differ from the primary database"):
+        validate_governance_profile(
+            OacHostProfile(
+                core=core,
+                host=OacHostSettings(
+                    shadow_mode="state_rehearsal",
+                    state_rehearsal_database_url=core.database_url,
+                ),
+            )
         )
     with pytest.raises(ValidationError, match="legacy history import is not supported"):
         Settings(memory_import_legacy_history_enabled=True)
 
-    isolated = Settings(
-        database_url="sqlite+aiosqlite:///main.db",
-        memory_execution_mode="state_rehearsal",
-        memory_rehearsal_database_url="sqlite+aiosqlite:///rehearsal.db",
-        memory_rehearsal_milvus_collection="oir_memory_vectors_rehearsal",
+    policy = build_memory_runtime_policy("on", execution_plane="state_rehearsal")
+    memory_settings = _memory_data_settings(
+        core,
+        policy,
+        database_url="sqlite+aiosqlite:///rehearsal.db",
+        collection="oir_memory_vectors_rehearsal",
     )
-    assert isolated.memory_rehearsal_database_url.endswith("rehearsal.db")
-
-    memory_settings = _memory_data_settings(isolated)
     assert memory_settings.database_url.endswith("rehearsal.db")
     assert memory_settings.memory_milvus_collection == "oir_memory_vectors_rehearsal"
     assert memory_settings.memory_mem0_milvus_collection == "oir_memory_vectors_rehearsal"
@@ -297,10 +309,10 @@ def test_production_composition_does_not_publish_isolated_runtime_records() -> N
     assert get_structured_formation_publisher() is None
     assert get_turn_capture_service() is None
 
-    shadow = _memory_data_settings(_settings(memory_execution_mode="decision_shadow"))
+    shadow = build_memory_runtime_policy("on", execution_plane="decision_shadow")
     assert shadow.memory_enabled is False
-    assert shadow.memory_recall_enabled is False
-    assert shadow.memory_formation_mode == "off"
+    assert shadow.effective_recall_enabled is False
+    assert shadow.effective_formation_mode == "off"
 
 
 async def test_state_rehearsal_starts_with_empty_isolated_memory_domain(tmp_path) -> None:
@@ -309,10 +321,13 @@ async def test_state_rehearsal_starts_with_empty_isolated_memory_domain(tmp_path
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{main_path}",
-        memory_execution_mode="state_rehearsal",
-        memory_rehearsal_database_url=f"sqlite+aiosqlite:///{rehearsal_path}",
     )
-    memory_settings = _memory_data_settings(settings)
+    memory_settings = _memory_data_settings(
+        settings,
+        build_memory_runtime_policy("on", execution_plane="state_rehearsal"),
+        database_url=f"sqlite+aiosqlite:///{rehearsal_path}",
+        collection="oir_memory_vectors_rehearsal",
+    )
 
     await create_all_tables(memory_settings)
     engine = create_engine(memory_settings)

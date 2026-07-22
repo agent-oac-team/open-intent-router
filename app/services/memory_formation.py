@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.repositories.memory_formation import formation_range_idempotency_key
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.logs import AgentResult, AgentRun
@@ -204,8 +205,15 @@ class TurnCapsuleBuilder:
 
 
 class FormationTriggerCoordinator:
-    def __init__(self, *, settings: Settings, repository) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        repository,
+        runtime_policy: MemoryRuntimePolicy | None = None,
+    ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.repository = repository
 
     async def append_and_check(
@@ -218,7 +226,7 @@ class FormationTriggerCoordinator:
         return await self.repository.append_turn_and_maybe_create_window_job(
             pending,
             window_turns=self.settings.memory_formation_window_turns,
-            mode=self.settings.memory_formation_mode,
+            mode=self.runtime_policy.effective_formation_mode,
             model_version=self.settings.memory_formation_model_version,
             prompt_version=self.settings.memory_formation_prompt_version,
             policy_version=self.settings.memory_formation_policy_version,
@@ -234,8 +242,10 @@ class TurnCaptureService:
         builder: TurnCapsuleBuilder,
         coordinator: FormationTriggerCoordinator,
         event_repository,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.builder = builder
         self.coordinator = coordinator
         self.event_repository = event_repository
@@ -248,7 +258,7 @@ class TurnCaptureService:
         result_id: str,
         completed_at: datetime | None = None,
     ) -> TurnCaptureResult:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return TurnCaptureResult(status="off")
         if not invocation.user.tenant_id:
             raise ValueError("Turn capture requires trusted tenant ownership")
@@ -286,7 +296,7 @@ class TurnCaptureService:
         run: AgentRun,
         result: AgentResult,
     ) -> TurnCaptureResult:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return TurnCaptureResult(status="off")
         if run.formation_suppressed:
             if not result.formation_skip_audit_required:
@@ -326,8 +336,10 @@ class TurnOutboxFormationConsumer:
         event_repository,
         owner: str,
         clock: Callable[[], datetime] | None = None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.outbox_repository = outbox_repository
         self.turn_repository = turn_repository
         self.builder = builder
@@ -337,7 +349,7 @@ class TurnOutboxFormationConsumer:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def run_once(self) -> dict[str, int | str]:
-        if not self.settings.memory_turn_outbox_consumer_enabled:
+        if not self.runtime_policy.turn_outbox_consumer_enabled:
             return {"status": "consumer_off", "processed": 0}
         now = self.clock()
         event = await self.outbox_repository.claim(
@@ -382,9 +394,9 @@ class TurnOutboxFormationConsumer:
             snapshot = FormationEligibilitySnapshot.model_validate(eligibility)
             if snapshot.suppressed:
                 return snapshot.reason_code
-        if self.settings.memory_execution_mode == "decision_shadow":
+        if self.runtime_policy.execution_plane == "decision_shadow":
             return "decision_shadow_no_memory_side_effect"
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return "formation_mode_off"
         return None
 
@@ -429,12 +441,19 @@ class TurnOutboxFormationConsumer:
 
 
 class FormationIdleSweeper:
-    def __init__(self, *, settings: Settings, repository) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        repository,
+        runtime_policy: MemoryRuntimePolicy | None = None,
+    ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.repository = repository
 
     async def run_once(self, *, now: datetime | None = None) -> list[MemoryFormationJob]:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return []
         current = now or datetime.now(UTC)
         identities = await self.repository.list_idle_sessions(now=current)
@@ -445,7 +464,7 @@ class FormationIdleSweeper:
                 user_id=user_id,
                 session_id=session_id,
                 trigger=MemoryFormationTrigger.IDLE,
-                mode=self.settings.memory_formation_mode,
+                mode=self.runtime_policy.effective_formation_mode,
                 model_version=self.settings.memory_formation_model_version,
                 prompt_version=self.settings.memory_formation_prompt_version,
                 policy_version=self.settings.memory_formation_policy_version,
@@ -466,15 +485,17 @@ class FormationJobWorker:
         processor: FormationJobProcessor,
         owner: str,
         clock: Callable[[], datetime] | None = None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.repository = repository
         self.processor = processor
         self.owner = owner
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def run_once(self) -> MemoryFormationJob | None:
-        if self.settings.memory_formation_mode == "off":
+        if self.runtime_policy.effective_formation_mode == "off":
             return None
         started = self.clock()
         claimed = await self.repository.claim_job(
@@ -548,8 +569,10 @@ class MemoryFormationRuntime:
         sweeper: FormationIdleSweeper,
         reconciler=None,
         status=None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.worker = worker
         self.sweeper = sweeper
         self.reconciler = reconciler
@@ -560,8 +583,8 @@ class MemoryFormationRuntime:
     async def start(self) -> None:
         if self._tasks:
             return
-        if self.settings.memory_formation_mode == "off" and (
-            self.reconciler is None or not self.settings.memory_turn_outbox_consumer_enabled
+        if self.runtime_policy.effective_formation_mode == "off" and (
+            self.reconciler is None or not self.runtime_policy.turn_outbox_consumer_enabled
         ):
             self.status.state = "disabled"
             return
@@ -572,12 +595,11 @@ class MemoryFormationRuntime:
                 await self.reconciler.run_once()
             except Exception:
                 self.status.last_error_code = "formation_reconciler_error"
-        formation_enabled = self.settings.memory_formation_mode != "off"
-        if formation_enabled and self.settings.memory_formation_worker_enabled:
+        if self.runtime_policy.effective_formation_worker_enabled:
             self._tasks.append(
                 asyncio.create_task(self._worker_loop(), name="memory-formation-worker")
             )
-        if formation_enabled and self.settings.memory_formation_sweeper_enabled:
+        if self.runtime_policy.effective_formation_sweeper_enabled:
             self._tasks.append(
                 asyncio.create_task(self._sweeper_loop(), name="memory-formation-sweeper")
             )
@@ -585,12 +607,8 @@ class MemoryFormationRuntime:
             self._tasks.append(
                 asyncio.create_task(self._reconciler_loop(), name="memory-formation-reconciler")
             )
-        self.status.worker_running = (
-            formation_enabled and self.settings.memory_formation_worker_enabled
-        )
-        self.status.sweeper_running = (
-            formation_enabled and self.settings.memory_formation_sweeper_enabled
-        )
+        self.status.worker_running = self.runtime_policy.effective_formation_worker_enabled
+        self.status.sweeper_running = self.runtime_policy.effective_formation_sweeper_enabled
         self.status.reconciler_running = self.reconciler is not None
         self.status.state = "running" if self._tasks else "idle"
 

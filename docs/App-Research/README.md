@@ -25,6 +25,7 @@ App-Research 保存需要背景、方案比较和取舍过程才能理解的材�
 | [对话记忆自动形成方案](designs/oir-conversation-memory-auto-write-strategy.md) | 已实现设计记录 | 当前上线操作看 [Formation Runbook](../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md) |
 | [OAC 无感迁移方案](designs/oac-irs-to-oir-seamless-migration-plan.md) | 历史早期方案 | 身份和回滚已被 V2 Runbook、当前 Adapter 文档和追踪矩阵取代 |
 | [OAC 迁移说明](designs/oac-migration.md) | 历史概念映射 | 当前 Registry / identity 语义看 App-Desc 中的 Registry 和 Host Adapter 文档 |
+| [OIR 语义检索接入与 IRS 过渡保障结论](designs/knowledge-semantic-search-and-irs-transition.md) | 2026-07-21 当前问题结论 | 记录 canonical Knowledge 未接入 Milvus 的缺口、目标改造和切流前 IRS 补数门禁 |
 
 ## 协作与交付记录
 
@@ -46,6 +47,7 @@ OpenSpec 的当前状态判断属于可执行工作流，见 [OpenSpec 交接](.
 | [Context Pipeline 验收](validation/governed-context-pipeline-acceptance.md) | 变更验收记录 | legacy / observe / enforced 行为和回滚条件 |
 | [OAC Agent Entitlement 演练](validation/oac-agent-entitlement-rehearsal.md) | 2026-07-20 | Registry 迁移、V2 transport 和路由权限证据 |
 | [OAC-OIR 本地联调报告](validation/oac-oir-local-integration-report.md) | 2026-07-16 | Contract、Golden、故障和 Shadow 本地证据 |
+| [Memory Runtime Mode 本地验收](validation/simplify-memory-runtime-mode-local-acceptance.md) | 2026-07-21，部分通过 | 三态启动、Registry、自动化门禁与未完成浏览器/测试环境证据 |
 
 测试报告只证明当时的代码、环境和样本。当前测试是否通过必须重新执行对应命令；本地 smoke 也不能替代测试环境 replay、cutover 或生产门禁。
 

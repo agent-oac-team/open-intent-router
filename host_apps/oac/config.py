@@ -98,6 +98,14 @@ class OacHostSettings(BaseSettings):
         return _csv_values(self.identity_allowed_attribute_keys)
 
 
+def memory_execution_plane_for_shadow(mode: ShadowMode) -> str:
+    return {
+        "off": "live",
+        "decision": "decision_shadow",
+        "state_rehearsal": "state_rehearsal",
+    }[mode]
+
+
 @dataclass(frozen=True)
 class OacHostProfile:
     core: Settings

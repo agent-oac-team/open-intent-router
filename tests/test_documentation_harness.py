@@ -19,6 +19,7 @@ ROOT_FILES = {"AGENTS.md", "README.md"}
 ENTRY_FILES = (
     ROOT / "README.md",
     ROOT / "AGENTS.md",
+    ROOT / "CONTEXT.md",
     ROOT / "app" / "AGENTS.md",
     ROOT / "docs" / "AGENTS.md",
     ROOT / "host_adapters" / "oac" / "AGENTS.md",

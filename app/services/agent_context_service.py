@@ -6,6 +6,7 @@ from math import ceil
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.schemas.agent_context import (
     AgentRuntimeContext,
     KnowledgeContext,
@@ -36,8 +37,10 @@ class AgentContextAssemblyService:
         settings: Settings,
         memory_service: MemoryService,
         knowledge_service: KnowledgeService,
+        runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
         self.knowledge_service = knowledge_service
         self.pipeline = ContextPipelineService(settings)
@@ -117,7 +120,12 @@ class AgentContextAssemblyService:
             )
         else:
             providers.append(
-                MemoryRetrievalProvider(self.settings, self.memory_service, stage="agent")
+                MemoryRetrievalProvider(
+                    self.settings,
+                    self.memory_service,
+                    stage="agent",
+                    runtime_policy=self.runtime_policy,
+                )
             )
         if existing_knowledge_context is not None:
             providers.append(

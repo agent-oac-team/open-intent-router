@@ -1,8 +1,13 @@
 from fastapi import APIRouter, Depends
 
 from app.core.config import Settings, get_settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.core.redaction import redact_connection_location
-from app.dependencies import get_memory_observability_service, get_registry_service
+from app.dependencies import (
+    get_memory_observability_service,
+    get_memory_runtime_policy,
+    get_registry_service,
+)
 from app.schemas.runtime import RuntimeConfigResponse
 from app.services.mem0_config import mem0_health_check
 from app.services.memory_observability import MemoryObservabilityService
@@ -16,6 +21,7 @@ async def runtime_config(
     settings: Settings = Depends(get_settings),
     registry: AgentRegistryService = Depends(get_registry_service),
     memory_observability: MemoryObservabilityService = Depends(get_memory_observability_service),
+    memory_policy: MemoryRuntimePolicy = Depends(get_memory_runtime_policy),
 ) -> RuntimeConfigResponse:
     if registry.state.active_source == "none":
         await registry.load()
@@ -48,19 +54,24 @@ async def runtime_config(
         evidence_provider_enabled=settings.evidence_provider_enabled,
         evidence_fixed_questions_path=settings.evidence_fixed_questions_path,
         agent_http_timeout_seconds=settings.agent_http_timeout_seconds,
-        memory_enabled=settings.memory_enabled,
-        memory_recall_enabled=settings.memory_recall_enabled,
-        memory_formation_mode=settings.memory_formation_mode,
-        memory_execution_mode=settings.memory_execution_mode,
-        memory_turn_outbox_consumer_enabled=settings.memory_turn_outbox_consumer_enabled,
+        memory_mode=memory_policy.mode,
+        memory_policy_version=memory_policy.version,
+        memory_config_source=memory_policy.config_source,
+        memory_enabled=memory_policy.memory_enabled,
+        memory_recall_enabled=memory_policy.effective_recall_enabled,
+        memory_formation_mode=memory_policy.effective_formation_mode,
+        memory_execution_mode=memory_policy.execution_plane,
+        memory_turn_outbox_consumer_enabled=memory_policy.turn_outbox_consumer_enabled,
         memory_formation_model_version=settings.memory_formation_model_version,
         memory_formation_prompt_version=settings.memory_formation_prompt_version,
         memory_formation_policy_version=settings.memory_formation_policy_version,
-        memory_formation_worker_enabled=settings.memory_formation_worker_enabled,
-        memory_formation_sweeper_enabled=settings.memory_formation_sweeper_enabled,
-        memory_index_worker_enabled=settings.memory_index_worker_enabled,
-        memory_ttl_sweeper_enabled=settings.memory_ttl_sweeper_enabled,
-        memory_consolidation_enabled=settings.memory_consolidation_enabled,
+        memory_formation_worker_enabled=memory_policy.effective_formation_worker_enabled,
+        memory_formation_sweeper_enabled=memory_policy.effective_formation_sweeper_enabled,
+        memory_index_worker_enabled=memory_policy.effective_index_worker_enabled,
+        memory_ttl_sweeper_enabled=memory_policy.effective_ttl_sweeper_enabled,
+        memory_consolidation_enabled=memory_policy.consolidation_enabled,
+        memory_governed_context_enabled=(memory_policy.effective_governed_context_memory_enabled),
+        memory_route_scopes=list(memory_policy.route_memory_scopes),
         memory_formation_queue_depth=memory_health.queue_depth,
         memory_formation_oldest_pending_seconds=memory_health.oldest_pending_seconds,
         memory_formation_dead_letter_count=memory_health.dead_letter_count,
@@ -84,7 +95,7 @@ async def runtime_config(
         memory_mem0_health_status=mem0_metadata.get("status"),
         memory_rehearsal_collection=(
             settings.memory_rehearsal_milvus_collection
-            if settings.memory_execution_mode == "state_rehearsal"
+            if memory_policy.execution_plane == "state_rehearsal"
             else None
         ),
         knowledge_enabled=settings.knowledge_enabled,
@@ -97,7 +108,7 @@ async def runtime_config(
             else None
         ),
         context_pipeline_mode=settings.context_pipeline_mode,
-        context_route_memory_enabled=settings.context_route_memory_enabled,
+        context_route_memory_enabled=(memory_policy.effective_governed_context_memory_enabled),
         context_route_knowledge_enabled=settings.context_route_knowledge_enabled,
         context_policy_version=settings.context_policy_version,
         context_budget_version=settings.context_budget_version,

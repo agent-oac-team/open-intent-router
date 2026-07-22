@@ -79,7 +79,7 @@ async def update_registry_agent(
     if current is None:
         raise HTTPException(status_code=404, detail="agent_not_found")
     try:
-        definition = registry_agent_to_native(request)
+        definition = registry_agent_to_native(request, existing=current)
         result = await ports.registry.mutate_definition(
             RegistryMutationCommand(
                 operation="update",

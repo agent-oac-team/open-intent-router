@@ -6,6 +6,7 @@ from math import ceil
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from app.core.redaction import redact_value
 from app.schemas.agent_context import MemoryContextItem
 from app.schemas.common import JsonDict, normalize_artifact_refs
@@ -36,8 +37,16 @@ from app.services.context_providers import (
 
 
 class ContextService:
-    def __init__(self, settings: Settings, *, memory_service=None, knowledge_service=None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        memory_service=None,
+        knowledge_service=None,
+        runtime_policy: MemoryRuntimePolicy | None = None,
+    ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
         self.knowledge_service = knowledge_service
         self.pipeline = ContextPipelineService(settings)
@@ -70,7 +79,10 @@ class ContextService:
             active_plan=active_plan,
             intent_hint=intent_hint,
         )
-        if self.settings.context_pipeline_mode == "legacy":
+        if (
+            self.settings.context_pipeline_mode == "legacy"
+            and not self.runtime_policy.effective_governed_context_memory_enabled
+        ):
             return legacy_context, None, assembly_session
 
         session = assembly_session or ContextAssemblySession(
@@ -100,7 +112,12 @@ class ContextService:
         ]
         if self.memory_service is not None:
             providers.append(
-                MemoryRetrievalProvider(self.settings, self.memory_service, stage="route")
+                MemoryRetrievalProvider(
+                    self.settings,
+                    self.memory_service,
+                    stage="route",
+                    runtime_policy=self.runtime_policy,
+                )
             )
         if self.knowledge_service is not None:
             providers.append(

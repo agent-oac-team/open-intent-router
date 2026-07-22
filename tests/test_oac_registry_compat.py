@@ -202,6 +202,35 @@ def test_registry_legacy_projection_does_not_expose_provider_secrets() -> None:
     assert "access_token" not in serialized
 
 
+def test_registry_compat_update_preserves_native_context_configuration() -> None:
+    request = RegistryAgent.model_validate(_fixture("registry-update")["request"]["body"])
+    current = registry_agent_to_native(
+        RegistryAgent.model_validate(_fixture("registry-create")["request"]["body"])
+    )
+    current = current.model_copy(
+        update={
+            "context": current.context.model_copy(
+                update={
+                    "memory": current.context.memory.model_copy(
+                        update={
+                            "mode": "prefetch",
+                            "scopes": ["user_preference", "stable_fact"],
+                            "max_items": 5,
+                        }
+                    )
+                }
+            ),
+            "metadata": {"native_only": True},
+        }
+    )
+
+    updated = registry_agent_to_native(request, existing=current)
+
+    assert updated.description == request.description
+    assert updated.context == current.context
+    assert updated.metadata == {"native_only": True}
+
+
 @pytest.mark.parametrize(
     "updates",
     [

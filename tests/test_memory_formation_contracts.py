@@ -32,7 +32,7 @@ from app.schemas.memory import (
 
 
 def test_formation_settings_defaults_and_overrides() -> None:
-    defaults = Settings(storage_backend="memory")
+    defaults = Settings(storage_backend="memory", memory_mode="off")
     assert defaults.memory_formation_mode == "off"
     assert defaults.memory_formation_window_turns == 5
     assert defaults.memory_formation_idle_seconds == 30
@@ -41,7 +41,7 @@ def test_formation_settings_defaults_and_overrides() -> None:
 
     overridden = Settings(
         storage_backend="memory",
-        memory_formation_mode="observe",
+        memory_mode="observe",
         memory_formation_window_turns=8,
         memory_formation_idle_seconds=45,
         memory_formation_model_timeout_seconds=10,

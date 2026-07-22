@@ -67,8 +67,10 @@ class MemoryObservabilityService:
         maintenance_status=None,
         turn_repository=None,
         outbox_repository=None,
+        runtime_policy=None,
     ) -> None:
         self.settings = settings
+        self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
         self.memory_repository = memory_service.repository
         self.index_repository = memory_service.index_outbox
@@ -279,7 +281,7 @@ class MemoryObservabilityService:
             context_trace_links=links,
             request_trace=request_trace,
             metadata={
-                "memory_enabled": self.settings.memory_enabled,
+                "memory_enabled": self.runtime_policy.memory_enabled,
                 "strategy_provider": self.settings.memory_strategy_provider,
                 "item_count": len(items),
                 "event_count": len(events),
@@ -435,7 +437,9 @@ class MemoryObservabilityService:
     async def health(self) -> MemoryRuntimeHealth:
         snapshot = await self._snapshot()
         return MemoryRuntimeHealth(
-            worker_state=_worker_state(self.runtime_status, self.maintenance_status, self.settings),
+            worker_state=_worker_state(
+                self.runtime_status, self.maintenance_status, self.runtime_policy
+            ),
             pending_turn_count=snapshot["pending_turn_count"],
             outbox_pending_count=snapshot["outbox_pending_count"],
             outbox_oldest_pending_seconds=snapshot["outbox_oldest_pending_seconds"],
@@ -1795,12 +1799,10 @@ def _provider_status(operation) -> str | None:
     return str(value)[:64] if value is not None else operation.status.value
 
 
-def _worker_state(status, maintenance_status, settings) -> str:
-    formation_enabled = (
-        settings.memory_formation_mode != "off" and settings.memory_formation_worker_enabled
-    )
+def _worker_state(status, maintenance_status, policy) -> str:
+    formation_enabled = policy.effective_formation_mode != "off" and policy.formation_worker_enabled
     maintenance_enabled = (
-        settings.memory_index_worker_enabled or settings.memory_ttl_sweeper_enabled
+        policy.effective_index_worker_enabled or policy.effective_ttl_sweeper_enabled
     )
     if not formation_enabled and not maintenance_enabled:
         return "disabled"

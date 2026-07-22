@@ -24,6 +24,7 @@ TEST_ENV_DEFAULTS = {
     "ROUTER_LLM_BASE_URL": "",
     "ROUTER_LLM_API_KEY": "",
     "MEMORY_STRATEGY_PROVIDER": "memory",
+    "MEMORY_MODE": "on",
     "OAC_HOST_IDENTITY_CURRENT_KEY_ID": "test-user-key",
     "OAC_HOST_IDENTITY_CURRENT_KEY": "test-user-secret",
     "OAC_HOST_OAC_ADMIN_KEY_ID": "test-admin-key",

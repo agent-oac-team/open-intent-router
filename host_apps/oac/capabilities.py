@@ -1,4 +1,5 @@
 from app.core.config import Settings
+from app.core.memory_runtime import MemoryRuntimePolicy
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.authz import OAC_BUNDLE_CATALOG
 from host_adapters.oac.fallback.gateway import IRSFallbackGateway
@@ -23,11 +24,13 @@ class OacHostCapabilityProvider:
         host: OacHostSettings,
         ports: OacAdapterApplicationPorts,
         fallback_gateway: IRSFallbackGateway,
+        memory_policy: MemoryRuntimePolicy,
     ) -> None:
         self.core = core
         self.host = host
         self.ports = ports
         self.fallback_gateway = fallback_gateway
+        self.memory_policy = memory_policy
 
     async def snapshot(self) -> HostCapabilityResponse:
         registry = await self.ports.registry.load()
@@ -44,7 +47,7 @@ class OacHostCapabilityProvider:
                 knowledge=(
                     self.core.knowledge_vector_backend if self.core.knowledge_enabled else "off"
                 ),
-                memory=(self.core.memory_formation_mode if self.core.memory_enabled else "off"),
+                memory=self.memory_policy.mode,
                 shadow=self.host.shadow_mode,
                 fallback=self.host.fallback_mode,
             ),

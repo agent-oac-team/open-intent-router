@@ -34,7 +34,11 @@ from host_adapters.oac.shadow.runner import (
     ShadowSideEffectBlocked,
     knowledge_diff,
 )
-from host_apps.oac.config import OacHostSettings, build_oac_host_profile
+from host_apps.oac.config import (
+    OacHostSettings,
+    build_oac_host_profile,
+    memory_execution_plane_for_shadow,
+)
 
 
 def test_all_22_adapter_methods_have_one_static_operation_class() -> None:
@@ -81,6 +85,18 @@ def test_write_fence_and_rehearsal_configuration_fail_closed() -> None:
     frozen = OacHostSettings(write_freeze_enabled=True)
     assert write_fence_blocked(frozen, classify_operation("POST", "/api/v1/central/events/agent"))
     assert not write_fence_blocked(frozen, classify_operation("POST", "/api/v1/knowledge/search"))
+
+
+@pytest.mark.parametrize(
+    ("shadow", "execution_plane"),
+    [
+        ("off", "live"),
+        ("decision", "decision_shadow"),
+        ("state_rehearsal", "state_rehearsal"),
+    ],
+)
+def test_oac_shadow_mode_maps_to_core_execution_plane(shadow, execution_plane) -> None:
+    assert memory_execution_plane_for_shadow(shadow) == execution_plane
 
 
 def test_circuit_breaker_opens_half_opens_and_recovers() -> None:

@@ -784,7 +784,7 @@ OIR 应采用“一个形成 pipeline、三类触发、两层事实边界”：�
 
 截至 2026-07-14，首版实现已统一为 `FormationJob -> CandidatePolicy -> MemoryLifecycleService -> durable index outbox`。PostgreSQL 是 current、revision、event、job 和 operation 的唯一事实源；mem0/Milvus 是 `infer=False` 的可重建派生索引。Plan 强制使用服务端绑定的 `tenant_id + user_id`，task projection 不新增 Router intent，执行前必须回读 owner-scoped canonical Plan。
 
-默认配置保持 `MEMORY_FORMATION_MODE=off`，上线顺序固定为 off、observe、隔离 tenant 的 enforced、逐步扩展。formation worker/sweeper 与 index/TTL maintenance 分开控制；紧急回退关闭自动 formation 时，不应停止已有 provider delete、index repair 和 TTL 硬删除。具体环境变量、健康/质量/成本 gate、真实 smoke 与 emergency-off 演练见 [`conversation-memory-formation-rollout.md`](../../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md)。
+当前配置已收敛为 `MEMORY_MODE=off|observe|on`，上线顺序固定为 off、observe、隔离 tenant 的 on、逐步扩展。紧急回退到 off 时仍继续已有 provider delete、index repair 和 TTL 硬删除。具体环境变量、健康/质量/成本 gate、真实 smoke 与 emergency-off 演练见 [`conversation-memory-formation-rollout.md`](../../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md)。
 
 ### 三层候选治理边界
 

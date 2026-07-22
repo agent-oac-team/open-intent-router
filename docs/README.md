@@ -4,6 +4,8 @@
 
 `docs/` 只保留本入口和 [作用域规则](AGENTS.md) 两个根文件；其余文档和证据必须归入 App-Adr、App-Desc 或 App-Research。目录不只是导航标签，而是文档的责任边界。
 
+稳定领域词义统一维护在根目录 [CONTEXT.md](../CONTEXT.md)。需求、设计、代码命名或历史材料与词汇表冲突时，应先纠正用词；实现状态仍按下文事实源优先级判断。
+
 ## Harness 三件套
 
 | 物料 | 实体目录 | 回答的问题 | 加载方式 |
@@ -16,7 +18,7 @@
 
 | 读者 / 任务 | 建议阅读顺序 |
 | --- | --- |
-| 第一次接触项目 | [项目 README](../README.md) -> [App-Desc 应用地图](App-Desc/README.md) -> [API 概览](App-Desc/contracts/api.md) |
+| 第一次接触项目 | [项目 README](../README.md) -> [领域语言](../CONTEXT.md) -> [App-Desc 应用地图](App-Desc/README.md) -> [API 概览](App-Desc/contracts/api.md) |
 | 修改 OIR Core | [Develop Standards](App-Adr/develop/develop-standards/README.md) -> [App-Desc](App-Desc/README.md) -> 相关 OpenSpec -> 对应领域文档 |
 | 修改 OAC Host Adapter | [OAC Host Adapter](App-Desc/architecture/oac-host-adapter.md) -> [Legacy / Native 兼容矩阵](App-Desc/contracts/legacy-native-compat-matrix.md) -> 对应 OpenSpec |
 | 修改 Context / Memory / Knowledge | [Develop Standards](App-Adr/develop/develop-standards/README.md) -> [Canonical Turn](App-Desc/architecture/canonical-turn-data-model.md) -> 对应 Runbook 和 OpenSpec |

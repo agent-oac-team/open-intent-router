@@ -34,7 +34,7 @@ def _settings() -> Settings:
     return Settings(
         storage_backend="memory",
         memory_strategy_provider="memory",
-        memory_formation_mode="enforced",
+        memory_mode="on",
         memory_formation_model_timeout_seconds=1,
         memory_formation_lease_seconds=5,
     )
