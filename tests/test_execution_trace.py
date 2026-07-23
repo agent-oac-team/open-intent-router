@@ -153,6 +153,15 @@ def test_trace_schema_rejects_memory_body_values_and_legacy_writes() -> None:
     )
     assert legacy.schema_version == 1
 
+    with pytest.raises(ValidationError, match="require schema version 1"):
+        ExecutionTraceEvent.model_validate(
+            legacy.model_dump()
+            | {
+                "schema_version": 2,
+                "source_event_id": "decision-invalid-v2",
+            }
+        )
+
 
 async def test_trace_writer_treats_sanitized_v2_as_a_replay_of_legacy_v1() -> None:
     occurred_at = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)

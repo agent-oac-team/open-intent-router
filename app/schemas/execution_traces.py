@@ -141,6 +141,13 @@ class ExecutionTraceEvent(_ExecutionTraceEventEnvelope):
     event_offset: int = Field(ge=1)
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    @model_validator(mode="after")
+    def restrict_memory_body_values_to_legacy_schema(self) -> "ExecutionTraceEvent":
+        if self.schema_version >= 2 and self.event_type == "memory_decision":
+            if {"previous_value", "proposed_value"} & self.facts.keys():
+                raise ValueError("memory decision body values require schema version 1")
+        return self
+
     @field_validator("recorded_at")
     @classmethod
     def normalize_recorded_at(cls, value: datetime) -> datetime:
