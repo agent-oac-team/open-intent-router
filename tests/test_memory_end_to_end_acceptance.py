@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -28,6 +29,7 @@ from app.schemas.memory import (
 from app.schemas.turns import TurnUserInput
 from app.services.execution_trace_service import ExecutionTraceService
 from app.services.memory_candidate_policy import MemoryCandidatePolicy, build_memory_key
+from app.services.memory_formation import FormationJobWorker
 from app.services.memory_integration import MemoryFormationProcessor
 from app.services.memory_lifecycle import MemoryConsolidationService
 from app.services.memory_management import MemoryManagementNotFound, MemoryManagementService
@@ -272,12 +274,24 @@ async def test_memory_processor_projects_bounded_execution_trace_for_canonical_t
 
 
 @pytest.mark.asyncio
-async def test_memory_processor_projects_sanitized_failure_for_canonical_turn() -> None:
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_reason_code"),
+    [
+        ("processor_error", "formation_processor_error"),
+        ("worker_timeout", "formation_processor_timeout"),
+    ],
+)
+async def test_memory_worker_projects_sanitized_failure_only_to_latest_canonical_turn(
+    failure_kind: str,
+    expected_reason_code: str,
+) -> None:
     class FailingFormationModel:
         async def form(self, **_kwargs):
+            if failure_kind == "worker_timeout":
+                await asyncio.sleep(1)
             raise RuntimeError("provider secret must not enter the execution trace")
 
-    settings = _settings()
+    settings = _settings().model_copy(update={"memory_formation_model_timeout_seconds": 0.01})
     formation = MemoryFormationTurnJobRepository()
     memories = MemoryItemRepository()
     memory_service = MemoryService(
@@ -286,36 +300,49 @@ async def test_memory_processor_projects_sanitized_failure_for_canonical_turn() 
         formation_repository=formation,
     )
     turns = TurnService(MemoryTurnRepository())
-    canonical = (
+    first = (
         await turns.start_turn(
             tenant_id="tenant-trace-failure",
             user_id="user-trace-failure",
             session_id="session-trace-failure",
-            request_id="request-trace-failure",
+            request_id="request-trace-failure-1",
+            source="host_chat",
+            user_input=TurnUserInput(text="先讨论偏好"),
+        )
+    ).turn
+    latest = (
+        await turns.start_turn(
+            tenant_id="tenant-trace-failure",
+            user_id="user-trace-failure",
+            session_id="session-trace-failure",
+            request_id="request-trace-failure-2",
             source="host_chat",
             user_input=TurnUserInput(text="请记住这条偏好"),
         )
     ).turn
-    await formation.append_turn(
-        MemoryFormationTurn(
-            turn_id=canonical.turn_id,
-            request_id=canonical.request_id,
-            session_id=canonical.session_id,
-            user_id=canonical.user_id,
-            tenant_id=canonical.tenant_id,
-            user_text="请记住这条偏好",
-            assistant_text="已收到",
-            result_status="completed",
+    for canonical, user_text in [(first, "先讨论偏好"), (latest, "请记住这条偏好")]:
+        await formation.append_turn(
+            MemoryFormationTurn(
+                turn_id=canonical.turn_id,
+                request_id=canonical.request_id,
+                session_id=canonical.session_id,
+                user_id=canonical.user_id,
+                tenant_id=canonical.tenant_id,
+                user_text=user_text,
+                assistant_text="已收到",
+                result_status="completed",
+            )
         )
-    )
     job = MemoryFormationJob(
         job_id="job-trace-failure",
         trigger="manual",
         mode="enforced",
-        tenant_id=canonical.tenant_id,
-        user_id=canonical.user_id,
-        session_id=canonical.session_id,
-        source_refs=[canonical.turn_id],
+        tenant_id=latest.tenant_id,
+        user_id=latest.user_id,
+        session_id=latest.session_id,
+        first_turn_id=first.turn_id,
+        last_turn_id=latest.turn_id,
+        source_refs=[first.turn_id, latest.turn_id],
         idempotency_key="trace-memory-formation-failure",
         model_version="test-model",
         prompt_version="test-prompt",
@@ -332,20 +359,37 @@ async def test_memory_processor_projects_sanitized_failure_for_canonical_turn() 
         execution_traces=trace_service,
         turns=turns,
     )
+    worker = FormationJobWorker(
+        settings=settings,
+        repository=formation,
+        processor=processor,
+        owner="test-worker",
+    )
 
-    with pytest.raises(RuntimeError, match="provider secret"):
-        await processor.process(job, execute_lifecycle=True)
+    failed_job = await worker.run_once()
 
-    snapshot = await trace_service.snapshot(
+    assert failed_job is not None
+    assert failed_job.status.value == "retry"
+    assert failed_job.last_error_code == expected_reason_code
+    first_snapshot = await trace_service.snapshot(
         ExecutionTraceQuery(
-            tenant_id=canonical.tenant_id,
-            user_id=canonical.user_id,
-            session_id=canonical.session_id,
-            turn_id=canonical.turn_id,
+            tenant_id=first.tenant_id,
+            user_id=first.user_id,
+            session_id=first.session_id,
+            turn_id=first.turn_id,
         )
     )
-    assert len(snapshot.events) == 1
-    failure = snapshot.events[0]
+    latest_snapshot = await trace_service.snapshot(
+        ExecutionTraceQuery(
+            tenant_id=latest.tenant_id,
+            user_id=latest.user_id,
+            session_id=latest.session_id,
+            turn_id=latest.turn_id,
+        )
+    )
+    assert first_snapshot.events == []
+    assert len(latest_snapshot.events) == 1
+    failure = latest_snapshot.events[0]
     assert (failure.event_type, failure.stage, failure.status) == (
         "memory_formation",
         "formation_failed",
@@ -355,9 +399,9 @@ async def test_memory_processor_projects_sanitized_failure_for_canonical_turn() 
         "candidate_count": 0,
         "formation_status": "failed",
         "job_id": "job-trace-failure",
-        "reason_code": "formation_processor_error",
+        "reason_code": expected_reason_code,
     }
-    assert "provider secret" not in snapshot.model_dump_json()
+    assert "provider secret" not in latest_snapshot.model_dump_json()
 
 
 def _pipeline_candidate(

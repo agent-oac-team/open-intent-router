@@ -544,6 +544,13 @@ class FormationJobWorker:
                 or re.fullmatch(r"formation_[a-z0-9_]{1,118}", error_code) is None
             ):
                 error_code = "formation_processor_error"
+        project_failure = getattr(self.processor, "project_failure", None)
+        if callable(project_failure):
+            try:
+                await project_failure(claimed, reason_code=error_code)
+            except Exception:
+                # Runtime Observation must not alter Formation retry or dead-letter outcomes.
+                pass
         delay = min(
             self.settings.memory_formation_retry_base_seconds
             * (2 ** max(claimed.attempt_count - 1, 0)),
