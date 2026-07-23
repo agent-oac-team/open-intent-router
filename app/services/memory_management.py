@@ -202,7 +202,7 @@ class MemoryManagementService:
             )
         accepted = None
         if action == "confirm":
-            if candidate.proposed_operation.value not in {"update", "delete"}:
+            if candidate.proposed_operation.value not in {"add", "update", "delete"}:
                 raise MemoryManagementConflict("Pending decision is not confirmable")
             if not operation.memory_id:
                 raise MemoryManagementConflict("Pending decision target is unavailable")
@@ -216,7 +216,7 @@ class MemoryManagementService:
                 raise MemoryManagementConflict("Pending decision precondition changed")
             target_operation = (
                 MemoryOperation.UPDATE
-                if candidate.proposed_operation.value == "update"
+                if candidate.proposed_operation.value in {"add", "update"}
                 else MemoryOperation.DELETE
             )
             accepted = operation.model_copy(

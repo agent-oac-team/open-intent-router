@@ -648,7 +648,10 @@ async def test_debug_service_clamps_internal_limit_to_one_hundred() -> None:
     assert len(response.events) == 100
 
 
-async def test_pending_update_confirm_is_preconditioned_and_idempotent() -> None:
+@pytest.mark.parametrize("candidate_operation", ["update", "add"])
+async def test_pending_update_confirm_is_preconditioned_and_idempotent(
+    candidate_operation: str,
+) -> None:
     items, memory, formation, observability, management = _services()
     job = await formation.add_job(
         MemoryFormationJob(
@@ -667,7 +670,9 @@ async def test_pending_update_confirm_is_preconditioned_and_idempotent() -> None
     pending_result = await memory.lifecycle.apply(
         CandidatePolicyResult(
             candidate=_candidate(
-                operation="update", content="Use detailed answers", confidence=0.8
+                operation=candidate_operation,
+                content="Use detailed answers",
+                confidence=0.8,
             ),
             operation=_operation(
                 operation=MemoryOperation.PENDING,
