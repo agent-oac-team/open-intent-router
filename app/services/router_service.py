@@ -193,6 +193,7 @@ class RouterService:
         )
         output = self._bind_plan_ownership(output, request)
         output = self._normalize_candidate_context(output, base_context, candidate_ids)
+        output = self._bind_exit_target(output, request)
         output = self._ensure_plan_for_multi_task(output, request, candidates)
         output = self._collapse_single_step_plan(output, request)
         output = await self._apply_plan_policy(output)
@@ -293,6 +294,17 @@ class RouterService:
             }
         )
         return output.model_copy(update={"context": context})
+
+    def _bind_exit_target(self, output: RouteResponse, request: RouteRequest) -> RouteResponse:
+        if output.decision.action != "exit_agent" or request.current_agent is None:
+            return output
+        return output.model_copy(
+            update={
+                "decision": output.decision.model_copy(
+                    update={"target_agent_id": request.current_agent.agent_id}
+                )
+            }
+        )
 
     def _clarify_on_low_confidence(self, output: RouteResponse) -> RouteResponse:
         threshold = self.settings.router_low_confidence_threshold
@@ -695,7 +707,8 @@ class RouterService:
             self.turn_service
             and response.plan is None
             and response.invocation is None
-            and response.decision.action in {"reply", "clarify", "unsupported", "silent"}
+            and response.decision.action
+            in {"reply", "clarify", "unsupported", "silent", "exit_agent"}
         ):
             tenant_id = request.user.tenant_id
             if not tenant_id:
@@ -704,7 +717,11 @@ class RouterService:
                 tenant_id=tenant_id,
                 user_id=request.user.id,
                 request_id=response.request_id,
-                response_kind=response.decision.action,
+                response_kind=(
+                    "reply"
+                    if response.decision.action == "exit_agent"
+                    else response.decision.action
+                ),
                 response_text=response.assistant_message or response.decision.message or "",
                 error=response.error.model_dump(mode="json") if response.error else None,
             )
@@ -1095,7 +1112,15 @@ def _build_invocation_input(
     output: RouteResponse,
     request: RouteRequest,
 ) -> dict:
-    return build_invocation_input(agent, request.input.text)
+    available_fields = set(agent.input_schema.required) | set(agent.input_schema.properties)
+    values = {}
+    if "user_query" in available_fields:
+        values["user_query"] = request.input.text
+    if "conversation_context" in available_fields:
+        values["conversation_context"] = request.frontend_context.get("conversation_history") or [
+            {"role": "user", "content": request.input.text}
+        ]
+    return build_invocation_input(agent, request.input.text, values)
 
 
 def _normalize_text(value: object) -> str:

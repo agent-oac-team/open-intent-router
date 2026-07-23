@@ -854,7 +854,20 @@ def _search_filters(request: MemoryRecallRequest) -> dict[str, Any]:
     for key, value in metadata_filters.items():
         if value is not None:
             filters[key] = value
-    reserved = {"agent_id", "scope", "subject_id", "subject_type", "tenant_id", "user_id"}
+    reserved = {
+        "agent_id",
+        "consumer",
+        "defer_usage_event",
+        "request_id",
+        "run_id",
+        "scope",
+        "session_id",
+        "subject_id",
+        "subject_type",
+        "tenant_id",
+        "turn_id",
+        "user_id",
+    }
     for key, value in request.metadata_filters.items():
         if key not in reserved:
             filters[key] = value

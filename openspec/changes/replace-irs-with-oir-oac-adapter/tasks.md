@@ -182,10 +182,11 @@
 ## 14. 测试环境 100% Shadow 与干净切换
 
 - [x] 14.1 在测试环境部署 OAC Host Runtime、OIR 独立 database/collections 与隔离 State Rehearsal 数据域
-- [ ] 14.2 对版本化 replay dataset 执行 100% Decision Shadow 并生成覆盖率证据
+- [x] 14.2 对版本化 replay dataset 执行 100% Decision Shadow 并生成覆盖率证据
 - [x] 14.3 执行隔离 State Rehearsal，对账 Turn/Run/Result/Plan/Event/Outbox/Memory 且验证主数据域无副作用
-- [ ] 14.4 处理或批准 Route/Knowledge/Latency Diff，清零权限放宽、跨用户、核心事实矛盾和重复写 blocking Diff
+- [x] 14.4 处理或批准 Route/Knowledge/Latency Diff，清零权限放宽、跨用户、核心事实矛盾和重复写 blocking Diff
 - [x] 14.5 演练 Circuit open/half-open/recovery、只读 fallback、安全 Route fallback、unknown timeout 和写阻止
+  - 2026-07-23 test evidence: versioned Shadow runner processed Route, Knowledge, permission and synthetic E2E categories at 4/4 coverage with zero stored blocking diff. The live test replay covered all 10 Route Golden cases against IRS and OIR plus all 17 Knowledge Golden cases against test PostgreSQL/Milvus. Two live blocking Route diffs were fixed: legacy `user_query`/`conversation_context` now come from the trusted RouteRequest, and `exit_agent` retains the current Agent ID. Replays then matched IRS on Agent selection, continuation, exit, plan, unsupported and silent semantics. Approved non-blocking differences are limited to Go rejecting an invalid edition before Adapter invocation and a conservative `reply`/`clarify` variation with no Agent, plan or side effect. Permission broadening, cross-user exposure, core-fact contradiction and duplicate writes were zero. This evidence completes only 14.2/14.4; IRS freeze, drain and retirement tasks remain active.
 - [ ] 14.6 启用 IRS 新运行态/控制面写入冻结，禁止新 Session/Plan/Event/Registry/Knowledge Admin 写入
 - [ ] 14.7 实现并执行 IRS 活动 Plan、在途 Agent 和待回调 Event 盘点/排空脚本
 - [ ] 14.8 完成、取消或显式终止所有 IRS 活动运行态，生成零活动对象排空报告

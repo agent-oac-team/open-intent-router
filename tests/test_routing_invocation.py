@@ -57,6 +57,45 @@ async def test_router_collapses_single_step_plan_to_agent_route(settings, regist
     assert response.invocation.agent_id == "summarizer"
 
 
+async def test_router_binds_exit_to_the_current_agent(settings, registry_service) -> None:
+    turn_service = CapturingTurnService()
+    service = RouterService(
+        settings=settings,
+        registry=registry_service,
+        llm_client=ExitAgentLLM(),
+        turn_service=turn_service,
+    )
+
+    response = await service.route(
+        RouteRequest.model_validate(
+            {
+                "session_id": "s1",
+                "source": "agent_chat",
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
+                "input": {"text": "exit the current agent"},
+                "current_agent": {"agent_id": "summarizer"},
+            }
+        )
+    )
+
+    assert response.decision.action == "exit_agent"
+    assert response.decision.target_agent_id == "summarizer"
+    assert response.context.relation == "exit_agent"
+    assert response.invocation is None
+    assert turn_service.completed == {
+        "tenant_id": "t1",
+        "user_id": "u1",
+        "request_id": response.request_id,
+        "response_kind": "reply",
+        "response_text": "Exited.",
+        "error": None,
+    }
+
+
 async def test_mock_router_creates_and_persists_multi_agent_plan(
     settings,
     registry_service,
@@ -500,6 +539,56 @@ async def test_router_clarifies_when_required_input_is_missing(
     assert "account_id" in response.assistant_message
 
 
+async def test_router_fills_legacy_query_and_conversation_inputs(
+    settings,
+    registry_service,
+    repositories,
+    task_creator_agent,
+) -> None:
+    legacy_payload = task_creator_agent.model_dump(mode="json")
+    legacy_payload.update(
+        {
+            "agent_id": "compliance_review",
+            "name": "Compliance Review",
+            "description": "Review content compliance",
+            "capabilities": ["review_content"],
+            "trigger": {"keywords": ["compliance"]},
+            "required_inputs": ["user_query", "conversation_context"],
+            "input_schema": {
+                "type": "object",
+                "required": ["user_query", "conversation_context"],
+                "properties": {},
+            },
+        }
+    )
+    legacy_agent = task_creator_agent.__class__.model_validate(legacy_payload)
+    await repositories["registry"].upsert(legacy_agent)
+    await registry_service.load()
+    service = RouterService(
+        settings=settings,
+        registry=registry_service,
+        llm_client=FixedTargetLLM("compliance_review"),
+    )
+
+    response = await service.route(
+        RouteRequest.model_validate(
+            {
+                "session_id": "s1",
+                "user": {"id": "u1", "roles": ["operator"]},
+                "input": {"text": "review this copy for compliance"},
+            }
+        )
+    )
+
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "compliance_review"
+    assert response.invocation
+    assert response.invocation.input == {
+        "user_query": "review this copy for compliance",
+        "conversation_context": [{"role": "user", "content": "review this copy for compliance"}],
+    }
+
+
 async def test_router_invokes_when_required_input_is_present(settings, registry_service) -> None:
     service = RouterService(
         settings=settings,
@@ -781,3 +870,34 @@ class FixedTargetLLM:
                 candidate_agent_ids=[agent.agent_id for agent in payload.candidates]
             ),
         )
+
+
+class ExitAgentLLM:
+    async def route(self, payload: LLMRouteInput) -> RouteResponse:
+        return RouteResponse(
+            request_id=payload.request.request_id or "req_exit",
+            session_id=payload.request.session_id,
+            decision=RouteDecision(
+                status="ok",
+                action="exit_agent",
+                confidence=1.0,
+                reason="Exit requested.",
+                message="Exited.",
+            ),
+            context=RouteContext(
+                relation="exit_agent",
+                current_agent_id=payload.request.current_agent.agent_id,
+                candidate_agent_ids=[agent.agent_id for agent in payload.candidates],
+            ),
+        )
+
+
+class CapturingTurnService:
+    def __init__(self) -> None:
+        self.completed = None
+
+    async def start_turn(self, **kwargs) -> None:
+        return None
+
+    async def complete_route_only(self, **kwargs) -> None:
+        self.completed = kwargs

@@ -79,7 +79,7 @@
 ## 8. V1 下线与代码清理
 
 - [x] 8.1 在本地 replay 中证明 User/Admin/Coze 的 V1 成功计数为零且所有 current profile 门禁通过
-- [ ] 8.2 在测试环境执行 100% transport replay，记录 V1 零使用、current profile 正向和负向证据
+- [x] 8.2 在测试环境执行 100% transport replay，记录 V1 零使用、current profile 正向和负向证据
 - [x] 8.3 关闭 Adapter V1 acceptance，确认所有 `v1=` 请求统一 401 且不会按旧 Token、groups 或 fallback 放行
 - [x] 8.4 将 capability 收敛为 current=`v2`、accepted=`[v2]`、V1 compatibility disabled
 - [x] 8.5 删除 Python V1 canonical/verifier 分支、V1-only fixtures 和兼容启用配置
@@ -99,4 +99,4 @@
 - [x] 9.6 运行 OIR profile/identity/registry/knowledge/router 聚焦测试、全量 pytest、Ruff check/format 和边界 fitness test
 - [x] 9.7 运行 OpenSpec strict validation，确认 proposal/design/spec/tasks 与 current-only 实现及证据一致
 - [x] 9.8 最终检查其他 Memory/Turn/Invocation 未提交修改均被保留，且本 change 未修改 OAC workflow/CI 回退文件
-- [ ] 9.9 输出本地与测试环境验收报告，只有 V1 删除和 current-only 门禁均完成后才允许归档本 change（本地报告已完成，测试环境报告待 8.2）
+- [x] 9.9 输出本地与测试环境验收报告，只有 V1 删除和 current-only 门禁均完成后才允许归档本 change

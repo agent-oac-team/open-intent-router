@@ -142,7 +142,15 @@ def test_mem0_search_filter_sets_expand_multiple_scopes() -> None:
             user=UserContext(id="u1", attributes={"tenant_id": "t1"}),
             scopes=["user_preference", "stable_fact"],
             agent_id="script_writer",
-            metadata_filters={"source": "e2e_seed"},
+            metadata_filters={
+                "source": "e2e_seed",
+                "consumer": "router",
+                "defer_usage_event": True,
+                "request_id": "req-1",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "run_id": "run-1",
+            },
         )
     )
 
