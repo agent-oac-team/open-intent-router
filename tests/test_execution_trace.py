@@ -80,6 +80,28 @@ async def test_trace_writer_rejects_conflicting_source_replay() -> None:
         )
 
 
+def test_trace_schema_rejects_memory_body_values() -> None:
+    with pytest.raises(ValidationError, match="unsupported fields for memory_decision"):
+        ExecutionTraceEventDraft(
+            trace_id="trace_turn-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+            event_type="memory_decision",
+            stage="decision_pending",
+            status="pending",
+            source="oir:memory_decision",
+            source_event_id="decision-1",
+            facts={
+                "decision_id": "decision-1",
+                "decision_status": "pending",
+                "previous_value": "private memory body",
+                "proposed_value": "replacement memory body",
+            },
+        )
+
+
 async def test_database_trace_writer_uses_one_ordered_idempotent_event_table(tmp_path) -> None:
     settings = Settings(
         storage_backend="database",

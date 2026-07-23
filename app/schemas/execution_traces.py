@@ -52,8 +52,6 @@ _FACT_KEYS: dict[str, frozenset[str]] = {
             "operation",
             "decision_status",
             "reason_code",
-            "previous_value",
-            "proposed_value",
             "revision_id",
         }
     ),

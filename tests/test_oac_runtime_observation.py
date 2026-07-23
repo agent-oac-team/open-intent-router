@@ -97,6 +97,14 @@ class MemoryManagementPort:
             provider_status="pending" if kwargs["action"] == "confirm" else None,
         )
 
+    async def get_pending_decision_evidence(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "decision_id": kwargs["decision_id"],
+            "previous_value": "旧偏好",
+            "proposed_value": "新偏好",
+        }
+
 
 def _client(
     trace_service: ExecutionTraceService,
@@ -160,8 +168,6 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
                     "operation": "pending",
                     "decision_status": "pending",
                     "reason_code": "ambiguous_conflict",
-                    "previous_value": "旧偏好",
-                    "proposed_value": "新偏好",
                 },
                 occurred_at=datetime(2026, 7, 22, 10, 1, tzinfo=UTC),
             )
@@ -169,6 +175,24 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
     )
     memory = MemoryManagementPort()
     client = _client(trace_service, user_id="user-1", memory_management=memory)
+    evidence_path = (
+        "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/"
+        "memory-decisions/decision-1/evidence"
+    )
+    evidence = client.get(evidence_path)
+    assert evidence.status_code == 200
+    assert evidence.json() == {
+        "decision_id": "decision-1",
+        "previous_value": "旧偏好",
+        "proposed_value": "新偏好",
+    }
+    assert (
+        _client(trace_service, user_id="user-2", memory_management=memory)
+        .get(evidence_path)
+        .status_code
+        == 404
+    )
+    memory.calls.clear()
     path = (
         "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/"
         "memory-decisions/decision-1/confirm"
@@ -273,6 +297,33 @@ def test_ui_handoff_projects_idempotent_requested_and_confirmed_path() -> None:
         ("target_opened", "completed"),
     ]
     assert all(event.facts["target_route"] == "/production" for event in handoffs)
+
+
+def test_ui_handoff_reports_trace_degradation_without_reclassifying_acceptance() -> None:
+    repository = ToggleFailTraceRepository()
+    trace_service = ExecutionTraceService(repository)
+    asyncio.run(trace_service.record(_event()))
+    repository.fail_appends = True
+    client = _client(trace_service, user_id="user-1")
+
+    response = client.post(
+        "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/handoffs",
+        json={
+            "handoff_id": "handoff-degraded",
+            "status": "requested",
+            "from_path": "/dashboard",
+            "target_route": "/production",
+            "reason": "open_agent",
+            "occurred_at": "2026-07-22T10:01:00Z",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "accepted": True,
+        "observation_status": "incomplete",
+        "incomplete_reason_codes": ["trace_projection_write_failed"],
+    }
 
 
 def test_ui_handoff_rejects_unowned_turn_and_conflicting_source_identity() -> None:

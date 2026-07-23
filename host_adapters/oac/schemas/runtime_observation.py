@@ -34,3 +34,5 @@ class UiHandoffEventRequest(StrictBaseModel):
 
 class RuntimeObservationAcceptedResponse(StrictBaseModel):
     accepted: bool
+    observation_status: Literal["complete", "incomplete"] = "complete"
+    incomplete_reason_codes: list[str] = Field(default_factory=list, max_length=20)

@@ -11,7 +11,7 @@ from app.schemas.execution_traces import (
     ExecutionTraceSnapshot,
     trace_id_for_turn,
 )
-from app.schemas.memory import MemoryManagementOperationResponse
+from app.schemas.memory import MemoryManagementOperationResponse, MemoryPendingDecisionEvidence
 from app.services.execution_trace_service import ExecutionTraceConflict
 from app.services.memory_management import MemoryManagementConflict, MemoryManagementNotFound
 from host_adapters.oac.application import OacAdapterApplicationPorts
@@ -153,7 +153,7 @@ async def runtime_observation_handoff(
     if request.failure_code is not None:
         facts["failure_code"] = request.failure_code
     try:
-        await service.try_record(
+        trace_complete = await service.try_record(
             ExecutionTraceEventDraft(
                 trace_id=trace_id_for_turn(turn_id),
                 tenant_id=identity.tenant_id,
@@ -171,7 +171,45 @@ async def runtime_observation_handoff(
         )
     except ExecutionTraceConflict as exc:
         raise HTTPException(status_code=409, detail="ui_handoff_source_conflict") from exc
-    return RuntimeObservationAcceptedResponse(accepted=True)
+    return RuntimeObservationAcceptedResponse(
+        accepted=True,
+        observation_status="complete" if trace_complete else "incomplete",
+        incomplete_reason_codes=[] if trace_complete else ["trace_projection_write_failed"],
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/turns/{turn_id}/memory-decisions/{decision_id}/evidence",
+    response_model=MemoryPendingDecisionEvidence,
+)
+async def runtime_observation_memory_decision_evidence(
+    session_id: str,
+    turn_id: str,
+    decision_id: str,
+    identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
+    ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
+) -> MemoryPendingDecisionEvidence:
+    _read_trace(identity)
+    await _verify_owned_turn(
+        ports,
+        identity=identity,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    trace = _trace_service(ports)
+    snapshot = await trace.snapshot(_query(identity, session_id=session_id, turn_id=turn_id))
+    if not _has_pending_memory_decision(snapshot, decision_id):
+        raise HTTPException(status_code=404, detail="memory_decision_not_found")
+    if ports.memory_management is None:
+        raise HTTPException(status_code=503, detail="memory_management_unavailable")
+    try:
+        return await ports.memory_management.get_pending_decision_evidence(
+            decision_id=decision_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+        )
+    except MemoryManagementNotFound as exc:
+        raise HTTPException(status_code=404, detail="memory_decision_not_found") from exc
 
 
 @router.post(

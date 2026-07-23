@@ -33,7 +33,7 @@ from app.schemas.knowledge_assets import (
     KnowledgeImportJob,
     KnowledgeSourceRef,
 )
-from app.schemas.memory import MemoryManagementOperationResponse
+from app.schemas.memory import MemoryManagementOperationResponse, MemoryPendingDecisionEvidence
 from app.schemas.plans import Plan, PlanActionResponse
 from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.routing import RouteRequest, RouteResponse
@@ -193,6 +193,14 @@ class ExecutionTraceApplicationPort(Protocol):
 
 @runtime_checkable
 class MemoryManagementApplicationPort(Protocol):
+    async def get_pending_decision_evidence(
+        self,
+        *,
+        decision_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> MemoryPendingDecisionEvidence: ...
+
     async def resolve_pending(
         self,
         *,

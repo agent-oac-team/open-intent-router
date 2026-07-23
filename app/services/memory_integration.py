@@ -9,7 +9,6 @@ from typing import Protocol
 from app.application.ports import ExecutionTraceApplicationPort, TurnApplicationPort
 from app.core.config import Settings
 from app.core.memory_runtime import MemoryRuntimePolicy
-from app.core.redaction import redact_text
 from app.llm.conversation_formation import validate_conversation_candidates
 from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
@@ -483,8 +482,11 @@ class MemoryFormationProcessor:
                     "decision_status": operation.decision_status.value,
                     "reason_code": operation.reason_code.value,
                 }
-                if operation.decision_status == MemoryDecisionStatus.PENDING:
-                    decision_facts.update(await self._pending_decision_values(result))
+                if (
+                    operation.decision_status == MemoryDecisionStatus.PENDING
+                    and operation.revision_id
+                ):
+                    decision_facts["revision_id"] = operation.revision_id
                 await self._try_record_trace(
                     ExecutionTraceEventDraft(
                         trace_id=trace_id_for_turn(turn.turn_id),
@@ -533,36 +535,6 @@ class MemoryFormationProcessor:
                         occurred_at=result.revision.created_at,
                     )
                 )
-
-    async def _pending_decision_values(self, result) -> dict[str, str]:
-        operation = result.operation
-        values: dict[str, str] = {}
-        if operation.revision_id:
-            values["revision_id"] = operation.revision_id
-        payload = result.event.payload if result.event is not None else {}
-        candidate = payload.get("pending_candidate")
-        if isinstance(candidate, dict):
-            proposed = _bounded_memory_value(candidate)
-            if proposed is not None:
-                values["proposed_value"] = proposed
-        if operation.memory_id:
-            try:
-                current = await self.memory_repository.get_by_id(
-                    operation.memory_id,
-                    tenant_id=operation.tenant_id,
-                )
-            except Exception:
-                current = None
-            if current is not None:
-                previous = _bounded_memory_value(
-                    {
-                        "content": current.content,
-                        "structured_value": current.structured_value,
-                    }
-                )
-                if previous is not None:
-                    values["previous_value"] = previous
-        return values
 
     async def _trace_turns(self, job: MemoryFormationJob) -> list:
         assert self.turns is not None
@@ -693,18 +665,6 @@ def _unique_refs(values: list[str]) -> list[str]:
         if len(refs) >= 100:
             break
     return refs
-
-
-def _bounded_memory_value(value: dict) -> str | None:
-    structured = value.get("structured_value")
-    if isinstance(structured, dict):
-        candidate = structured.get("value")
-        if isinstance(candidate, str | int | float | bool):
-            return redact_text(str(candidate), max_length=300)
-    content = value.get("content")
-    if isinstance(content, str) and content:
-        return redact_text(content, max_length=300)
-    return None
 
 
 def _run_event_type(status: str) -> str:

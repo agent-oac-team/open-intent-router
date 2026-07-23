@@ -12,6 +12,7 @@ from app.schemas.memory import (
     MemoryLifecycleOperation,
     MemoryManagementOperationResponse,
     MemoryOperation,
+    MemoryPendingDecisionEvidence,
 )
 from app.services.memory_candidate_policy import CandidatePolicyResult
 
@@ -31,6 +32,42 @@ class MemoryManagementService:
         self.lifecycle = memory_service.lifecycle
         self.index_repository = memory_service.index_outbox
         self.execution_traces = execution_traces
+
+    async def get_pending_decision_evidence(
+        self,
+        *,
+        decision_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> MemoryPendingDecisionEvidence:
+        pending = await self.repository.get_event(
+            decision_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        if (
+            pending is None
+            or pending.user_id != user_id
+            or not pending.event_type.startswith("memory_decision_")
+        ):
+            raise MemoryManagementNotFound("Memory operation target not found")
+        operation, candidate = _pending_payload(pending)
+        previous_value = None
+        if operation.memory_id:
+            current = await self.repository.get_by_id(operation.memory_id, tenant_id=tenant_id)
+            if current is not None and _owned(current, user_id=user_id, admin=False):
+                previous_value = _bounded_memory_value(
+                    content=current.content,
+                    structured_value=current.structured_value,
+                )
+        return MemoryPendingDecisionEvidence(
+            decision_id=decision_id,
+            previous_value=previous_value,
+            proposed_value=_bounded_memory_value(
+                content=candidate.content,
+                structured_value=candidate.structured_value,
+            ),
+        )
 
     async def request_delete(
         self,
@@ -149,12 +186,15 @@ class MemoryManagementService:
                 or payload.get("idempotency_hash") != _hash_ref(idempotency_key)
             ):
                 raise MemoryManagementConflict("Idempotency key payload changed")
-            await self._project_resolution(
+            trace_complete = await self._project_resolution(
                 completed,
                 trace_session_id=trace_session_id,
                 trace_turn_id=trace_turn_id,
             )
-            return _resolution_response(completed, replay=True)
+            return _with_observation_status(
+                _resolution_response(completed, replay=True),
+                complete=trace_complete,
+            )
         existing_claim = await self.repository.get_event(
             _resolution_claim_id(decision_id),
             tenant_id=tenant_id,
@@ -488,12 +528,15 @@ class MemoryManagementService:
             },
         )
         stored = await self.repository.add_event(event)
-        await self._project_resolution(
+        trace_complete = await self._project_resolution(
             stored,
             trace_session_id=trace_session_id,
             trace_turn_id=trace_turn_id,
         )
-        return _resolution_response(stored, replay=False)
+        return _with_observation_status(
+            _resolution_response(stored, replay=False),
+            complete=trace_complete,
+        )
 
     async def _project_resolution(
         self,
@@ -501,9 +544,9 @@ class MemoryManagementService:
         *,
         trace_session_id: str | None,
         trace_turn_id: str | None,
-    ) -> None:
+    ) -> bool:
         if self.execution_traces is None or not trace_session_id or not trace_turn_id:
-            return
+            return True
         payload = event.payload
         action = str(payload.get("action", ""))
         operation = str(payload.get("operation", ""))
@@ -540,11 +583,11 @@ class MemoryManagementService:
             },
         )
         try:
-            await self.execution_traces.try_record(decision)
+            decision_complete = await self.execution_traces.try_record(decision)
             revision_id = payload.get("revision_id")
             if action != "confirm" or not event.memory_id or not isinstance(revision_id, str):
-                return
-            await self.execution_traces.try_record(
+                return decision_complete
+            revision_complete = await self.execution_traces.try_record(
                 ExecutionTraceEventDraft(
                     **common,
                     event_type="memory_revision",
@@ -560,8 +603,9 @@ class MemoryManagementService:
                     },
                 )
             )
+            return decision_complete and revision_complete
         except Exception:
-            return
+            return False
 
     async def _resolution_event(self, decision_id, *, tenant_id, user_id):
         return await self.repository.get_event(
@@ -667,6 +711,30 @@ def _resolution_response(event, *, replay: bool) -> MemoryManagementOperationRes
         provider_status=payload.get("provider_status"),
         idempotent_replay=replay,
     )
+
+
+def _with_observation_status(
+    response: MemoryManagementOperationResponse,
+    *,
+    complete: bool,
+) -> MemoryManagementOperationResponse:
+    if complete:
+        return response
+    return response.model_copy(
+        update={
+            "observation_status": "incomplete",
+            "incomplete_reason_codes": ["trace_projection_write_failed"],
+        }
+    )
+
+
+def _bounded_memory_value(*, content: str, structured_value: dict) -> str | None:
+    candidate = structured_value.get("value")
+    if isinstance(candidate, str | int | float | bool):
+        return redact_text(str(candidate), max_length=300)
+    if content:
+        return redact_text(content, max_length=300)
+    return None
 
 
 def _resolution_claim_id(decision_id: str) -> str:

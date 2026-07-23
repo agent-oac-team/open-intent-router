@@ -688,6 +688,20 @@ async def test_pending_update_confirm_is_preconditioned_and_idempotent(
     )
     decision_id = pending_result.event.event_id
 
+    evidence = await management.get_pending_decision_evidence(
+        decision_id=decision_id,
+        tenant_id="t1",
+        user_id="u1",
+    )
+    assert evidence.previous_value == "Use concise answers"
+    assert evidence.proposed_value == "Use detailed answers"
+    with pytest.raises(MemoryManagementNotFound):
+        await management.get_pending_decision_evidence(
+            decision_id=decision_id,
+            tenant_id="t1",
+            user_id="other-user",
+        )
+
     try:
         await management.resolve_pending(
             decision_id=decision_id,
@@ -830,6 +844,7 @@ async def test_pending_resolution_projects_authoritative_trace_without_changing_
 
     current = await items.get_by_id(added.item.memory_id, tenant_id="t1")
     assert response.status == "completed"
+    assert response.observation_status == "incomplete"
     assert current and current.content == "Use detailed answers"
     assert [event.event_type for event in traces.events] == [
         "memory_decision",

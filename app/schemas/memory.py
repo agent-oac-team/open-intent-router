@@ -616,6 +616,14 @@ class MemoryManagementOperationResponse(StrictBaseModel):
     index_operation_id: str | None = None
     provider_status: str | None = None
     idempotent_replay: bool = False
+    observation_status: Literal["complete", "incomplete"] = "complete"
+    incomplete_reason_codes: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MemoryPendingDecisionEvidence(StrictBaseModel):
+    decision_id: str = Field(min_length=1, max_length=128)
+    previous_value: str | None = Field(default=None, max_length=300)
+    proposed_value: str | None = Field(default=None, max_length=300)
 
 
 class MemoryAdminActionRequest(StrictBaseModel):
