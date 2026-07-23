@@ -25,7 +25,10 @@ def _ensure_sqlite_parent(database_url: str) -> None:
 
 def create_engine(settings: Settings) -> AsyncEngine:
     _ensure_sqlite_parent(settings.database_url)
-    return create_async_engine(settings.database_url, future=True)
+    engine_options = {"future": True}
+    if not settings.database_url.startswith("sqlite+aiosqlite:"):
+        engine_options["pool_pre_ping"] = True
+    return create_async_engine(settings.database_url, **engine_options)
 
 
 def create_session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:
