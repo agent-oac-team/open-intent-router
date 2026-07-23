@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Protocol, runtime_checkable
 
 from app.schemas.agents import AgentDefinition
@@ -11,6 +12,13 @@ from app.schemas.delegated_runs import (
     DelegatedRunTimeoutCommand,
 )
 from app.schemas.events import AgentEvent, AgentEventResponse, ConversationEvent
+from app.schemas.execution_traces import (
+    ExecutionTraceEvent,
+    ExecutionTraceEventDraft,
+    ExecutionTraceQuery,
+    ExecutionTraceSnapshot,
+    ExecutionTraceWriteResult,
+)
 from app.schemas.knowledge import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.schemas.knowledge_assets import (
     CanonicalKnowledgeSearchRequest,
@@ -25,6 +33,7 @@ from app.schemas.knowledge_assets import (
     KnowledgeImportJob,
     KnowledgeSourceRef,
 )
+from app.schemas.memory import MemoryManagementOperationResponse
 from app.schemas.plans import Plan, PlanActionResponse
 from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.routing import RouteRequest, RouteResponse
@@ -49,6 +58,14 @@ class TurnApplicationPort(Protocol):
         source: str,
         user_input: TurnUserInput,
     ): ...
+
+    async def get_turn(
+        self,
+        *,
+        turn_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> CanonicalTurn | None: ...
 
     async def attach_activity(
         self,
@@ -151,6 +168,45 @@ class EventApplicationPort(Protocol):
     async def record_conversation_event(self, event: ConversationEvent) -> ConversationEvent: ...
 
     async def record_agent_event(self, event: AgentEvent) -> AgentEventResponse: ...
+
+
+@runtime_checkable
+class ExecutionTraceApplicationPort(Protocol):
+    async def record(self, event: ExecutionTraceEventDraft) -> ExecutionTraceWriteResult: ...
+
+    async def try_record(self, event: ExecutionTraceEventDraft) -> bool: ...
+
+    async def snapshot(self, query: ExecutionTraceQuery) -> ExecutionTraceSnapshot: ...
+
+    async def events_after(
+        self, query: ExecutionTraceQuery, *, after_offset: int
+    ) -> list[ExecutionTraceEvent]: ...
+
+    def stream(
+        self,
+        query: ExecutionTraceQuery,
+        *,
+        after_offset: int,
+        poll_interval_seconds: float = 0.25,
+    ) -> AsyncIterator[ExecutionTraceEvent]: ...
+
+
+@runtime_checkable
+class MemoryManagementApplicationPort(Protocol):
+    async def resolve_pending(
+        self,
+        *,
+        decision_id: str,
+        action: str,
+        tenant_id: str,
+        user_id: str,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
+        expected_revision_id: str | None,
+        trace_session_id: str | None = None,
+        trace_turn_id: str | None = None,
+    ) -> MemoryManagementOperationResponse: ...
 
 
 @runtime_checkable

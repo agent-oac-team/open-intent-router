@@ -36,6 +36,8 @@ from app.repositories.turn_transactions import (
 from app.repositories.turns import MemoryTurnRepository, _turn_from_row
 from app.schemas.delegated_runs import (
     DelegatedRunCompleteCommand,
+    DelegatedRunEventCommand,
+    DelegatedRunFailCommand,
     DelegatedRunOrphanQuery,
     DelegatedRunProgressCommand,
     DelegatedRunStartCommand,
@@ -48,6 +50,8 @@ from app.schemas.turns import CanonicalTurn, TurnOutboxEvent, TurnSemanticRespon
 from app.services.delegated_run_service import (
     DelegatedRunCompletionResult,
     DelegatedRunCompletionStore,
+    DelegatedRunFailureResult,
+    DelegatedRunFailureStore,
     DelegatedRunMaintenanceStore,
     DelegatedRunProgressStore,
     DelegatedRunStartResult,
@@ -313,6 +317,110 @@ class DatabaseDelegatedRunCompletionStore(DelegatedRunCompletionStore):
             )
 
 
+class DatabaseDelegatedRunFailureStore(DelegatedRunFailureStore):
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self.session_factory = session_factory
+
+    async def fail(self, command: DelegatedRunFailCommand) -> DelegatedRunFailureResult:
+        try:
+            async with self.session_factory() as session, session.begin():
+                existing_event = await session.get(AgentEventModel, command.event_id)
+                if existing_event is not None:
+                    return await self._duplicate(session, existing_event, command)
+
+                run_row = await session.scalar(
+                    select(AgentRunModel)
+                    .where(AgentRunModel.run_id == command.run_id)
+                    .with_for_update()
+                )
+                run = _validate_failure_run(run_row, command)
+                turn_row = await session.scalar(
+                    select(CanonicalTurnModel)
+                    .where(CanonicalTurnModel.turn_id == command.turn_id)
+                    .with_for_update()
+                )
+                turn = _validate_failure_turn(turn_row, command)
+                failed_at = max(_as_utc(command.occurred_at), _as_utc(turn.created_at))
+                stored_failed_at = (
+                    failed_at.replace(tzinfo=None)
+                    if turn_row.created_at.tzinfo is None
+                    else failed_at
+                )
+
+                run_row.status = "failed"
+                run_row.state_version = run.state_version + 1
+                run_row.event_sequence = run.event_sequence + 1
+                run_row.terminal_event_id = command.event_id
+                run_row.heartbeat_at = stored_failed_at
+                run_row.error_text = dumps(command.error)
+                run_row.updated_at = stored_failed_at
+
+                turn_row.status = TurnStatus.FAILED.value
+                turn_row.state_version = turn.state_version + 1
+                turn_row.final_response_text = dumps(
+                    TurnSemanticResponse(
+                        kind="error",
+                        text="Delegated agent execution failed",
+                        error=command.error,
+                    ).model_dump(mode="json")
+                )
+                turn_row.updated_at = stored_failed_at
+                turn_row.completed_at = stored_failed_at
+
+                await _fail_plan_step(session, run, command)
+                session.add(
+                    AgentEventModel(**_failure_event_values(run, command, stored_failed_at))
+                )
+                session.add(
+                    TurnOutboxModel(
+                        outbox_id=f"outbox_{uuid4().hex}",
+                        turn_id=command.turn_id,
+                        event_type="turn.failed",
+                        idempotency_key=f"turn.failed:{command.turn_id}",
+                        payload_text=dumps(
+                            {
+                                "turn_id": command.turn_id,
+                                "run_id": command.run_id,
+                                "state_version": turn_row.state_version,
+                            }
+                        ),
+                        status="pending",
+                        attempt_count=0,
+                        max_attempts=5,
+                        available_at=stored_failed_at,
+                    )
+                )
+                await session.flush()
+                return DelegatedRunFailureResult(
+                    run=_run_from_row(run_row),
+                    turn=_turn_from_row(turn_row),
+                    duplicate=False,
+                )
+        except IntegrityError:
+            async with self.session_factory() as session:
+                existing_event = await session.get(AgentEventModel, command.event_id)
+                if existing_event is None:
+                    raise
+                return await self._duplicate(session, existing_event, command)
+
+    async def _duplicate(
+        self,
+        session: AsyncSession,
+        event: AgentEventModel,
+        command: DelegatedRunFailCommand,
+    ) -> DelegatedRunFailureResult:
+        _validate_failure_event_identity(event, command)
+        run = await session.get(AgentRunModel, command.run_id)
+        turn = await session.get(CanonicalTurnModel, command.turn_id)
+        if run is None or turn is None:
+            raise DelegatedRunStartConflict("Failure Event has incomplete canonical state")
+        return DelegatedRunFailureResult(
+            run=_run_from_row(run),
+            turn=_turn_from_row(turn),
+            duplicate=True,
+        )
+
+
 class MemoryDelegatedRunCompletionStore(DelegatedRunCompletionStore):
     def __init__(
         self,
@@ -399,6 +507,150 @@ class MemoryDelegatedRunCompletionStore(DelegatedRunCompletionStore):
                 self.outbox_repository.events = outbox
                 raise
             return DelegatedRunCompletionResult(bundle.run, bundle.result, bundle.turn, False)
+
+
+class MemoryDelegatedRunFailureStore(DelegatedRunFailureStore):
+    def __init__(
+        self,
+        *,
+        run_repository: MemoryRunRepository,
+        event_repository: MemoryEventRepository,
+        turn_repository: MemoryTurnRepository,
+        outbox_repository: MemoryTurnOutboxRepository,
+        plan_repository: MemoryPlanRepository | None = None,
+    ) -> None:
+        self.run_repository = run_repository
+        self.event_repository = event_repository
+        self.turn_repository = turn_repository
+        self.outbox_repository = outbox_repository
+        self.plan_repository = plan_repository
+        self._lock = asyncio.Lock()
+
+    async def fail(self, command: DelegatedRunFailCommand) -> DelegatedRunFailureResult:
+        async with self._lock:
+            existing_event = await self.event_repository.get_event(
+                command.event_id,
+                tenant_id=command.tenant_id,
+                user_id=command.user_id,
+            )
+            if existing_event is not None:
+                _validate_failure_event_identity(existing_event, command)
+                run = await self.run_repository.get_run(command.run_id)
+                turn = await self.turn_repository.get(
+                    command.turn_id,
+                    tenant_id=command.tenant_id,
+                    user_id=command.user_id,
+                )
+                if turn is None:
+                    raise DelegatedRunStartConflict("Failure Event has incomplete canonical state")
+                return DelegatedRunFailureResult(run=run, turn=turn, duplicate=True)
+
+            run = _validate_failure_run(await self.run_repository.get_run(command.run_id), command)
+            turn = _validate_failure_turn(
+                await self.turn_repository.get(
+                    command.turn_id,
+                    tenant_id=command.tenant_id,
+                    user_id=command.user_id,
+                ),
+                command,
+            )
+            plan = None
+            if command.plan_id:
+                if self.plan_repository is None:
+                    raise DelegatedRunStartConflict("Plan repository is not configured")
+                plan = await self.plan_repository.get(
+                    command.plan_id,
+                    tenant_id=command.tenant_id,
+                    user_id=command.user_id,
+                )
+                if plan is None:
+                    raise DelegatedRunStartConflict("Plan not found")
+
+            failed_at = max(_as_utc(command.occurred_at), _as_utc(turn.created_at))
+            updated_run = run.model_copy(
+                update={
+                    "status": "failed",
+                    "state_version": run.state_version + 1,
+                    "event_sequence": run.event_sequence + 1,
+                    "terminal_event_id": command.event_id,
+                    "heartbeat_at": failed_at,
+                    "error": command.error,
+                    "updated_at": failed_at,
+                }
+            )
+            updated_turn = turn.model_copy(
+                update={
+                    "status": TurnStatus.FAILED,
+                    "state_version": turn.state_version + 1,
+                    "final_response": TurnSemanticResponse(
+                        kind="error",
+                        text="Delegated agent execution failed",
+                        error=command.error,
+                    ),
+                    "updated_at": failed_at,
+                    "completed_at": failed_at,
+                }
+            )
+            updated_plan = _failed_plan(plan, command, failed_at) if plan is not None else None
+            event = AgentEvent(
+                event_id=command.event_id,
+                run_id=run.run_id,
+                request_id=run.request_id,
+                session_id=run.session_id,
+                agent_id=run.agent_id,
+                user_id=run.user_id,
+                tenant_id=run.tenant_id,
+                turn_id=run.turn_id,
+                event_type="agent_error",
+                status="failed",
+                plan_id=run.plan_id,
+                step_id=run.step_id,
+                sequence=updated_run.event_sequence,
+                run_state_version=updated_run.state_version,
+                payload={"error": command.error},
+                created_at=failed_at,
+            )
+            outbox = TurnOutboxEvent(
+                outbox_id=f"outbox_{uuid4().hex}",
+                turn_id=turn.turn_id,
+                event_type="turn.failed",
+                idempotency_key=f"turn.failed:{turn.turn_id}",
+                payload={
+                    "turn_id": turn.turn_id,
+                    "run_id": run.run_id,
+                    "state_version": updated_turn.state_version,
+                },
+                available_at=failed_at,
+            )
+            snapshots = (
+                run.model_copy(deep=True),
+                turn.model_copy(deep=True),
+                plan.model_copy(deep=True) if plan is not None else None,
+                dict(self.event_repository.agent_events),
+                dict(self.outbox_repository.events),
+            )
+            try:
+                await self.run_repository.update_run(updated_run)
+                if updated_plan is not None and self.plan_repository is not None:
+                    await self.plan_repository.save(updated_plan)
+                stored_turn = await self.turn_repository.update_if_version(
+                    updated_turn,
+                    expected_version=turn.state_version,
+                )
+                if stored_turn is None:
+                    raise DelegatedRunStartConflict("Turn changed concurrently")
+                await self.event_repository.add_agent_event(event)
+                await self.outbox_repository.add_idempotent(outbox)
+            except Exception:
+                old_run, old_turn, old_plan, events, outbox_events = snapshots
+                self.run_repository.runs[old_run.run_id] = old_run
+                self.turn_repository.turns[old_turn.turn_id] = old_turn
+                if old_plan is not None and self.plan_repository is not None:
+                    self.plan_repository.plans[old_plan.plan_id] = old_plan
+                self.event_repository.agent_events = events
+                self.outbox_repository.events = outbox_events
+                raise
+            return DelegatedRunFailureResult(updated_run, stored_turn, False)
 
 
 class DatabaseDelegatedRunMaintenanceStore(DelegatedRunMaintenanceStore):
@@ -782,6 +1034,44 @@ def _validate_final_run(
     return canonical
 
 
+def _validate_failure_run(
+    run: AgentRunModel | AgentRun | None,
+    command: DelegatedRunFailCommand,
+) -> AgentRun:
+    if run is None:
+        raise DelegatedRunStartConflict("Delegated Run not found")
+    canonical = _run_from_row(run) if isinstance(run, AgentRunModel) else run
+    if (
+        not canonical.delegated
+        or canonical.status in {"completed", "failed", "cancelled", "timed_out"}
+        or canonical.turn_id != command.turn_id
+        or canonical.tenant_id != command.tenant_id
+        or canonical.user_id != command.user_id
+        or canonical.agent_id != command.agent_id
+        or canonical.plan_id != command.plan_id
+        or canonical.step_id != command.step_id
+        or canonical.state_version != command.expected_state_version
+    ):
+        raise DelegatedRunStartConflict("Delegated Run failure identity/state conflict")
+    return canonical
+
+
+def _validate_failure_turn(
+    turn: CanonicalTurnModel | CanonicalTurn | None,
+    command: DelegatedRunFailCommand,
+) -> CanonicalTurn:
+    if turn is None:
+        raise DelegatedRunStartConflict("Canonical Turn not found")
+    canonical = _turn_from_row(turn) if isinstance(turn, CanonicalTurnModel) else turn
+    if (
+        canonical.tenant_id != command.tenant_id
+        or canonical.user_id != command.user_id
+        or canonical.status.is_terminal
+    ):
+        raise DelegatedRunStartConflict("Canonical Turn failure ownership/state conflict")
+    return canonical
+
+
 def _completion_bundle(
     command: DelegatedRunCompleteCommand,
     *,
@@ -920,6 +1210,20 @@ def _validate_final_event_identity(
         raise DelegatedRunStartConflict("Final Event idempotency identity conflict")
 
 
+def _validate_failure_event_identity(
+    event: AgentEventModel | AgentEvent,
+    command: DelegatedRunFailCommand,
+) -> None:
+    _validate_final_event_identity(event, command)
+    payload = loads(event.payload_text, {}) if isinstance(event, AgentEventModel) else event.payload
+    if (
+        event.event_type != "agent_error"
+        or event.status != "failed"
+        or payload != {"error": command.error}
+    ):
+        raise DelegatedRunStartConflict("Failure Event idempotency identity conflict")
+
+
 def _validate_timeout_run(
     run: AgentRunModel | AgentRun | None,
     command: DelegatedRunTimeoutCommand,
@@ -951,7 +1255,7 @@ def _as_utc(value: datetime) -> datetime:
 async def _fail_plan_step(
     session: AsyncSession,
     run: AgentRun,
-    command: DelegatedRunTimeoutCommand,
+    command: DelegatedRunEventCommand,
 ) -> None:
     if not run.plan_id or not run.step_id:
         return
@@ -972,6 +1276,62 @@ async def _fail_plan_step(
     plan.current_step_id = None
     plan.state_version += 1
     plan.updated_at = command.occurred_at
+
+
+def _failed_plan(
+    plan: Plan,
+    command: DelegatedRunFailCommand,
+    failed_at: datetime,
+) -> Plan:
+    if not command.step_id:
+        raise DelegatedRunStartConflict("Plan failure requires Step")
+    matched = False
+    steps = []
+    for step in plan.steps:
+        if step.step_id == command.step_id and step.agent_id == command.agent_id:
+            steps.append(step.model_copy(update={"status": "failed"}))
+            matched = True
+        else:
+            steps.append(step)
+    if not matched:
+        raise DelegatedRunStartConflict("Plan Step association conflict")
+    return plan.model_copy(
+        update={
+            "steps": steps,
+            "status": "failed",
+            "current_step_id": None,
+            "state_version": plan.state_version + 1,
+            "last_event_id": command.event_id,
+            "updated_at": failed_at,
+            "formation_event_type": "update",
+        }
+    )
+
+
+def _failure_event_values(
+    run: AgentRun,
+    command: DelegatedRunFailCommand,
+    failed_at: datetime,
+) -> dict:
+    return {
+        "event_id": command.event_id,
+        "run_id": command.run_id,
+        "request_id": run.request_id,
+        "session_id": run.session_id,
+        "agent_id": run.agent_id,
+        "user_id": run.user_id,
+        "tenant_id": run.tenant_id,
+        "turn_id": run.turn_id,
+        "agent_session_id": None,
+        "event_type": "agent_error",
+        "status": "failed",
+        "plan_id": run.plan_id,
+        "step_id": run.step_id,
+        "sequence": run.event_sequence + 1,
+        "run_state_version": run.state_version + 1,
+        "payload_text": dumps({"error": command.error}),
+        "created_at": failed_at,
+    }
 
 
 def _timeout_event_values(run: AgentRun, command: DelegatedRunTimeoutCommand) -> dict:

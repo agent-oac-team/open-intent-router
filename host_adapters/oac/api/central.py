@@ -1,15 +1,17 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.schemas.common import UserContext
 from app.schemas.delegated_runs import (
     DelegatedRunCompleteCommand,
+    DelegatedRunFailCommand,
     DelegatedRunProgressCommand,
     DelegatedRunStartCommand,
 )
 from app.schemas.execution_tickets import LegacyExecutionCorrelationQuery
+from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.turns import TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketError, ExecutionTicketService
 from host_adapters.oac.application import OacAdapterApplicationPorts
@@ -60,6 +62,7 @@ router = APIRouter(prefix="/api/v1/central", tags=["legacy-central"])
 @router.post("/route", response_model=CentralRouteResponse)
 async def central_route(
     request: CentralRouteRequest,
+    response: Response,
     identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
     ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
     tickets: ExecutionTicketService = Depends(get_execution_ticket_service),
@@ -84,19 +87,78 @@ async def central_route(
 
     async def primary() -> CentralRouteResponse:
         native_response = await ports.routing.route(native_request)
-        ticket = None
-        if native_response.decision.action in {"open_agent", "continue_agent"}:
-            turn = await ports.turns.start_turn(
-                tenant_id=identity.tenant_id,
-                user_id=identity.user_id,
-                session_id=request.session_id,
-                request_id=native_response.request_id,
-                source=native_request.source,
-                user_input=TurnUserInput(
-                    text=native_request.input.text,
-                    metadata={"input_type": "text", "attachment_count": 0},
+        trace_complete = True
+        turn = await ports.turns.start_turn(
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            session_id=request.session_id,
+            request_id=native_response.request_id,
+            source=native_request.source,
+            user_input=TurnUserInput(
+                text=native_request.input.text,
+                metadata={"input_type": "text", "attachment_count": 0},
+            ),
+        )
+        response.headers["X-OIR-Trace-Turn-ID"] = turn.turn.turn_id
+        trace_complete = (
+            await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(turn.turn.turn_id),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=request.session_id,
+                    turn_id=turn.turn.turn_id,
+                    event_type="canonical_turn",
+                    stage="accepted",
+                    status=turn.turn.status.value,
+                    source="oir:canonical_turn",
+                    source_event_id=f"turn:{turn.turn.turn_id}:accepted",
+                    facts={
+                        "request_id": native_response.request_id,
+                        "source": native_request.source,
+                        "input_kind": native_request.input.type,
+                    },
+                    occurred_at=turn.turn.created_at,
                 ),
             )
+            and trace_complete
+        )
+        trace_complete = (
+            await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(turn.turn.turn_id),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=request.session_id,
+                    turn_id=turn.turn.turn_id,
+                    event_type="route_decision",
+                    stage="decision",
+                    status=native_response.decision.status,
+                    source="oir:route_decision",
+                    source_event_id=f"route:{native_response.request_id}",
+                    facts={
+                        "action": native_response.decision.action,
+                        "target_agent_id": native_response.decision.target_agent_id,
+                        "candidate_count": len(native_response.context.candidate_agent_ids),
+                        "plan_id": native_response.plan.plan_id if native_response.plan else None,
+                    },
+                ),
+            )
+            and trace_complete
+        )
+        trace_complete = (
+            await _record_context_and_recall_trace(
+                ports,
+                response=native_response,
+                identity=identity,
+                turn_id=turn.turn.turn_id,
+            )
+            and trace_complete
+        )
+        ticket = None
+        if native_response.decision.action in {"open_agent", "continue_agent"}:
             deadline = datetime.now(UTC) + timedelta(seconds=settings.execution_ticket_ttl_seconds)
             started = await ports.delegated_runs.start(
                 DelegatedRunStartCommand(
@@ -118,6 +180,30 @@ async def central_route(
                     input=native_response.invocation.input if native_response.invocation else {},
                 )
             )
+            trace_complete = (
+                await _record_trace(
+                    ports,
+                    ExecutionTraceEventDraft(
+                        trace_id=trace_id_for_turn(turn.turn.turn_id),
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        session_id=request.session_id,
+                        turn_id=turn.turn.turn_id,
+                        run_id=started.run.run_id,
+                        event_type="agent_run",
+                        stage="delegated_start",
+                        status=str(started.run.status),
+                        source="oir:agent_run",
+                        source_event_id=f"run:{started.run.run_id}:started",
+                        facts={
+                            "agent_id": started.run.agent_id,
+                            "invoker_type": "host_delegated",
+                            "delegated": True,
+                        },
+                    ),
+                )
+                and trace_complete
+            )
             issued = await tickets.issue(
                 started.run,
                 request_id=native_response.request_id,
@@ -125,6 +211,8 @@ async def central_route(
                 ttl_seconds=settings.execution_ticket_ttl_seconds,
             )
             ticket = issued.ticket
+        if not trace_complete:
+            response.headers["X-OIR-Trace-Completeness"] = "incomplete"
         return route_response_to_compat(
             native_response,
             source=request.source,
@@ -188,6 +276,7 @@ async def navigation_event(
 @router.post("/events/agent", response_model=AgentEventCompatResponse)
 async def agent_event(
     request: AgentEventRequest,
+    response: Response,
     identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
     ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
     tickets: ExecutionTicketService = Depends(get_execution_ticket_service),
@@ -253,7 +342,9 @@ async def agent_event(
                 accepted=False,
                 route_required=False,
             )
-        if request.event_type == "agent_progress" or request.status in {"running", "blocked"}:
+        if request.event_type == "agent_progress" or (
+            request.event_type != "agent_error" and request.status in {"running", "blocked"}
+        ):
             sequence = record.event_sequence + 1
             result = await ports.delegated_runs.progress(
                 DelegatedRunProgressCommand(
@@ -290,6 +381,24 @@ async def agent_event(
                     event_sequence=sequence,
                     now=occurred_at,
                 )
+            trace_complete = await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(record.claims.turn_id),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=request.session_id,
+                    turn_id=record.claims.turn_id,
+                    run_id=record.claims.run_id,
+                    event_type="agent_event",
+                    stage="provider_progress",
+                    status=str(result.run.status),
+                    source="oac:agent_event",
+                    source_event_id=request.event_id,
+                    facts=_trace_progress_facts(request),
+                    occurred_at=occurred_at,
+                ),
+            )
         elif request.status == "completed":
             result = await ports.delegated_runs.complete(
                 DelegatedRunCompleteCommand(
@@ -327,6 +436,122 @@ async def agent_event(
                     lease_token=record.lease_token,
                     now=occurred_at,
                 )
+            trace_complete = await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(record.claims.turn_id),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=request.session_id,
+                    turn_id=record.claims.turn_id,
+                    run_id=record.claims.run_id,
+                    event_type="agent_event",
+                    stage="provider_completed",
+                    status="completed",
+                    source="oac:agent_event",
+                    source_event_id=request.event_id,
+                    facts={"agent_id": request.agent_id},
+                    occurred_at=occurred_at,
+                ),
+            )
+            trace_complete = (
+                await _record_trace(
+                    ports,
+                    ExecutionTraceEventDraft(
+                        trace_id=trace_id_for_turn(record.claims.turn_id),
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        session_id=request.session_id,
+                        turn_id=record.claims.turn_id,
+                        run_id=record.claims.run_id,
+                        event_type="agent_result",
+                        stage="result_recorded",
+                        status="completed",
+                        source="oir:agent_result",
+                        source_event_id=f"result:{result.result_id or request.event_id}",
+                        facts={
+                            "agent_id": request.agent_id,
+                            "result_summary": "provider_result_available",
+                        },
+                        occurred_at=occurred_at,
+                    ),
+                )
+                and trace_complete
+            )
+        elif request.event_type == "agent_error" or request.status == "failed":
+            result = await ports.delegated_runs.fail(
+                DelegatedRunFailCommand(
+                    event_id=request.event_id,
+                    run_id=record.claims.run_id,
+                    turn_id=record.claims.turn_id,
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    agent_id=request.agent_id,
+                    plan_id=request.plan_id,
+                    step_id=request.step_id,
+                    expected_state_version=record.run_state_version,
+                    occurred_at=occurred_at,
+                    error=_failure_command_error(request),
+                )
+            )
+            if raw_ticket and record.lease_token:
+                await tickets.consume(
+                    raw_ticket,
+                    event_id=request.event_id,
+                    owner=owner,
+                    lease_token=record.lease_token,
+                    now=occurred_at,
+                )
+            elif record.lease_token:
+                await tickets.consume_legacy(
+                    record.ticket_hash,
+                    event_id=request.event_id,
+                    owner=owner,
+                    lease_token=record.lease_token,
+                    now=occurred_at,
+                )
+            failure_facts = _trace_failure_facts(request)
+            trace_complete = await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(record.claims.turn_id),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=request.session_id,
+                    turn_id=record.claims.turn_id,
+                    run_id=record.claims.run_id,
+                    event_type="agent_event",
+                    stage="provider_failed",
+                    status="failed",
+                    reason_code=failure_facts["error_code"],
+                    source="oac:agent_event",
+                    source_event_id=request.event_id,
+                    facts=failure_facts,
+                    occurred_at=occurred_at,
+                ),
+            )
+            trace_complete = (
+                await _record_trace(
+                    ports,
+                    ExecutionTraceEventDraft(
+                        trace_id=trace_id_for_turn(record.claims.turn_id),
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        session_id=request.session_id,
+                        turn_id=record.claims.turn_id,
+                        run_id=record.claims.run_id,
+                        event_type="agent_result",
+                        stage="result_unavailable",
+                        status="failed",
+                        reason_code=failure_facts["error_code"],
+                        source="oir:agent_result",
+                        source_event_id=f"failure:{request.event_id}",
+                        facts=failure_facts,
+                        occurred_at=occurred_at,
+                    ),
+                )
+                and trace_complete
+            )
         else:
             native = agent_event_to_native(
                 request,
@@ -353,6 +578,26 @@ async def agent_event(
                     lease_token=record.lease_token,
                     now=occurred_at,
                 )
+            trace_complete = await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(record.claims.turn_id),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=request.session_id,
+                    turn_id=record.claims.turn_id,
+                    run_id=record.claims.run_id,
+                    event_type="agent_event",
+                    stage=request.event_type,
+                    status=request.status,
+                    source="oac:agent_event",
+                    source_event_id=request.event_id,
+                    facts={"agent_id": request.agent_id},
+                    occurred_at=occurred_at,
+                ),
+            )
+            if not trace_complete:
+                response.headers["X-OIR-Trace-Completeness"] = "incomplete"
             return AgentEventCompatResponse(
                 event_id=request.event_id,
                 session_id=request.session_id,
@@ -360,6 +605,8 @@ async def agent_event(
                 duplicate=recorded.duplicate,
                 route_required=True,
             )
+        if not trace_complete:
+            response.headers["X-OIR-Trace-Completeness"] = "incomplete"
         return AgentEventCompatResponse(
             event_id=request.event_id,
             session_id=request.session_id,
@@ -424,3 +671,175 @@ def _authorize(identity: TrustedHostIdentity, operation: HostOperation) -> None:
 def _raise_projected(error: Exception) -> None:
     status_code, body = project_error(error)
     raise HTTPException(status_code=status_code, detail=body.model_dump(mode="json")) from error
+
+
+async def _record_trace(
+    ports: OacAdapterApplicationPorts,
+    event: ExecutionTraceEventDraft,
+) -> bool:
+    if ports.execution_traces is None:
+        return True
+    try:
+        try_record = getattr(ports.execution_traces, "try_record", None)
+        if callable(try_record):
+            return await try_record(event)
+        await ports.execution_traces.record(event)
+    except Exception:
+        return False
+    return True
+
+
+async def _record_context_and_recall_trace(
+    ports: OacAdapterApplicationPorts,
+    *,
+    response,
+    identity: TrustedHostIdentity,
+    turn_id: str,
+) -> bool:
+    metadata = response.context.metadata
+    pack = metadata.get("context_pack")
+    if not isinstance(pack, dict):
+        return True
+
+    usage = pack.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    consumer = _bounded_trace_string(pack.get("consumer"), fallback="router")
+    included_count = _bounded_trace_count(usage.get("included_count"))
+    excluded_count = _bounded_trace_count(usage.get("dropped_count"))
+    reason_code = _context_trace_reason_code(pack)
+    degraded = reason_code is not None
+    trace_id = trace_id_for_turn(turn_id)
+
+    complete = await _record_trace(
+        ports,
+        ExecutionTraceEventDraft(
+            trace_id=trace_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            session_id=response.session_id,
+            turn_id=turn_id,
+            event_type="context_pack",
+            stage="context_ready",
+            status="degraded" if degraded else "completed",
+            source="oir:context_pack",
+            source_event_id=f"context-pack:{response.request_id}",
+            facts={
+                "consumer": consumer,
+                "included_count": included_count,
+                "excluded_count": excluded_count,
+                "degraded": degraded,
+                "reason_code": reason_code,
+            },
+        ),
+    )
+
+    for scope, counts in _memory_recall_counts(pack).items():
+        complete = (
+            await _record_trace(
+                ports,
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id,
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    session_id=response.session_id,
+                    turn_id=turn_id,
+                    event_type="memory_recall",
+                    stage="recall_ready",
+                    status="degraded" if degraded else "completed",
+                    source="oir:memory_recall",
+                    source_event_id=f"memory-recall:{response.request_id}:{scope}",
+                    facts={
+                        "scope": scope,
+                        "used_count": counts["included"],
+                        "excluded_count": counts["excluded"],
+                        "degraded": degraded,
+                        "reason_code": reason_code,
+                    },
+                ),
+            )
+            and complete
+        )
+    return complete
+
+
+def _memory_recall_counts(pack: dict) -> dict[str, dict[str, int]]:
+    selection = pack.get("selection")
+    if not isinstance(selection, list):
+        return {}
+    counts: dict[str, dict[str, int]] = {}
+    for item in selection:
+        if not isinstance(item, dict) or item.get("source") != "memory":
+            continue
+        scope = _bounded_trace_string(item.get("scope"), fallback="unspecified")
+        values = counts.setdefault(scope, {"included": 0, "excluded": 0})
+        if item.get("included") is True:
+            values["included"] += 1
+        else:
+            values["excluded"] += 1
+    return counts
+
+
+def _context_trace_reason_code(pack: dict) -> str | None:
+    outcomes = pack.get("provider_outcomes")
+    if not isinstance(outcomes, list):
+        return None
+    statuses = {
+        str(item.get("status"))
+        for item in outcomes
+        if isinstance(item, dict) and item.get("status") in {"denied", "timeout", "error"}
+    }
+    if not statuses:
+        return None
+    return f"context_{sorted(statuses)[0]}"
+
+
+def _bounded_trace_count(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _bounded_trace_string(value, *, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    normalized = value.strip()
+    return normalized[:128] if normalized else fallback
+
+
+def _trace_progress_facts(request: AgentEventRequest) -> dict[str, str]:
+    facts = {"agent_id": request.agent_id}
+    if not isinstance(request.output, dict):
+        return facts
+    stage_name = _bounded_optional_trace_string(request.output.get("provider_stage_name"))
+    if stage_name is not None:
+        facts["provider_stage_name"] = stage_name
+    return facts
+
+
+def _trace_failure_facts(request: AgentEventRequest) -> dict[str, str]:
+    return {
+        "agent_id": request.agent_id,
+        "error_code": _safe_provider_error_code(request.output),
+    }
+
+
+def _failure_command_error(request: AgentEventRequest) -> dict[str, str]:
+    return {"code": _safe_provider_error_code(request.output)}
+
+
+def _safe_provider_error_code(output) -> str:
+    if isinstance(output, dict):
+        code = output.get("error_code")
+        if code in {
+            "workflow_empty_result",
+            "workflow_execution_failed",
+            "workflow_request_failed",
+            "workflow_unavailable",
+        }:
+            return code
+    return "provider_execution_failed"
+
+
+def _bounded_optional_trace_string(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized[:128] or None

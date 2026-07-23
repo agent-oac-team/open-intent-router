@@ -27,13 +27,19 @@ from app.repositories.database import (
 )
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunCompletionStore,
+    DatabaseDelegatedRunFailureStore,
     DatabaseDelegatedRunMaintenanceStore,
     DatabaseDelegatedRunProgressStore,
     DatabaseDelegatedRunStartStore,
     MemoryDelegatedRunCompletionStore,
+    MemoryDelegatedRunFailureStore,
     MemoryDelegatedRunMaintenanceStore,
     MemoryDelegatedRunProgressStore,
     MemoryDelegatedRunStartStore,
+)
+from app.repositories.execution_traces import (
+    DatabaseExecutionTraceRepository,
+    MemoryExecutionTraceRepository,
 )
 from app.repositories.file_registry import FileRegistrySource
 from app.repositories.knowledge_assets import (
@@ -71,6 +77,7 @@ from app.services.chat_history_service import ChatHistoryService
 from app.services.context_service import ContextService
 from app.services.delegated_run_service import DelegatedRunService
 from app.services.event_service import EventService
+from app.services.execution_trace_service import ExecutionTraceService
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
 from app.services.knowledge_asset_service import KnowledgeAssetService
 from app.services.knowledge_service import KnowledgeService
@@ -297,7 +304,10 @@ def get_memory_observability_service() -> MemoryObservabilityService:
 
 @lru_cache
 def get_memory_management_service() -> MemoryManagementService:
-    return MemoryManagementService(memory_service=get_memory_service())
+    return MemoryManagementService(
+        memory_service=get_memory_service(),
+        execution_traces=get_execution_trace_service(),
+    )
 
 
 def build_memory_formation_runtime(
@@ -412,6 +422,8 @@ def get_memory_formation_processor():
             verifier=None,
         ),
         lifecycle=memory_service.lifecycle,
+        execution_traces=get_execution_trace_service(),
+        turns=get_turn_service(),
     )
 
 
@@ -480,6 +492,7 @@ def get_delegated_run_service() -> DelegatedRunService:
             DatabaseDelegatedRunStartStore(factory),
             progress_store=DatabaseDelegatedRunProgressStore(factory),
             completion_store=DatabaseDelegatedRunCompletionStore(factory),
+            failure_store=DatabaseDelegatedRunFailureStore(factory),
             maintenance_store=DatabaseDelegatedRunMaintenanceStore(factory),
         )
     repositories = get_repository_bundle()
@@ -497,6 +510,13 @@ def get_delegated_run_service() -> DelegatedRunService:
         completion_store=MemoryDelegatedRunCompletionStore(
             run_repository=repositories["runs"],
             result_repository=repositories["results"],
+            event_repository=repositories["events"],
+            turn_repository=turns,
+            outbox_repository=outbox,
+            plan_repository=repositories["plans"],
+        ),
+        failure_store=MemoryDelegatedRunFailureStore(
+            run_repository=repositories["runs"],
             event_repository=repositories["events"],
             turn_repository=turns,
             outbox_repository=outbox,
@@ -557,6 +577,22 @@ def get_chat_history_service() -> ChatHistoryService:
 def get_event_service() -> EventService:
     repositories = get_repository_bundle()
     return EventService(repositories["events"])
+
+
+@lru_cache
+def get_execution_trace_repository():
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        return DatabaseExecutionTraceRepository(create_session_factory(settings))
+    return MemoryExecutionTraceRepository()
+
+
+@lru_cache
+def get_execution_trace_service() -> ExecutionTraceService:
+    return ExecutionTraceService(
+        get_execution_trace_repository(),
+        canonical_turns=get_turn_service(),
+    )
 
 
 def get_run_repository():

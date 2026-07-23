@@ -1,9 +1,11 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -158,6 +160,54 @@ class CanonicalTurnModel(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ExecutionTraceEventModel(Base):
+    __tablename__ = "execution_trace_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "source",
+            "source_event_id",
+            "source_version",
+            name="uq_execution_trace_events_source",
+        ),
+        Index(
+            "idx_execution_trace_events_owner_turn_offset",
+            "tenant_id",
+            "user_id",
+            "session_id",
+            "turn_id",
+            "event_offset",
+        ),
+        Index("idx_execution_trace_events_trace_offset", "trace_id", "event_offset"),
+    )
+
+    event_offset: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(),
+        primary_key=True,
+    )
+    trace_id: Mapped[str] = mapped_column(String(134), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    stage: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_event_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    facts_text: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    evidence_refs_text: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    visibility: Mapped[str] = mapped_column(String(32), nullable=False, default="business_runtime")
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class TurnOutboxModel(Base):

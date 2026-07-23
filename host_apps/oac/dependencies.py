@@ -7,8 +7,10 @@ from app.db.session import create_session_factory
 from app.dependencies import (
     get_delegated_run_service,
     get_event_service,
+    get_execution_trace_service,
     get_knowledge_asset_service,
     get_knowledge_service,
+    get_memory_management_service,
     get_plan_service,
     get_registry_service,
     get_router_service,
@@ -53,6 +55,8 @@ def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
         plans=get_plan_service(),
         delegated_runs=get_delegated_run_service(),
         turns=get_turn_service(),
+        execution_traces=get_execution_trace_service(),
+        memory_management=get_memory_management_service(),
     )
 
 

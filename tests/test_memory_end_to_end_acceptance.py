@@ -8,9 +8,12 @@ from app.llm.conversation_formation import (
     FakeConversationFormationModel,
 )
 from app.repositories.context_stores import MemoryItemRepository
+from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.repositories.memory_formation import MemoryFormationTurnJobRepository
 from app.repositories.memory_traces import MemoryFormationTraceRepository
+from app.repositories.turns import MemoryTurnRepository
 from app.schemas.common import UserContext
+from app.schemas.execution_traces import ExecutionTraceQuery
 from app.schemas.memory import (
     MemoryCandidateSemantics,
     MemoryEvidenceRef,
@@ -22,12 +25,15 @@ from app.schemas.memory import (
     MemoryRecallRequest,
     MemorySemanticVerification,
 )
+from app.schemas.turns import TurnUserInput
+from app.services.execution_trace_service import ExecutionTraceService
 from app.services.memory_candidate_policy import MemoryCandidatePolicy, build_memory_key
 from app.services.memory_integration import MemoryFormationProcessor
 from app.services.memory_lifecycle import MemoryConsolidationService
 from app.services.memory_management import MemoryManagementNotFound, MemoryManagementService
 from app.services.memory_observability import MemoryObservabilityService
 from app.services.memory_service import MemoryService
+from app.services.turn_service import TurnService
 
 
 def _settings() -> Settings:
@@ -153,6 +159,116 @@ async def _drain_index(service: MemoryService) -> None:
         if await service.index_worker.run_once() is None:
             return
     raise AssertionError("index outbox did not drain")
+
+
+@pytest.mark.asyncio
+async def test_memory_processor_projects_bounded_execution_trace_for_canonical_turn() -> None:
+    settings = _settings()
+    formation = MemoryFormationTurnJobRepository()
+    memories = MemoryItemRepository()
+    memory_service = MemoryService(
+        settings=settings,
+        repository=memories,
+        formation_repository=formation,
+    )
+    turns = TurnService(MemoryTurnRepository())
+    started = await turns.start_turn(
+        tenant_id="tenant-trace",
+        user_id="user-trace",
+        session_id="session-trace",
+        request_id="request-trace",
+        source="host_chat",
+        user_input=TurnUserInput(text="请以后用中文回答"),
+    )
+    canonical = started.turn
+    formation_turn = MemoryFormationTurn(
+        turn_id=canonical.turn_id,
+        request_id=canonical.request_id,
+        session_id=canonical.session_id,
+        user_id=canonical.user_id,
+        tenant_id=canonical.tenant_id,
+        user_text="请以后用中文回答",
+        assistant_text="已记录",
+        result_status="completed",
+    )
+    job = MemoryFormationJob(
+        job_id="job-trace",
+        trigger="manual",
+        mode="enforced",
+        tenant_id=canonical.tenant_id,
+        user_id=canonical.user_id,
+        session_id=canonical.session_id,
+        first_turn_id=canonical.turn_id,
+        last_turn_id=canonical.turn_id,
+        source_refs=[canonical.turn_id],
+        idempotency_key="trace-memory-formation",
+        model_version="test-model",
+        prompt_version="test-prompt",
+        policy_version="test-policy",
+    )
+    await formation.append_turn(formation_turn)
+    await formation.add_job(job)
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    candidate = MemoryFormationCandidate(
+        candidate_id="candidate-trace",
+        proposed_operation="add",
+        scope="user_preference",
+        content="用户偏好中文回复",
+        structured_value={"slot": "response_language", "value": "zh"},
+        semantic=MemoryCandidateSemantics(
+            target="assistant_response",
+            slot="response_language",
+            value="zh",
+            temporal_scope="long_term",
+            polarity="affirmed",
+            certainty="certain",
+            change_intent="set",
+        ),
+        subject_id_hint=canonical.user_id,
+        tenant_id_hint=canonical.tenant_id,
+        memory_key_hint="response_language",
+        confidence=0.99,
+        evidence_refs=[
+            MemoryEvidenceRef(turn_id=canonical.turn_id, role="user", quote="请以后用中文回答")
+        ],
+        reason="explicit preference",
+    )
+    processor = MemoryFormationProcessor(
+        repository=formation,
+        memory_repository=memories,
+        model=FakeConversationFormationModel(ConversationFormationResponse(candidates=[candidate])),
+        policy=MemoryCandidatePolicy(settings=settings, repository=memories),
+        lifecycle=memory_service.lifecycle,
+        execution_traces=trace_service,
+        turns=turns,
+    )
+
+    await processor.process(job, execute_lifecycle=True)
+
+    snapshot = await trace_service.snapshot(
+        ExecutionTraceQuery(
+            tenant_id=canonical.tenant_id,
+            user_id=canonical.user_id,
+            session_id=canonical.session_id,
+            turn_id=canonical.turn_id,
+        )
+    )
+    assert [event.event_type for event in snapshot.events] == [
+        "memory_formation",
+        "memory_decision",
+        "memory_revision",
+    ]
+    decision = snapshot.events[1]
+    revision = snapshot.events[2]
+    assert decision.facts["operation"] == "add"
+    assert decision.facts["decision_status"] == "accepted"
+    assert revision.facts["index_status"] == "pending"
+    assert "用户偏好中文回复" not in snapshot.model_dump_json()
+
+    oversized_trace_identity = job.model_copy(update={"job_id": "j" * 513})
+    summary = await processor.process(oversized_trace_identity, execute_lifecycle=False)
+
+    assert summary["candidate_count"] == 1
 
 
 def _pipeline_candidate(

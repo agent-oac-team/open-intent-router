@@ -78,6 +78,19 @@ class TurnService:
         )
         return TurnStartResult(turn=stored, created=created)
 
+    async def get_turn(
+        self,
+        *,
+        turn_id: str,
+        tenant_id: str,
+        user_id: str,
+    ) -> CanonicalTurn | None:
+        return await self.repository.get(
+            turn_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
     async def submission_status(
         self, *, request_id: str, tenant_id: str, user_id: str
     ) -> Literal["not_accepted", "committed", "unknown"]:

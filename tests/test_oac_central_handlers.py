@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -7,16 +8,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.repositories.execution_tickets import MemoryExecutionTicketStore
+from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.schemas.delegated_runs import (
     DelegatedRunCommandResult,
     DelegatedRunReference,
     DelegatedRunStatus,
 )
 from app.schemas.events import AgentEventResponse
+from app.schemas.execution_traces import ExecutionTraceQuery
 from app.schemas.plans import Plan, PlanActionResponse, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketService
+from app.services.execution_trace_service import ExecutionTraceService
 from host_adapters.oac.api.central import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, MemoryCutoverAuditRepository
@@ -75,6 +79,41 @@ class RoutingPort:
         )
 
 
+class ContextRoutingPort(RoutingPort):
+    async def route(self, request):
+        response = await super().route(request)
+        return response.model_copy(
+            update={
+                "context": response.context.model_copy(
+                    update={
+                        "metadata": {
+                            "context_pack": {
+                                "consumer": "router",
+                                "usage": {"included_count": 3, "dropped_count": 2},
+                                "selection": [
+                                    {
+                                        "source": "memory",
+                                        "scope": "user_preference",
+                                        "included": True,
+                                    },
+                                    {
+                                        "source": "memory",
+                                        "scope": "user_preference",
+                                        "included": False,
+                                    },
+                                ],
+                                "provider_outcomes": [
+                                    {"provider": "memory", "status": "timeout"},
+                                ],
+                                "items": [{"content": "must never reach the trace"}],
+                            }
+                        }
+                    }
+                )
+            }
+        )
+
+
 class TurnPort:
     def __init__(self) -> None:
         now = datetime.now(UTC)
@@ -93,6 +132,15 @@ class TurnPort:
     async def start_turn(self, **kwargs):
         return SimpleNamespace(turn=self.turn, created=True)
 
+    async def get_turn(self, *, turn_id, tenant_id, user_id):
+        if (
+            turn_id == self.turn.turn_id
+            and tenant_id == self.turn.tenant_id
+            and user_id == self.turn.user_id
+        ):
+            return self.turn
+        return None
+
     async def attach_activity(self, **kwargs):
         return self.turn
 
@@ -104,7 +152,9 @@ class DelegatedPort:
     def __init__(self) -> None:
         self.started = None
         self.completed = None
+        self.failed = None
         self.completed_events = set()
+        self.failed_events = set()
 
     async def start(self, command):
         self.started = command
@@ -153,6 +203,25 @@ class DelegatedPort:
                 deadline_at=datetime.now(UTC) + timedelta(minutes=1),
             ),
             result_id=command.result_id,
+            turn_id=command.turn_id,
+            duplicate=duplicate,
+        )
+
+    async def fail(self, command):
+        duplicate = command.event_id in self.failed_events
+        self.failed_events.add(command.event_id)
+        self.failed = command
+        return DelegatedRunCommandResult(
+            run=DelegatedRunReference(
+                run_id=command.run_id,
+                turn_id=command.turn_id,
+                tenant_id=command.tenant_id,
+                user_id=command.user_id,
+                agent_id=command.agent_id,
+                status=DelegatedRunStatus.FAILED,
+                state_version=command.expected_state_version + 1,
+                deadline_at=datetime.now(UTC) + timedelta(minutes=1),
+            ),
             turn_id=command.turn_id,
             duplicate=duplicate,
         )
@@ -250,6 +319,7 @@ def test_route_issues_ticket_and_completed_event_consumes_it() -> None:
     assert route.status_code == 200
     ticket = route.json()["execution_ticket"]
     assert ticket
+    assert route.headers["X-OIR-Trace-Turn-ID"] == "turn-1"
     assert delegated.started.user_id == "trusted-user"
 
     event = client.post(
@@ -273,6 +343,208 @@ def test_route_issues_ticket_and_completed_event_consumes_it() -> None:
         "route_required": True,
     }
     assert delegated.completed.turn_id == "turn-1"
+
+
+def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace() -> None:
+    client, delegated, _ = _client()
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        execution_traces=trace_service,
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-failure",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "hello",
+        },
+    )
+    ticket = route.json()["execution_ticket"]
+
+    callback = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "event-failure",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "status": "failed",
+            "event_type": "agent_error",
+            "message": "provider raw error must never reach the trace",
+            "output": {
+                "error_code": "workflow_execution_failed",
+                "provider_payload": "secret upstream detail",
+            },
+            "execution_ticket": ticket,
+        },
+    )
+
+    assert callback.status_code == 200
+    assert delegated.failed.error == {"code": "workflow_execution_failed"}
+    snapshot = asyncio.run(
+        trace_service.snapshot(
+            ExecutionTraceQuery(
+                tenant_id="oac",
+                user_id="trusted-user",
+                session_id="session-1",
+                turn_id="turn-1",
+            )
+        )
+    )
+    assert [event.event_type for event in snapshot.events][-2:] == ["agent_event", "agent_result"]
+    assert snapshot.events[-1].facts == {
+        "agent_id": "agent-1",
+        "error_code": "workflow_execution_failed",
+    }
+    assert "provider raw error" not in snapshot.model_dump_json()
+    assert "secret upstream detail" not in snapshot.model_dump_json()
+
+
+def test_agent_error_event_uses_failure_state_machine_even_with_a_nonterminal_status() -> None:
+    client, delegated, _ = _client()
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-error-event",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "hello",
+        },
+    )
+    ticket = route.json()["execution_ticket"]
+
+    callback = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "event-error-type",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "status": "running",
+            "event_type": "agent_error",
+            "execution_ticket": ticket,
+        },
+    )
+
+    assert callback.status_code == 200
+    assert delegated.failed is not None
+    assert delegated.failed.error == {"code": "provider_execution_failed"}
+
+
+def test_central_route_and_agent_callback_project_one_execution_trace() -> None:
+    client, _, _ = _client()
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        execution_traces=trace_service,
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-1",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "hello",
+        },
+    )
+    assert route.status_code == 200
+    ticket = route.json()["execution_ticket"]
+
+    callback = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "event-1",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "status": "completed",
+            "event_type": "agent_result",
+            "message": "provider result must not be stored as raw trace payload",
+            "execution_ticket": ticket,
+        },
+    )
+    assert callback.status_code == 200
+
+    snapshot = asyncio.run(
+        trace_service.snapshot(
+            ExecutionTraceQuery(
+                tenant_id="oac",
+                user_id="trusted-user",
+                session_id="session-1",
+                turn_id="turn-1",
+            )
+        )
+    )
+
+    assert [event.event_type for event in snapshot.events] == [
+        "canonical_turn",
+        "route_decision",
+        "agent_run",
+        "agent_event",
+        "agent_result",
+    ]
+    assert "provider result must not" not in snapshot.model_dump_json()
+
+
+def test_central_route_projects_bounded_context_and_memory_recall_facts() -> None:
+    client, _, _ = _client()
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=ContextRoutingPort(),
+        execution_traces=trace_service,
+    )
+
+    response = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-context-trace",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "hello",
+        },
+    )
+
+    assert response.status_code == 200
+    snapshot = asyncio.run(
+        trace_service.snapshot(
+            ExecutionTraceQuery(
+                tenant_id="oac",
+                user_id="trusted-user",
+                session_id="session-1",
+                turn_id="turn-1",
+            )
+        )
+    )
+    by_type = {event.event_type: event for event in snapshot.events}
+    assert by_type["context_pack"].facts == {
+        "consumer": "router",
+        "included_count": 3,
+        "excluded_count": 2,
+        "degraded": True,
+        "reason_code": "context_timeout",
+    }
+    assert by_type["memory_recall"].facts == {
+        "scope": "user_preference",
+        "used_count": 1,
+        "excluded_count": 1,
+        "degraded": True,
+        "reason_code": "context_timeout",
+    }
+    assert "must never reach the trace" not in snapshot.model_dump_json()
 
 
 def test_pre_cutover_agent_event_is_quarantined_before_core_mutation() -> None:

@@ -27,6 +27,7 @@ from app.repositories.memory_traces import (
 )
 from app.repositories.turn_outbox import MemoryTurnOutboxRepository
 from app.repositories.turns import MemoryTurnRepository
+from app.schemas.common import UserContext
 from app.schemas.memory import (
     MemoryCandidateSemantics,
     MemoryDecisionStatus,
@@ -39,6 +40,7 @@ from app.schemas.memory import (
     MemoryItem,
     MemoryLifecycleOperation,
     MemoryOperation,
+    MemoryRecallRequest,
 )
 from app.schemas.turns import (
     CanonicalTurn,
@@ -220,6 +222,16 @@ def _services(settings: Settings | None = None):
     return items, memory, formation, observability, management
 
 
+class _TraceCollector:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.events = []
+        self.fail = fail
+
+    async def try_record(self, event) -> bool:
+        self.events.append(event)
+        return not self.fail
+
+
 class _CompletingIndexAdapter:
     async def execute_index_operation(self, operation, *, item):
         del item
@@ -233,6 +245,14 @@ class _CompletingIndexAdapter:
             memory_id=operation.memory_id,
             external_memory_id=(None if operation.operation == "delete" else "ext_test"),
         )
+
+
+async def _drain_memory_index(memory: MemoryService) -> None:
+    memory.index_worker.adapter = _CompletingIndexAdapter()
+    for _ in range(10):
+        if await memory.index_worker.run_once() is None:
+            return
+    raise AssertionError("memory index outbox did not drain")
 
 
 async def _add_current(memory: MemoryService, *, job_id: str = "job_1"):
@@ -752,6 +772,122 @@ async def test_pending_update_confirm_is_preconditioned_and_idempotent() -> None
         pass
     else:
         raise AssertionError("idempotency replay with a changed payload must conflict")
+
+
+async def test_pending_resolution_projects_authoritative_trace_without_changing_outcome() -> None:
+    items, memory, formation, _, _ = _services(Settings(storage_backend="memory", memory_mode="on"))
+    job = await formation.add_job(
+        MemoryFormationJob(
+            job_id="job_trace_pending_update",
+            trigger="structured_event",
+            mode="observe",
+            tenant_id="t1",
+            user_id="u1",
+            idempotency_key="job-trace-pending-update",
+            model_version="model-v1",
+            prompt_version="prompt-v1",
+            policy_version="policy-v1",
+        )
+    )
+    added = await _add_current(memory, job_id=job.job_id)
+    pending = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(
+                operation="update", content="Use detailed answers", confidence=0.8
+            ),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.AMBIGUOUS_CONFLICT,
+                memory_id=added.item.memory_id,
+                revision_id=added.revision.revision_id,
+                job_id=job.job_id,
+                suffix="trace-pending-update",
+            ),
+            redacted_trace={},
+        )
+    )
+    traces = _TraceCollector(fail=True)
+    management = MemoryManagementService(memory_service=memory, execution_traces=traces)
+
+    response = await management.resolve_pending(
+        decision_id=pending.event.event_id,
+        action="confirm",
+        tenant_id="t1",
+        user_id="u1",
+        actor="u1",
+        reason="approve correction",
+        idempotency_key="trace-confirm-1",
+        expected_revision_id=added.revision.revision_id,
+        trace_session_id="session_1",
+        trace_turn_id="turn_1",
+    )
+
+    current = await items.get_by_id(added.item.memory_id, tenant_id="t1")
+    assert response.status == "completed"
+    assert current and current.content == "Use detailed answers"
+    assert [event.event_type for event in traces.events] == [
+        "memory_decision",
+        "memory_revision",
+    ]
+    assert traces.events[0].facts == {
+        "decision_id": pending.event.event_id,
+        "operation": "update",
+        "decision_status": "confirmed",
+        "reason_code": "user_confirmed",
+    }
+    assert traces.events[1].facts == {
+        "memory_id": current.memory_id,
+        "revision_id": current.current_revision_id,
+        "operation": "update",
+        "index_status": "pending",
+    }
+    await _drain_memory_index(memory)
+    recalled = await memory.recall(
+        MemoryRecallRequest(
+            query="answer style",
+            user=UserContext(id="u1", attributes={"tenant_id": "t1"}),
+            scopes=["user_preference"],
+            max_items=10,
+        )
+    )
+    assert [item.content for item in recalled.context.items] == ["Use detailed answers"]
+
+
+async def test_pending_rejection_projects_no_memory_revision() -> None:
+    _, memory, _, _, _ = _services(Settings(storage_backend="memory", memory_mode="on"))
+    added = await _add_current(memory)
+    pending = await _add_pending_delete(memory, added)
+    traces = _TraceCollector()
+    management = MemoryManagementService(memory_service=memory, execution_traces=traces)
+
+    response = await management.resolve_pending(
+        decision_id=pending.event.event_id,
+        action="reject",
+        tenant_id="t1",
+        user_id="u1",
+        actor="u1",
+        reason="keep current memory",
+        idempotency_key="trace-reject-1",
+        expected_revision_id=None,
+        trace_session_id="session_1",
+        trace_turn_id="turn_1",
+    )
+
+    assert response.operation == "reject"
+    assert [event.event_type for event in traces.events] == ["memory_decision"]
+    assert traces.events[0].facts["decision_status"] == "rejected"
+    await _drain_memory_index(memory)
+    recalled = await memory.recall(
+        MemoryRecallRequest(
+            query="answer style",
+            user=UserContext(id="u1", attributes={"tenant_id": "t1"}),
+            scopes=["user_preference"],
+            max_items=10,
+        )
+    )
+    assert [item.content for item in recalled.context.items] == ["Use concise answers"]
+    assert "Delete this preference" not in [item.content for item in recalled.context.items]
 
 
 async def test_pending_reject_and_cross_user_access_are_non_disclosing() -> None:

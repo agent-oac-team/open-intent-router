@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from app.application import (
     DelegatedRunApplicationPort,
     EventApplicationPort,
+    ExecutionTraceApplicationPort,
     KnowledgeApplicationPort,
     KnowledgeAssetApplicationPort,
+    MemoryManagementApplicationPort,
     PlanApplicationPort,
     RegistryApplicationPort,
     RoutingApplicationPort,
@@ -22,3 +24,5 @@ class OacAdapterApplicationPorts:
     plans: PlanApplicationPort
     delegated_runs: DelegatedRunApplicationPort
     turns: TurnApplicationPort
+    execution_traces: ExecutionTraceApplicationPort | None = None
+    memory_management: MemoryManagementApplicationPort | None = None

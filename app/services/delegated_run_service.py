@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.schemas.delegated_runs import (
     DelegatedRunCommandResult,
     DelegatedRunCompleteCommand,
+    DelegatedRunFailCommand,
     DelegatedRunOrphanQuery,
     DelegatedRunOrphanResponse,
     DelegatedRunProgressCommand,
@@ -52,6 +53,18 @@ class DelegatedRunCompletionStore:
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class DelegatedRunFailureResult:
+    run: AgentRun
+    turn: CanonicalTurn
+    duplicate: bool
+
+
+class DelegatedRunFailureStore:
+    async def fail(self, command: DelegatedRunFailCommand) -> DelegatedRunFailureResult:
+        raise NotImplementedError
+
+
 class DelegatedRunMaintenanceStore:
     async def list_orphans(self, query: DelegatedRunOrphanQuery) -> list[AgentRun]:
         raise NotImplementedError
@@ -66,11 +79,13 @@ class DelegatedRunService:
         start_store: DelegatedRunStartStore,
         progress_store: DelegatedRunProgressStore | None = None,
         completion_store: DelegatedRunCompletionStore | None = None,
+        failure_store: DelegatedRunFailureStore | None = None,
         maintenance_store: DelegatedRunMaintenanceStore | None = None,
     ) -> None:
         self.start_store = start_store
         self.progress_store = progress_store
         self.completion_store = completion_store
+        self.failure_store = failure_store
         self.maintenance_store = maintenance_store
 
     async def start(self, command: DelegatedRunStartCommand) -> DelegatedRunCommandResult:
@@ -117,6 +132,16 @@ class DelegatedRunService:
             duplicate=completed.duplicate,
             result_id=completed.result.result_id,
             turn_id=completed.turn.turn_id,
+        )
+
+    async def fail(self, command: DelegatedRunFailCommand) -> DelegatedRunCommandResult:
+        if self.failure_store is None:
+            raise RuntimeError("Delegated Run failure store is not configured")
+        failed = await self.failure_store.fail(command)
+        return DelegatedRunCommandResult(
+            run=_run_reference(failed.run),
+            duplicate=failed.duplicate,
+            turn_id=failed.turn.turn_id,
         )
 
     async def list_orphans(self, query: DelegatedRunOrphanQuery) -> DelegatedRunOrphanResponse:

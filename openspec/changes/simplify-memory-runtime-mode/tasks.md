@@ -61,8 +61,8 @@
 
 - [x] 8.1 运行 Memory/Context/Host/Registry 聚焦测试、PostgreSQL integration、完整 pytest 和 Ruff check/format
 - [x] 8.2 运行 OIR Web tests/build，验证 Runtime、Memory Trace、pending action 和 debug 展示适配新模式字段
-- [ ] 8.3 运行 OAC Go tests、migration verifier 和 Client TypeScript/build，确认 `3000 -> 8182 -> 8280` 链路无回归
-- [ ] 8.4 在隔离本地数据中依次启动 `off -> observe -> on`，验证副作用矩阵、两个 Agent Recall、其余 Agent disabled、删除/TTL/index maintenance 和回退
+- [x] 8.3 运行 OAC Go tests、migration verifier 和 Client TypeScript/build，确认 `3000 -> 8182 -> 8280` 链路无回归
+- [x] 8.4 在隔离本地数据中依次启动 `off -> observe -> on`，验证副作用矩阵、两个 Agent Recall、其余 Agent disabled、删除/TTL/index maintenance 和回退
 - [ ] 8.5 使用真实 OAC 登录、V2 HMAC Route、Registry、Canonical Turn 和后续请求完成 Formation -> Recall 浏览器/transport 验收
 - [ ] 8.6 经用户单独授权后，在测试环境清理退役变量并先部署 `MEMORY_MODE=observe`，保存 mode/capability/queue/dead-letter/precision 基线
 - [ ] 8.7 测试环境门禁通过后经用户单独授权切换 `MEMORY_MODE=on`，执行 Route/Knowledge/Memory 100% replay 和紧急 `off` 演练

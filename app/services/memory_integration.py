@@ -6,9 +6,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
+from app.application.ports import ExecutionTraceApplicationPort, TurnApplicationPort
 from app.core.config import Settings
 from app.core.memory_runtime import MemoryRuntimePolicy
+from app.core.redaction import redact_text
 from app.llm.conversation_formation import validate_conversation_candidates
+from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.logs import AgentResult, AgentRun
 from app.schemas.memory import (
@@ -294,12 +297,16 @@ class MemoryFormationProcessor:
         model,
         policy,
         lifecycle,
+        execution_traces: ExecutionTraceApplicationPort | None = None,
+        turns: TurnApplicationPort | None = None,
     ) -> None:
         self.repository = repository
         self.memory_repository = memory_repository
         self.model = model
         self.policy = policy
         self.lifecycle = lifecycle
+        self.execution_traces = execution_traces
+        self.turns = turns
 
     async def process(self, job: MemoryFormationJob, *, execute_lifecycle: bool) -> dict:
         model_latency_ms = None
@@ -389,7 +396,161 @@ class MemoryFormationProcessor:
         if model_latency_ms is not None:
             summary["model_latency_ms"] = model_latency_ms
             summary["usage"] = usage
+        try:
+            await self._project_execution_trace(job=job, results=results)
+        except Exception:
+            # Trace construction is an observation projection, not a Memory outcome.
+            pass
         return summary
+
+    async def _project_execution_trace(self, *, job: MemoryFormationJob, results: list) -> None:
+        if self.execution_traces is None or self.turns is None or not job.session_id:
+            return
+        trace_turns = await self._trace_turns(job)
+        for turn in trace_turns:
+            await self._try_record_trace(
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(turn.turn_id),
+                    tenant_id=turn.tenant_id,
+                    user_id=turn.user_id,
+                    session_id=turn.session_id,
+                    turn_id=turn.turn_id,
+                    event_type="memory_formation",
+                    stage="formation_processed",
+                    status="completed",
+                    source="oir:memory_formation",
+                    source_event_id=f"memory-formation:{job.job_id}:{turn.turn_id}",
+                    facts={
+                        "candidate_count": len(results),
+                        "formation_status": "processed",
+                        "job_id": job.job_id,
+                        "reason_code": None,
+                    },
+                    occurred_at=job.updated_at,
+                )
+            )
+            for result in results:
+                operation = result.operation
+                occurred_at = (
+                    result.event.created_at if result.event is not None else job.updated_at
+                )
+                decision_id = (
+                    result.event.event_id if result.event is not None else operation.operation_id
+                )
+                decision_facts = {
+                    "decision_id": decision_id,
+                    "operation": operation.operation.value,
+                    "decision_status": operation.decision_status.value,
+                    "reason_code": operation.reason_code.value,
+                }
+                if operation.decision_status == MemoryDecisionStatus.PENDING:
+                    decision_facts.update(await self._pending_decision_values(result))
+                await self._try_record_trace(
+                    ExecutionTraceEventDraft(
+                        trace_id=trace_id_for_turn(turn.turn_id),
+                        tenant_id=turn.tenant_id,
+                        user_id=turn.user_id,
+                        session_id=turn.session_id,
+                        turn_id=turn.turn_id,
+                        event_type="memory_decision",
+                        stage="decision_recorded",
+                        status=operation.decision_status.value,
+                        source="oir:memory_decision",
+                        source_event_id=(
+                            f"memory-decision:{operation.operation_id}:{turn.turn_id}"
+                        ),
+                        facts=decision_facts,
+                        occurred_at=occurred_at,
+                    )
+                )
+                if result.revision is None:
+                    continue
+                index_status = (
+                    result.index_operation.status.value
+                    if result.index_operation is not None
+                    else None
+                )
+                await self._try_record_trace(
+                    ExecutionTraceEventDraft(
+                        trace_id=trace_id_for_turn(turn.turn_id),
+                        tenant_id=turn.tenant_id,
+                        user_id=turn.user_id,
+                        session_id=turn.session_id,
+                        turn_id=turn.turn_id,
+                        event_type="memory_revision",
+                        stage="revision_recorded",
+                        status="completed",
+                        source="oir:memory_revision",
+                        source_event_id=(
+                            f"memory-revision:{result.revision.revision_id}:{turn.turn_id}"
+                        ),
+                        facts={
+                            "memory_id": result.revision.memory_id,
+                            "revision_id": result.revision.revision_id,
+                            "operation": result.revision.operation.value,
+                            "index_status": index_status,
+                        },
+                        occurred_at=result.revision.created_at,
+                    )
+                )
+
+    async def _pending_decision_values(self, result) -> dict[str, str]:
+        operation = result.operation
+        values: dict[str, str] = {}
+        if operation.revision_id:
+            values["revision_id"] = operation.revision_id
+        payload = result.event.payload if result.event is not None else {}
+        candidate = payload.get("pending_candidate")
+        if isinstance(candidate, dict):
+            proposed = _bounded_memory_value(candidate)
+            if proposed is not None:
+                values["proposed_value"] = proposed
+        if operation.memory_id:
+            try:
+                current = await self.memory_repository.get_by_id(
+                    operation.memory_id,
+                    tenant_id=operation.tenant_id,
+                )
+            except Exception:
+                current = None
+            if current is not None:
+                previous = _bounded_memory_value(
+                    {
+                        "content": current.content,
+                        "structured_value": current.structured_value,
+                    }
+                )
+                if previous is not None:
+                    values["previous_value"] = previous
+        return values
+
+    async def _trace_turns(self, job: MemoryFormationJob) -> list:
+        assert self.turns is not None
+        trace_turns = []
+        seen_turn_ids: set[str] = set()
+        for turn_id in job.source_refs:
+            if turn_id in seen_turn_ids:
+                continue
+            seen_turn_ids.add(turn_id)
+            try:
+                turn = await self.turns.get_turn(
+                    turn_id=turn_id,
+                    tenant_id=job.tenant_id,
+                    user_id=job.user_id,
+                )
+            except Exception:
+                continue
+            if turn is not None and turn.session_id == job.session_id:
+                trace_turns.append(turn)
+        return trace_turns
+
+    async def _try_record_trace(self, event: ExecutionTraceEventDraft) -> None:
+        assert self.execution_traces is not None
+        try:
+            await self.execution_traces.try_record(event)
+        except Exception:
+            # Trace is an observation projection and must not alter Memory outcomes.
+            return
 
     async def _suppress_stale_structured_decision(
         self,
@@ -492,6 +653,18 @@ def _unique_refs(values: list[str]) -> list[str]:
         if len(refs) >= 100:
             break
     return refs
+
+
+def _bounded_memory_value(value: dict) -> str | None:
+    structured = value.get("structured_value")
+    if isinstance(structured, dict):
+        candidate = structured.get("value")
+        if isinstance(candidate, str | int | float | bool):
+            return redact_text(str(candidate), max_length=300)
+    content = value.get("content")
+    if isinstance(content, str) and content:
+        return redact_text(content, max_length=300)
+    return None
 
 
 def _run_event_type(status: str) -> str:

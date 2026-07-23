@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from app.core.redaction import redact_text
+from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.memory import (
     MemoryDecisionStatus,
     MemoryEvent,
@@ -24,11 +25,12 @@ class MemoryManagementConflict(ValueError):
 
 
 class MemoryManagementService:
-    def __init__(self, *, memory_service) -> None:
+    def __init__(self, *, memory_service, execution_traces=None) -> None:
         self.memory_service = memory_service
         self.repository = memory_service.repository
         self.lifecycle = memory_service.lifecycle
         self.index_repository = memory_service.index_outbox
+        self.execution_traces = execution_traces
 
     async def request_delete(
         self,
@@ -119,6 +121,8 @@ class MemoryManagementService:
         idempotency_key: str,
         expected_revision_id: str | None,
         admin: bool = False,
+        trace_session_id: str | None = None,
+        trace_turn_id: str | None = None,
     ) -> MemoryManagementOperationResponse:
         if action not in {"confirm", "reject"}:
             raise ValueError("Unsupported pending decision action")
@@ -145,6 +149,11 @@ class MemoryManagementService:
                 or payload.get("idempotency_hash") != _hash_ref(idempotency_key)
             ):
                 raise MemoryManagementConflict("Idempotency key payload changed")
+            await self._project_resolution(
+                completed,
+                trace_session_id=trace_session_id,
+                trace_turn_id=trace_turn_id,
+            )
             return _resolution_response(completed, replay=True)
         existing_claim = await self.repository.get_event(
             _resolution_claim_id(decision_id),
@@ -186,6 +195,10 @@ class MemoryManagementService:
                 index_operation_id=index.index_operation_id if index else None,
                 provider_status=index.status.value if index else None,
                 memory_id=accepted.memory_id,
+                operation=accepted.operation.value,
+                revision_id=result.revision.revision_id if result.revision else None,
+                trace_session_id=trace_session_id,
+                trace_turn_id=trace_turn_id,
             )
         accepted = None
         if action == "confirm":
@@ -253,6 +266,10 @@ class MemoryManagementService:
                 index_operation_id=None,
                 provider_status=None,
                 memory_id=operation.memory_id,
+                operation=candidate.proposed_operation.value,
+                revision_id=None,
+                trace_session_id=trace_session_id,
+                trace_turn_id=trace_turn_id,
             )
         if accepted is None:
             raise MemoryManagementConflict("Pending decision payload is unavailable")
@@ -276,6 +293,10 @@ class MemoryManagementService:
                 index_operation_id=None,
                 provider_status=None,
                 memory_id=accepted.memory_id,
+                operation=accepted.operation.value,
+                revision_id=None,
+                trace_session_id=trace_session_id,
+                trace_turn_id=trace_turn_id,
             )
             raise MemoryManagementConflict("Pending decision precondition changed") from exc
         index = result.index_operation
@@ -290,6 +311,10 @@ class MemoryManagementService:
             index_operation_id=index.index_operation_id if index else None,
             provider_status=index.status.value if index else None,
             memory_id=accepted.memory_id,
+            operation=accepted.operation.value,
+            revision_id=result.revision.revision_id if result.revision else None,
+            trace_session_id=trace_session_id,
+            trace_turn_id=trace_turn_id,
         )
 
     async def operation_status(
@@ -427,6 +452,10 @@ class MemoryManagementService:
         index_operation_id,
         provider_status,
         memory_id,
+        operation,
+        revision_id,
+        trace_session_id,
+        trace_turn_id,
     ) -> MemoryManagementOperationResponse:
         event = MemoryEvent(
             event_id=_resolution_complete_id(pending.event_id),
@@ -454,10 +483,85 @@ class MemoryManagementService:
                 "operation_id": operation_id,
                 "index_operation_id": index_operation_id,
                 "provider_status": provider_status,
+                "operation": operation,
+                "revision_id": revision_id,
             },
         )
         stored = await self.repository.add_event(event)
+        await self._project_resolution(
+            stored,
+            trace_session_id=trace_session_id,
+            trace_turn_id=trace_turn_id,
+        )
         return _resolution_response(stored, replay=False)
+
+    async def _project_resolution(
+        self,
+        event: MemoryEvent,
+        *,
+        trace_session_id: str | None,
+        trace_turn_id: str | None,
+    ) -> None:
+        if self.execution_traces is None or not trace_session_id or not trace_turn_id:
+            return
+        payload = event.payload
+        action = str(payload.get("action", ""))
+        operation = str(payload.get("operation", ""))
+        reason_code = {
+            "confirm": "user_confirmed",
+            "reject": "user_rejected",
+            "conflict": "decision_conflict",
+        }.get(action, "decision_resolved")
+        common = {
+            "trace_id": trace_id_for_turn(trace_turn_id),
+            "tenant_id": event.tenant_id,
+            "user_id": event.user_id,
+            "session_id": trace_session_id,
+            "turn_id": trace_turn_id,
+            "occurred_at": event.created_at,
+        }
+        decision = ExecutionTraceEventDraft(
+            **common,
+            event_type="memory_decision",
+            stage="decision_resolved",
+            status="failed" if action == "conflict" else "completed",
+            source="oir:memory_management",
+            source_event_id=event.event_id,
+            reason_code=reason_code,
+            facts={
+                "decision_id": event.decision_id or str(payload.get("decision_id", "")),
+                "operation": operation,
+                "decision_status": {
+                    "confirm": "confirmed",
+                    "reject": "rejected",
+                    "conflict": "conflict",
+                }.get(action, "resolved"),
+                "reason_code": reason_code,
+            },
+        )
+        try:
+            await self.execution_traces.try_record(decision)
+            revision_id = payload.get("revision_id")
+            if action != "confirm" or not event.memory_id or not isinstance(revision_id, str):
+                return
+            await self.execution_traces.try_record(
+                ExecutionTraceEventDraft(
+                    **common,
+                    event_type="memory_revision",
+                    stage="revision_persisted",
+                    status="completed",
+                    source="oir:memory_management",
+                    source_event_id=f"{event.event_id}:revision",
+                    facts={
+                        "memory_id": event.memory_id,
+                        "revision_id": revision_id,
+                        "operation": operation,
+                        "index_status": str(payload.get("provider_status") or "not_required"),
+                    },
+                )
+            )
+        except Exception:
+            return
 
     async def _resolution_event(self, decision_id, *, tenant_id, user_id):
         return await self.repository.get_event(

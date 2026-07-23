@@ -286,6 +286,20 @@ Run、Result、Plan 或 Memory 的事实源。删除、刷新或重新加载展�
 ```
 
 当 `source=agent_chat` 时必须提供 `agent_id`；`agent_session_id` 可选，用于宿主侧区分同一 Agent 的子会话。后续同一 session 且 `current_agent.agent_id` 相同的路由请求会把这些消息作为 Agent history Context Item 参与预算选择。
+
+## OAC 业务运行观察 Host Adapter
+
+以下入口属于 OAC Host Adapter，不是 OIR Native API。它们只接受受信 V2 Host 身份；Adapter 从已验证身份绑定 tenant 和 user，不信任请求体或游标声明的所有权。OAC Go 必须先确认本地 OAC Session 仍存在且属于当前登录用户，随后才能代理这些入口。
+
+- `GET /api/v1/runtime-observation/sessions/{session_id}/turns/{turn_id}`：返回当前 owner 的 Execution Trace Snapshot。事件按 `event_offset` 升序排列；`watermark` 覆盖全部返回事件；`completeness`、`incomplete_reason_codes` 和 `recovered` 明确观察完整性与恢复状态。无所属 Trace 返回 `404 execution_trace_not_found`。
+- `GET /api/v1/runtime-observation/sessions/{session_id}/turns/{turn_id}/events`：SSE 增量流。客户端在 Snapshot 后以其已渲染的 `watermark` 作为 `Last-Event-ID`；每条 `execution_trace` 的 SSE `id` 等于 `event_offset`，服务端只发送大于该游标的同 owner 事件。流首条 `execution_trace_meta` 提供完整性元数据；每次建连均重新执行身份和所有权范围校验。
+- `POST /api/v1/runtime-observation/sessions/{session_id}/turns/{turn_id}/handoffs`：由受信 OAC Host 报告已经发生的 `ui_handoff` 事实。`requested`、`completed` 和 `failed` 使用稳定 `handoff_id` 和状态组成来源幂等身份；该入口不提供暂停、重跑、改写或删除 Trace 的控制能力。
+- `POST /api/v1/runtime-observation/sessions/{session_id}/turns/{turn_id}/memory-decisions/{decision_id}/{action}`：确认或拒绝当前 Trace 中仍为 `pending` 的 Governed Memory 决策，`action` 只允许 `confirm` 或 `reject`。请求必须提供稳定 `idempotency_key` 和 `reason`，可用 `expected_revision_id` 做乐观并发校验。Adapter 先校验 Turn owner 和 pending Decision，再调用权威 Memory Management 应用端口；成功响应返回 operation、Memory/Decision/Index ID、Provider 状态及是否幂等重放。不存在返回 `404`，并发或幂等冲突返回 `409`。该入口不会建立第二套 Memory 状态机。
+
+Execution Trace 是 append-only 的观察投影，不是 Turn、Run、Result、Memory 或页面状态机。事件采用受限事实白名单，不能保存 Provider 原始 Payload、Prompt、凭证、授权值、未脱敏错误或完整上下文。投影失败不会回滚已提交的业务事实；Snapshot 和 SSE 会以 `completeness=incomplete` 暴露已知缺口。
+
+`source_repaired` 是带真实 offset 的 `trace_integrity` 补写事件，只说明来源投影已修复，不会把 Snapshot 标记为 `recovered=true`。只有查询时从已有终态 Canonical Turn 重建终态观察摘要，Snapshot 才返回 `recovered=true`，并提供有界 `recovered_state={source:"canonical_turn",status,outcome,state_version}`。该恢复不合成中间事件，也不把不完整 Trace 改判为完整。
+
 ## Agent Entitlement 授权
 
 通用 `UserContext` 可携带 `entitlements: string[]`，Agent `access_policy` 可配置 `any_entitlements: string[]`。两者只接受安全 ASCII 值，去空、去重并稳定排序，按完整字符串精确匹配。`any_entitlements` 内部为 OR，与其他非空 Policy 维度为 AND；空数组保持旧 Policy 兼容。

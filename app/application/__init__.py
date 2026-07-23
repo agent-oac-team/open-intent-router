@@ -3,8 +3,10 @@
 from app.application.ports import (
     DelegatedRunApplicationPort,
     EventApplicationPort,
+    ExecutionTraceApplicationPort,
     KnowledgeApplicationPort,
     KnowledgeAssetApplicationPort,
+    MemoryManagementApplicationPort,
     PlanApplicationPort,
     RegistryApplicationPort,
     RoutingApplicationPort,
@@ -13,9 +15,11 @@ from app.application.ports import (
 
 __all__ = [
     "EventApplicationPort",
+    "ExecutionTraceApplicationPort",
     "DelegatedRunApplicationPort",
     "KnowledgeApplicationPort",
     "KnowledgeAssetApplicationPort",
+    "MemoryManagementApplicationPort",
     "PlanApplicationPort",
     "RegistryApplicationPort",
     "RoutingApplicationPort",
