@@ -44,6 +44,8 @@ OAC 的业务运行观察需要回答真实请求正在做什么、为什么、�
 
 Writer 对每个家族使用明确的 `facts` 键白名单。值只能是有限的标量、有限字符串列表或有限嵌套对象；禁止以任意 JSON 通道存储 `prompt`、`payload`、`token`、`authorization`、`secret`、`credential`、原始错误堆栈、完整上下文或 Provider 原始响应。Adapter 如需业务专有名称，只能把经过白名单确认的值放入适用的事实字段，例如 `provider_stage_name` 或 `target_route`；Core 不解释这些值。
 
+新事件默认写入 `schema_version=2`。v2 的 `memory_decision` 不允许把 `previous_value` 或 `proposed_value` 正文写入 `facts`；正文只通过受所有权保护的 Memory Decision Evidence 入口按需读取。为兼容测试环境已有数据，Schema 仍可反序列化包含这两个字段的 v1 事件，但 OAC Host Adapter 必须在 Snapshot 和 SSE 对外投影时剥离它们。该兼容路径不修改历史 append-only 行，也不引入数据迁移或第二份存储。
+
 ### 3. 非阻断写入和 Trace Completeness
 
 Trace 是观察投影。业务路径调用 Writer 时使用 `try_record`：Writer 错误被记录为低基数、脱敏的完整性缺口，不能回滚或改判已经成功的 Turn、Run、Result、Memory 或 UI Handoff。

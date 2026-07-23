@@ -6,6 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from app.schemas.execution_traces import (
+    ExecutionTraceEvent,
     ExecutionTraceEventDraft,
     ExecutionTraceQuery,
     ExecutionTraceSnapshot,
@@ -45,7 +46,7 @@ async def runtime_observation_snapshot(
     snapshot = await service.snapshot(_query(identity, session_id=session_id, turn_id=turn_id))
     if not snapshot.events:
         raise HTTPException(status_code=404, detail="execution_trace_not_found")
-    return snapshot
+    return _public_snapshot(snapshot)
 
 
 @router.get("/sessions/{session_id}/turns/{turn_id}/events")
@@ -80,7 +81,7 @@ async def runtime_observation_stream(
             for event in new_events:
                 stream_cursor = event.event_offset
                 payload = json.dumps(
-                    jsonable_encoder(event),
+                    jsonable_encoder(_public_trace_event(event)),
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
@@ -117,6 +118,25 @@ def _trace_metadata(snapshot: ExecutionTraceSnapshot) -> dict[str, object]:
             else None
         ),
     }
+
+
+def _public_snapshot(snapshot: ExecutionTraceSnapshot) -> ExecutionTraceSnapshot:
+    return snapshot.model_copy(
+        update={"events": [_public_trace_event(event) for event in snapshot.events]}
+    )
+
+
+def _public_trace_event(event: ExecutionTraceEvent) -> ExecutionTraceEvent:
+    if event.event_type != "memory_decision":
+        return event
+    facts = {
+        key: value
+        for key, value in event.facts.items()
+        if key not in {"previous_value", "proposed_value"}
+    }
+    if facts == event.facts:
+        return event
+    return event.model_copy(update={"facts": facts})
 
 
 def _metadata_frame(metadata: dict[str, object]) -> str:

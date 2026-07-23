@@ -81,7 +81,7 @@ async def test_trace_writer_rejects_conflicting_source_replay() -> None:
 
 
 def test_trace_schema_rejects_memory_body_values() -> None:
-    with pytest.raises(ValidationError, match="unsupported fields for memory_decision"):
+    with pytest.raises(ValidationError, match="require the legacy schema"):
         ExecutionTraceEventDraft(
             trace_id="trace_turn-1",
             tenant_id="tenant-1",
@@ -100,6 +100,27 @@ def test_trace_schema_rejects_memory_body_values() -> None:
                 "proposed_value": "replacement memory body",
             },
         )
+
+    legacy = ExecutionTraceEventDraft(
+        trace_id="trace_turn-1",
+        tenant_id="tenant-1",
+        user_id="user-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        event_type="memory_decision",
+        stage="decision_pending",
+        status="pending",
+        source="oir:memory_decision",
+        source_event_id="decision-legacy",
+        schema_version=1,
+        facts={
+            "decision_id": "decision-legacy",
+            "decision_status": "pending",
+            "previous_value": "legacy private memory body",
+            "proposed_value": "legacy replacement memory body",
+        },
+    )
+    assert legacy.schema_version == 1
 
 
 async def test_database_trace_writer_uses_one_ordered_idempotent_event_table(tmp_path) -> None:

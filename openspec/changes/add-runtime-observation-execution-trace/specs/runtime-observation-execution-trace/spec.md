@@ -11,6 +11,10 @@ OIR SHALL expose one host-neutral Execution Trace event envelope with the twelve
 - **WHEN** an event includes a raw payload, prompt, credential, authorization value, secret, unredacted error, or a fact key outside the event family's whitelist
 - **THEN** the Writer rejects the event before it is persisted
 
+#### Scenario: A legacy Memory decision is read
+- **WHEN** a stored schema v1 `memory_decision` contains legacy previous or proposed Memory body fields
+- **THEN** OIR can deserialize the historical event but the OAC Snapshot and SSE projections omit those fields, while schema v2 writes reject them
+
 #### Scenario: A lifecycle changes
 - **WHEN** a Run moves from running to completed or failed
 - **THEN** the trace keeps the same generic event family and represents the lifecycle through `stage` and `status`

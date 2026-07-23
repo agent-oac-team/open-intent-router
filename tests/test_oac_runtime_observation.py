@@ -163,11 +163,14 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
                 source="oir:memory",
                 source_event_id="memory-decision-1",
                 reason_code="ambiguous_conflict",
+                schema_version=1,
                 facts={
                     "decision_id": "decision-1",
                     "operation": "pending",
                     "decision_status": "pending",
                     "reason_code": "ambiguous_conflict",
+                    "previous_value": "旧偏好",
+                    "proposed_value": "新偏好",
                 },
                 occurred_at=datetime(2026, 7, 22, 10, 1, tzinfo=UTC),
             )
@@ -193,6 +196,11 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
         == 404
     )
     memory.calls.clear()
+    public_snapshot = client.get("/api/v1/runtime-observation/sessions/session-1/turns/turn-1")
+    assert public_snapshot.status_code == 200
+    public_decision = public_snapshot.json()["events"][1]
+    assert "previous_value" not in public_decision["facts"]
+    assert "proposed_value" not in public_decision["facts"]
     path = (
         "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/"
         "memory-decisions/decision-1/confirm"
@@ -404,7 +412,25 @@ def test_runtime_observation_stream_starts_after_the_snapshot_watermark() -> Non
         )
         metadata = await anext(response.body_iterator)
         await trace_service.record(
-            _event().model_copy(update={"source_event_id": "turn-1:updated"})
+            ExecutionTraceEventDraft(
+                trace_id="trace_turn-1",
+                tenant_id="oac",
+                user_id="user-1",
+                session_id="session-1",
+                turn_id="turn-1",
+                event_type="memory_decision",
+                stage="decision_pending",
+                status="blocked",
+                source="oir:memory",
+                source_event_id="memory-decision-legacy",
+                schema_version=1,
+                facts={
+                    "decision_id": "decision-legacy",
+                    "decision_status": "pending",
+                    "previous_value": "legacy private memory body",
+                    "proposed_value": "legacy replacement memory body",
+                },
+            )
         )
         event = await anext(response.body_iterator)
         await response.body_iterator.aclose()
@@ -418,6 +444,10 @@ def test_runtime_observation_stream_starts_after_the_snapshot_watermark() -> Non
     assert completeness == "complete"
     assert '"completeness":"complete"' in metadata
     assert "id: 2" in event
+    assert "previous_value" not in event
+    assert "proposed_value" not in event
+    assert "legacy private memory body" not in event
+    assert "legacy replacement memory body" not in event
 
 
 def test_runtime_observation_stream_keeps_events_written_after_the_client_snapshot() -> None:
