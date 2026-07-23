@@ -42,6 +42,13 @@ _MEMORY_METRIC_SCOPES = {
     "artifact_reference",
     "session_summary",
 }
+_FORMATION_FAILURE_REASON_CODES = {
+    "formation_model_error",
+    "formation_model_invalid_response",
+    "formation_model_provider_error",
+    "formation_model_timeout",
+    "formation_source_unavailable",
+}
 
 
 class TurnCaptureSink(Protocol):
@@ -309,6 +316,20 @@ class MemoryFormationProcessor:
         self.turns = turns
 
     async def process(self, job: MemoryFormationJob, *, execute_lifecycle: bool) -> dict:
+        try:
+            return await self._process(job, execute_lifecycle=execute_lifecycle)
+        except Exception as exc:
+            try:
+                await self._project_execution_trace_failure(
+                    job=job,
+                    reason_code=_formation_failure_reason_code(exc),
+                )
+            except Exception:
+                # Trace construction is an observation projection, not a Memory outcome.
+                pass
+            raise
+
+    async def _process(self, job: MemoryFormationJob, *, execute_lifecycle: bool) -> dict:
         model_latency_ms = None
         usage = {}
         if job.trigger == MemoryFormationTrigger.STRUCTURED_EVENT:
@@ -402,6 +423,41 @@ class MemoryFormationProcessor:
             # Trace construction is an observation projection, not a Memory outcome.
             pass
         return summary
+
+    async def _project_execution_trace_failure(
+        self,
+        *,
+        job: MemoryFormationJob,
+        reason_code: str,
+    ) -> None:
+        if self.execution_traces is None or self.turns is None or not job.session_id:
+            return
+        trace_turns = await self._trace_turns(job)
+        occurred_at = datetime.now(UTC)
+        for turn in trace_turns:
+            await self._try_record_trace(
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(turn.turn_id),
+                    tenant_id=turn.tenant_id,
+                    user_id=turn.user_id,
+                    session_id=turn.session_id,
+                    turn_id=turn.turn_id,
+                    event_type="memory_formation",
+                    stage="formation_failed",
+                    status="failed",
+                    source="oir:memory_formation",
+                    source_event_id=(
+                        f"memory-formation:{job.job_id}:{turn.turn_id}:failed:{job.attempt_count}"
+                    ),
+                    facts={
+                        "candidate_count": 0,
+                        "formation_status": "failed",
+                        "job_id": job.job_id,
+                        "reason_code": reason_code,
+                    },
+                    occurred_at=occurred_at,
+                )
+            )
 
     async def _project_execution_trace(self, *, job: MemoryFormationJob, results: list) -> None:
         if self.execution_traces is None or self.turns is None or not job.session_id:
@@ -605,6 +661,13 @@ def _structured_candidates(job: MemoryFormationJob) -> list[MemoryFormationCandi
     if not isinstance(values, list):
         raise FormationSourceUnavailable("Structured formation candidates are missing")
     return [MemoryFormationCandidate.model_validate(value) for value in values]
+
+
+def _formation_failure_reason_code(exc: Exception) -> str:
+    error_code = getattr(exc, "error_code", None)
+    if error_code in _FORMATION_FAILURE_REASON_CODES:
+        return error_code
+    return "formation_processor_error"
 
 
 def _with_structured_source(

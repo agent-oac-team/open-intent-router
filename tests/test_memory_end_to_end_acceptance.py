@@ -271,6 +271,95 @@ async def test_memory_processor_projects_bounded_execution_trace_for_canonical_t
     assert summary["candidate_count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_memory_processor_projects_sanitized_failure_for_canonical_turn() -> None:
+    class FailingFormationModel:
+        async def form(self, **_kwargs):
+            raise RuntimeError("provider secret must not enter the execution trace")
+
+    settings = _settings()
+    formation = MemoryFormationTurnJobRepository()
+    memories = MemoryItemRepository()
+    memory_service = MemoryService(
+        settings=settings,
+        repository=memories,
+        formation_repository=formation,
+    )
+    turns = TurnService(MemoryTurnRepository())
+    canonical = (
+        await turns.start_turn(
+            tenant_id="tenant-trace-failure",
+            user_id="user-trace-failure",
+            session_id="session-trace-failure",
+            request_id="request-trace-failure",
+            source="host_chat",
+            user_input=TurnUserInput(text="请记住这条偏好"),
+        )
+    ).turn
+    await formation.append_turn(
+        MemoryFormationTurn(
+            turn_id=canonical.turn_id,
+            request_id=canonical.request_id,
+            session_id=canonical.session_id,
+            user_id=canonical.user_id,
+            tenant_id=canonical.tenant_id,
+            user_text="请记住这条偏好",
+            assistant_text="已收到",
+            result_status="completed",
+        )
+    )
+    job = MemoryFormationJob(
+        job_id="job-trace-failure",
+        trigger="manual",
+        mode="enforced",
+        tenant_id=canonical.tenant_id,
+        user_id=canonical.user_id,
+        session_id=canonical.session_id,
+        source_refs=[canonical.turn_id],
+        idempotency_key="trace-memory-formation-failure",
+        model_version="test-model",
+        prompt_version="test-prompt",
+        policy_version="test-policy",
+    )
+    await formation.add_job(job)
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    processor = MemoryFormationProcessor(
+        repository=formation,
+        memory_repository=memories,
+        model=FailingFormationModel(),
+        policy=MemoryCandidatePolicy(settings=settings, repository=memories),
+        lifecycle=memory_service.lifecycle,
+        execution_traces=trace_service,
+        turns=turns,
+    )
+
+    with pytest.raises(RuntimeError, match="provider secret"):
+        await processor.process(job, execute_lifecycle=True)
+
+    snapshot = await trace_service.snapshot(
+        ExecutionTraceQuery(
+            tenant_id=canonical.tenant_id,
+            user_id=canonical.user_id,
+            session_id=canonical.session_id,
+            turn_id=canonical.turn_id,
+        )
+    )
+    assert len(snapshot.events) == 1
+    failure = snapshot.events[0]
+    assert (failure.event_type, failure.stage, failure.status) == (
+        "memory_formation",
+        "formation_failed",
+        "failed",
+    )
+    assert failure.facts == {
+        "candidate_count": 0,
+        "formation_status": "failed",
+        "job_id": "job-trace-failure",
+        "reason_code": "formation_processor_error",
+    }
+    assert "provider secret" not in snapshot.model_dump_json()
+
+
 def _pipeline_candidate(
     *,
     tenant_id: str,
