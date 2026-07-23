@@ -6,7 +6,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
-from app.schemas.execution_traces import ExecutionTraceEventDraft, ExecutionTraceQuery
+from app.schemas.execution_traces import (
+    ExecutionTraceEvent,
+    ExecutionTraceEventDraft,
+    ExecutionTraceQuery,
+)
 from app.schemas.memory import MemoryManagementOperationResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.execution_trace_service import ExecutionTraceService
@@ -28,6 +32,23 @@ class ToggleFailTraceRepository(MemoryExecutionTraceRepository):
         if self.fail_appends:
             raise RuntimeError("trace store unavailable")
         return await super().append(event)
+
+
+class LegacyMemoryTraceRepository(MemoryExecutionTraceRepository):
+    def __init__(self, *legacy_events: ExecutionTraceEvent) -> None:
+        super().__init__()
+        for legacy_event in legacy_events:
+            self.restore(legacy_event)
+
+    def restore(self, legacy_event: ExecutionTraceEvent) -> None:
+        source_key = (
+            legacy_event.source,
+            legacy_event.source_event_id,
+            legacy_event.source_version,
+        )
+        self._events.append(legacy_event)
+        self._by_source[source_key] = legacy_event
+        self._next_offset = max(self._next_offset, legacy_event.event_offset + 1)
 
 
 def _event() -> ExecutionTraceEventDraft:
@@ -147,35 +168,32 @@ def _client(
 
 
 def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owned_trace() -> None:
-    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
-    asyncio.run(trace_service.record(_event()))
-    asyncio.run(
-        trace_service.record(
-            ExecutionTraceEventDraft(
-                trace_id="trace_turn-1",
-                tenant_id="oac",
-                user_id="user-1",
-                session_id="session-1",
-                turn_id="turn-1",
-                event_type="memory_decision",
-                stage="decision_pending",
-                status="blocked",
-                source="oir:memory",
-                source_event_id="memory-decision-1",
-                reason_code="ambiguous_conflict",
-                schema_version=1,
-                facts={
-                    "decision_id": "decision-1",
-                    "operation": "pending",
-                    "decision_status": "pending",
-                    "reason_code": "ambiguous_conflict",
-                    "previous_value": "旧偏好",
-                    "proposed_value": "新偏好",
-                },
-                occurred_at=datetime(2026, 7, 22, 10, 1, tzinfo=UTC),
-            )
-        )
+    first = ExecutionTraceEvent(**_event().model_dump(), event_offset=1)
+    legacy_decision = ExecutionTraceEvent(
+        event_offset=2,
+        trace_id="trace_turn-1",
+        tenant_id="oac",
+        user_id="user-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        event_type="memory_decision",
+        stage="decision_pending",
+        status="blocked",
+        source="oir:memory",
+        source_event_id="memory-decision-1",
+        reason_code="ambiguous_conflict",
+        schema_version=1,
+        facts={
+            "decision_id": "decision-1",
+            "operation": "pending",
+            "decision_status": "pending",
+            "reason_code": "ambiguous_conflict",
+            "previous_value": "旧偏好",
+            "proposed_value": "新偏好",
+        },
+        occurred_at=datetime(2026, 7, 22, 10, 1, tzinfo=UTC),
     )
+    trace_service = ExecutionTraceService(LegacyMemoryTraceRepository(first, legacy_decision))
     memory = MemoryManagementPort()
     client = _client(trace_service, user_id="user-1", memory_management=memory)
     evidence_path = (
@@ -373,8 +391,10 @@ def test_ui_handoff_rejects_unowned_turn_and_conflicting_source_identity() -> No
 
 
 def test_runtime_observation_stream_starts_after_the_snapshot_watermark() -> None:
-    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
-    asyncio.run(trace_service.record(_event()))
+    repository = LegacyMemoryTraceRepository(
+        ExecutionTraceEvent(**_event().model_dump(), event_offset=1)
+    )
+    trace_service = ExecutionTraceService(repository)
     identity = TrustedHostIdentity(
         key_id="user-key",
         audience="test",
@@ -411,27 +431,27 @@ def test_runtime_observation_stream_starts_after_the_snapshot_watermark() -> Non
             ports=ports,
         )
         metadata = await anext(response.body_iterator)
-        await trace_service.record(
-            ExecutionTraceEventDraft(
-                trace_id="trace_turn-1",
-                tenant_id="oac",
-                user_id="user-1",
-                session_id="session-1",
-                turn_id="turn-1",
-                event_type="memory_decision",
-                stage="decision_pending",
-                status="blocked",
-                source="oir:memory",
-                source_event_id="memory-decision-legacy",
-                schema_version=1,
-                facts={
-                    "decision_id": "decision-legacy",
-                    "decision_status": "pending",
-                    "previous_value": "legacy private memory body",
-                    "proposed_value": "legacy replacement memory body",
-                },
-            )
+        legacy_event = ExecutionTraceEvent(
+            event_offset=2,
+            trace_id="trace_turn-1",
+            tenant_id="oac",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+            event_type="memory_decision",
+            stage="decision_pending",
+            status="blocked",
+            source="oir:memory",
+            source_event_id="memory-decision-legacy",
+            schema_version=1,
+            facts={
+                "decision_id": "decision-legacy",
+                "decision_status": "pending",
+                "previous_value": "legacy private memory body",
+                "proposed_value": "legacy replacement memory body",
+            },
         )
+        repository.restore(legacy_event)
         event = await anext(response.body_iterator)
         await response.body_iterator.aclose()
         return (

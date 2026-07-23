@@ -44,7 +44,7 @@ OAC 的业务运行观察需要回答真实请求正在做什么、为什么、�
 
 Writer 对每个家族使用明确的 `facts` 键白名单。值只能是有限的标量、有限字符串列表或有限嵌套对象；禁止以任意 JSON 通道存储 `prompt`、`payload`、`token`、`authorization`、`secret`、`credential`、原始错误堆栈、完整上下文或 Provider 原始响应。Adapter 如需业务专有名称，只能把经过白名单确认的值放入适用的事实字段，例如 `provider_stage_name` 或 `target_route`；Core 不解释这些值。
 
-新事件默认写入 `schema_version=2`。v2 的 `memory_decision` 不允许把 `previous_value` 或 `proposed_value` 正文写入 `facts`；正文只通过受所有权保护的 Memory Decision Evidence 入口按需读取。为兼容测试环境已有数据，Schema 仍可反序列化包含这两个字段的 v1 事件，但 OAC Host Adapter 必须在 Snapshot 和 SSE 对外投影时剥离它们。该兼容路径不修改历史 append-only 行，也不引入数据迁移或第二份存储。
+新写入只接受 `schema_version>=2`。v2 的 `memory_decision` 不允许把 `previous_value` 或 `proposed_value` 正文写入 `facts`；正文只通过受所有权保护的 Memory Decision Evidence 入口按需读取。为兼容测试环境已有数据，持久化事件模型仍可反序列化包含这两个字段的 v1 事件，但写入 Draft 不接受 v1，OAC Host Adapter 也必须在 Snapshot 和 SSE 对外投影时剥离旧正文。已有 v1 来源身份以 v2 重放时，仓储在幂等比较中将其版本归一到当前版本，并仅对旧 `memory_decision` 忽略这两个已移除字段；其余内容差异仍拒绝为冲突。该兼容路径不修改历史 append-only 行，也不引入数据迁移或第二份存储。
 
 ### 3. 非阻断写入和 Trace Completeness
 

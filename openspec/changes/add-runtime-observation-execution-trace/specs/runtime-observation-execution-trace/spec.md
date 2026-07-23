@@ -13,7 +13,7 @@ OIR SHALL expose one host-neutral Execution Trace event envelope with the twelve
 
 #### Scenario: A legacy Memory decision is read
 - **WHEN** a stored schema v1 `memory_decision` contains legacy previous or proposed Memory body fields
-- **THEN** OIR can deserialize the historical event but the OAC Snapshot and SSE projections omit those fields, while schema v2 writes reject them
+- **THEN** OIR can deserialize the historical event but the OAC Snapshot and SSE projections omit those fields, while schema v2 and later writes reject them
 
 #### Scenario: A lifecycle changes
 - **WHEN** a Run moves from running to completed or failed

@@ -11,12 +11,26 @@ from app.repositories.execution_traces import (
     MemoryExecutionTraceRepository,
 )
 from app.schemas.execution_traces import (
+    ExecutionTraceEvent,
     ExecutionTraceEventDraft,
     ExecutionTraceQuery,
     trace_id_for_turn,
 )
 from app.schemas.turns import CanonicalTurn, TurnSemanticResponse, TurnStatus, TurnUserInput
 from app.services.execution_trace_service import ExecutionTraceConflict, ExecutionTraceService
+
+
+class _LegacyMemoryExecutionTraceRepository(MemoryExecutionTraceRepository):
+    def __init__(self, *events: ExecutionTraceEvent) -> None:
+        super().__init__()
+        for event in events:
+            self.restore(event)
+
+    def restore(self, event: ExecutionTraceEvent) -> None:
+        source_key = (event.source, event.source_event_id, event.source_version)
+        self._events.append(event)
+        self._by_source[source_key] = event
+        self._next_offset = max(self._next_offset, event.event_offset + 1)
 
 
 def _agent_progress(
@@ -80,8 +94,8 @@ async def test_trace_writer_rejects_conflicting_source_replay() -> None:
         )
 
 
-def test_trace_schema_rejects_memory_body_values() -> None:
-    with pytest.raises(ValidationError, match="require the legacy schema"):
+def test_trace_schema_rejects_memory_body_values_and_legacy_writes() -> None:
+    with pytest.raises(ValidationError, match="cannot be written to a trace"):
         ExecutionTraceEventDraft(
             trace_id="trace_turn-1",
             tenant_id="tenant-1",
@@ -101,7 +115,24 @@ def test_trace_schema_rejects_memory_body_values() -> None:
             },
         )
 
-    legacy = ExecutionTraceEventDraft(
+    with pytest.raises(ValidationError, match="greater than or equal to 2"):
+        ExecutionTraceEventDraft(
+            trace_id="trace_turn-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+            event_type="memory_decision",
+            stage="decision_pending",
+            status="pending",
+            source="oir:memory_decision",
+            source_event_id="decision-legacy-write",
+            schema_version=1,
+            facts={"decision_id": "decision-legacy-write"},
+        )
+
+    legacy = ExecutionTraceEvent(
+        event_offset=1,
         trace_id="trace_turn-1",
         tenant_id="tenant-1",
         user_id="user-1",
@@ -121,6 +152,63 @@ def test_trace_schema_rejects_memory_body_values() -> None:
         },
     )
     assert legacy.schema_version == 1
+
+
+async def test_trace_writer_treats_sanitized_v2_as_a_replay_of_legacy_v1() -> None:
+    occurred_at = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    legacy = ExecutionTraceEvent(
+        event_offset=1,
+        trace_id="trace_turn-1",
+        tenant_id="tenant-1",
+        user_id="user-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        event_type="memory_decision",
+        stage="decision_pending",
+        status="pending",
+        source="oir:memory_decision",
+        source_event_id="decision-legacy",
+        schema_version=1,
+        facts={
+            "decision_id": "decision-legacy",
+            "decision_status": "pending",
+            "previous_value": "legacy private memory body",
+            "proposed_value": "legacy replacement memory body",
+        },
+        occurred_at=occurred_at,
+    )
+    service = ExecutionTraceService(_LegacyMemoryExecutionTraceRepository(legacy))
+    replay = await service.record(
+        ExecutionTraceEventDraft(
+            trace_id="trace_turn-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+            event_type="memory_decision",
+            stage="decision_pending",
+            status="pending",
+            source="oir:memory_decision",
+            source_event_id="decision-legacy",
+            facts={
+                "decision_id": "decision-legacy",
+                "decision_status": "pending",
+            },
+            occurred_at=occurred_at,
+        )
+    )
+
+    assert replay.created is False
+    assert replay.event.event_offset == 1
+    assert replay.event.schema_version == 1
+
+
+async def test_trace_repository_revalidates_copied_drafts_before_writing() -> None:
+    service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    invalid = _agent_progress().model_copy(update={"schema_version": 1})
+
+    with pytest.raises(ValidationError, match="greater than or equal to 2"):
+        await service.record(invalid)
 
 
 async def test_database_trace_writer_uses_one_ordered_idempotent_event_table(tmp_path) -> None:

@@ -81,7 +81,7 @@ class TraceEvidenceRef(BaseModel):
     label: str | None = Field(default=None, max_length=256)
 
 
-class ExecutionTraceEventDraft(BaseModel):
+class _ExecutionTraceEventEnvelope(BaseModel):
     # A Trace ID is derived as ``trace_<turn_id>``; Canonical Turn IDs permit 128 characters.
     trace_id: str = Field(min_length=1, max_length=134)
     tenant_id: str = Field(min_length=1, max_length=128)
@@ -99,7 +99,7 @@ class ExecutionTraceEventDraft(BaseModel):
     facts: dict[str, Any] = Field(default_factory=dict)
     evidence_refs: list[TraceEvidenceRef] = Field(default_factory=list, max_length=20)
     visibility: TraceVisibility = "business_runtime"
-    schema_version: int = Field(default=2, ge=1, le=1_000_000)
+    schema_version: int = Field(default=1, ge=1, le=1_000_000)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("occurred_at")
@@ -115,21 +115,29 @@ class ExecutionTraceEventDraft(BaseModel):
         return facts
 
     @model_validator(mode="after")
-    def validate_facts_for_event_type(self) -> "ExecutionTraceEventDraft":
+    def validate_facts_for_event_type(self) -> "_ExecutionTraceEventEnvelope":
         allowed = _FACT_KEYS[self.event_type]
         unknown = set(self.facts) - allowed
         if unknown:
             names = ", ".join(sorted(unknown))
             raise ValueError(f"facts contains unsupported fields for {self.event_type}: {names}")
-        if self.schema_version >= 2 and self.event_type == "memory_decision":
-            if {"previous_value", "proposed_value"} & self.facts.keys():
-                raise ValueError("memory decision body values require the legacy schema")
         for value in self.facts.values():
             _validate_fact_value(value)
         return self
 
 
-class ExecutionTraceEvent(ExecutionTraceEventDraft):
+class ExecutionTraceEventDraft(_ExecutionTraceEventEnvelope):
+    schema_version: int = Field(default=2, ge=2, le=1_000_000)
+
+    @model_validator(mode="after")
+    def reject_memory_body_values(self) -> "ExecutionTraceEventDraft":
+        if self.event_type == "memory_decision":
+            if {"previous_value", "proposed_value"} & self.facts.keys():
+                raise ValueError("memory decision body values cannot be written to a trace")
+        return self
+
+
+class ExecutionTraceEvent(_ExecutionTraceEventEnvelope):
     event_offset: int = Field(ge=1)
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

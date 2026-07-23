@@ -35,11 +35,12 @@ class MemoryExecutionTraceRepository:
         self._lock = asyncio.Lock()
 
     async def append(self, event: ExecutionTraceEventDraft) -> tuple[ExecutionTraceEvent, bool]:
+        event = ExecutionTraceEventDraft.model_validate(event.model_dump())
         source_key = (event.source, event.source_event_id, event.source_version)
         async with self._lock:
             existing = self._by_source.get(source_key)
             if existing is not None:
-                if _event_identity(existing) != _draft_identity(event):
+                if not _is_idempotent_replay(existing, event):
                     raise ExecutionTraceSourceConflict("execution trace source identity conflict")
                 return existing.model_copy(deep=True), False
             stored = ExecutionTraceEvent(
@@ -72,6 +73,7 @@ class DatabaseExecutionTraceRepository:
         self.session_factory = session_factory
 
     async def append(self, event: ExecutionTraceEventDraft) -> tuple[ExecutionTraceEvent, bool]:
+        event = ExecutionTraceEventDraft.model_validate(event.model_dump())
         try:
             async with self.session_factory() as session:
                 row = ExecutionTraceEventModel(**_trace_values(event))
@@ -91,7 +93,7 @@ class DatabaseExecutionTraceRepository:
                 if row is None:
                     raise
                 stored = _event_from_row(row)
-                if _event_identity(stored) != _draft_identity(event):
+                if not _is_idempotent_replay(stored, event):
                     raise ExecutionTraceSourceConflict(
                         "execution trace source identity conflict"
                     ) from None
@@ -124,6 +126,23 @@ def _event_identity(event: ExecutionTraceEvent) -> dict:
 
 def _draft_identity(event: ExecutionTraceEventDraft) -> dict:
     return event.model_dump(mode="json")
+
+
+def _is_idempotent_replay(
+    stored: ExecutionTraceEvent,
+    incoming: ExecutionTraceEventDraft,
+) -> bool:
+    stored_identity = _event_identity(stored)
+    incoming_identity = _draft_identity(incoming)
+    if stored.schema_version == 1 and incoming.schema_version >= 2:
+        stored_identity["schema_version"] = incoming.schema_version
+        if stored.event_type == "memory_decision":
+            stored_identity["facts"] = {
+                key: value
+                for key, value in stored_identity["facts"].items()
+                if key not in {"previous_value", "proposed_value"}
+            }
+    return stored_identity == incoming_identity
 
 
 def _trace_values(event: ExecutionTraceEventDraft) -> dict:
