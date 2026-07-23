@@ -30,6 +30,7 @@ from app.schemas.turns import (
 
 _MAX_CAPSULE_REFS = 50
 _MAX_CAPSULE_REF_CHARS = 128
+_TRACE_PROJECTION_TIMEOUT_SECONDS = 1.0
 
 
 class FormationJobProcessor(Protocol):
@@ -544,20 +545,13 @@ class FormationJobWorker:
                 or re.fullmatch(r"formation_[a-z0-9_]{1,118}", error_code) is None
             ):
                 error_code = "formation_processor_error"
-        project_failure = getattr(self.processor, "project_failure", None)
-        if callable(project_failure):
-            try:
-                await project_failure(claimed, reason_code=error_code)
-            except Exception:
-                # Runtime Observation must not alter Formation retry or dead-letter outcomes.
-                pass
         delay = min(
             self.settings.memory_formation_retry_base_seconds
             * (2 ** max(claimed.attempt_count - 1, 0)),
             self.settings.memory_formation_retry_max_seconds,
         )
         terminal_time = self.clock()
-        return await self.repository.fail_job(
+        failed = await self.repository.fail_job(
             claimed.job_id,
             owner=self.owner,
             lease_token=claimed.lease_token,
@@ -565,6 +559,17 @@ class FormationJobWorker:
             error_code=error_code,
             next_attempt_at=terminal_time + timedelta(seconds=delay),
         )
+        project_failure = getattr(self.processor, "project_failure", None)
+        if callable(project_failure):
+            try:
+                await asyncio.wait_for(
+                    project_failure(failed, reason_code=error_code),
+                    timeout=_TRACE_PROJECTION_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                # Runtime Observation must not alter Formation retry or dead-letter outcomes.
+                pass
+        return failed
 
 
 class MemoryFormationRuntime:

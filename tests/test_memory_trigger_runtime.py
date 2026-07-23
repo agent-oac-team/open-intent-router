@@ -285,6 +285,17 @@ class RecordingProcessor:
         return {"decision_counts": {"add": 1}}
 
 
+class HangingFailureProjectionProcessor(RecordingProcessor):
+    def __init__(self) -> None:
+        super().__init__(failures=1)
+        self.projection_started = False
+
+    async def project_failure(self, _job, *, reason_code: str) -> None:
+        assert reason_code == "formation_processor_error"
+        self.projection_started = True
+        await asyncio.Event().wait()
+
+
 async def _idle_job(repository, settings):
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     await coordinator.append_and_check(_turn(1))
@@ -345,6 +356,31 @@ async def test_worker_retries_then_dead_letters_without_advancing_watermark() ->
         is None
     )
     assert "provider secret" not in str(second.model_dump())
+
+
+async def test_hanging_failure_projection_cannot_block_retry_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.memory_formation._TRACE_PROJECTION_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    repository = MemoryFormationTurnJobRepository()
+    settings = _settings()
+    current, _ = await _idle_job(repository, settings)
+    processor = HangingFailureProjectionProcessor()
+    worker = FormationJobWorker(
+        settings=settings,
+        repository=repository,
+        processor=processor,
+        owner="worker",
+        clock=lambda: current,
+    )
+
+    failed = await asyncio.wait_for(worker.run_once(), timeout=0.1)
+
+    assert failed and failed.status == MemoryFormationJobStatus.RETRY
+    assert failed.last_error_code == "formation_processor_error"
+    assert processor.projection_started is True
 
 
 async def test_worker_retry_replay_completes_once_and_advances_watermark() -> None:
