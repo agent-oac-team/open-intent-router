@@ -72,6 +72,8 @@ class IRSFallbackGateway:
         correlation: dict[str, str | None] | None = None,
     ) -> Any:
         safe_correlation = _safe_correlation(correlation)
+        if self.mode == "off":
+            return await self._primary(operation, request_id, primary, safe_correlation)
         if operation.operation_class in {
             OperationClass.CONTROL_WRITE,
             OperationClass.RUNTIME_WRITE,

@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.errors import LLMError
 from app.repositories.execution_tickets import MemoryExecutionTicketStore
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.schemas.delegated_runs import (
@@ -77,6 +78,11 @@ class RoutingPort:
             ),
             plan=plan,
         )
+
+
+class LLMFailingRoutingPort(RoutingPort):
+    async def route(self, request):
+        raise LLMError("routing provider unavailable")
 
 
 class ContextRoutingPort(RoutingPort):
@@ -301,6 +307,35 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
         execution_ticket_lease_seconds=30,
     )
     return TestClient(app), delegated, events
+
+
+def test_route_projects_primary_error_when_fallback_is_off() -> None:
+    client, _, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=LLMFailingRoutingPort(),
+    )
+    client.app.dependency_overrides[get_irs_fallback_gateway] = lambda: IRSFallbackGateway(
+        mode="off",
+        policy_version="test",
+        circuit=CircuitBreaker(failure_threshold=1, recovery_seconds=60),
+    )
+
+    response = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-provider-failure",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "我对客户的文案喜欢温柔一点",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "llm_error"
 
 
 def test_route_issues_ticket_and_completed_event_consumes_it() -> None:

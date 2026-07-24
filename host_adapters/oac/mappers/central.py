@@ -1,3 +1,4 @@
+from app.core.errors import AppError
 from app.schemas.common import ArtifactRef, UserContext
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.plans import Plan, PlanActionResponse
@@ -155,6 +156,8 @@ def plan_confirm_to_compat(response: PlanActionResponse, *, plan: Plan) -> PlanC
 
 
 def project_error(error: Exception) -> tuple[int, CompatErrorResponse]:
+    if isinstance(error, AppError):
+        return error.status_code, CompatErrorResponse(code=error.code, message=error.message)
     if isinstance(error, PermissionError):
         return 403, CompatErrorResponse(code="forbidden", message="Operation is not allowed")
     if isinstance(error, KeyError):

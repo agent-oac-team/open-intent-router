@@ -41,6 +41,46 @@ from host_apps.oac.config import (
 )
 
 
+@pytest.mark.asyncio
+async def test_fallback_off_does_not_block_the_next_healthy_primary() -> None:
+    gateway = IRSFallbackGateway(
+        mode="off",
+        policy_version="test",
+        circuit=CircuitBreaker(failure_threshold=1, recovery_seconds=60),
+    )
+    operation = classify_operation("POST", "/api/v1/central/route")
+    calls = 0
+
+    async def failing_primary():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("transient primary failure")
+
+    async def healthy_primary():
+        nonlocal calls
+        calls += 1
+        return {"route": "ok"}
+
+    async def unused_fallback():
+        raise AssertionError("fallback must not run while fallback mode is off")
+
+    with pytest.raises(RuntimeError, match="transient primary failure"):
+        await gateway.execute(
+            operation=operation,
+            request_id="request-1",
+            primary=failing_primary,
+            fallback=unused_fallback,
+        )
+
+    assert await gateway.execute(
+        operation=operation,
+        request_id="request-2",
+        primary=healthy_primary,
+        fallback=unused_fallback,
+    ) == {"route": "ok"}
+    assert calls == 2
+
+
 def test_all_22_adapter_methods_have_one_static_operation_class() -> None:
     assert len(ADAPTER_OPERATIONS) == 22
     assert {item.operation_class for item in ADAPTER_OPERATIONS} == set(OperationClass)
