@@ -3,6 +3,7 @@ import pytest
 from app.core.errors import RoutingError
 from app.schemas.events import AgentEvent
 from app.schemas.invocation import InvokeRequest
+from app.schemas.plans import Plan, PlanStep
 from app.schemas.routing import (
     LLMRouteInput,
     RouteContext,
@@ -134,6 +135,60 @@ async def test_mock_router_creates_and_persists_multi_agent_plan(
     assert [step.agent_id for step in response.plan.steps] == ["summarizer", "task_creator"]
     assert response.plan.steps[1].depends_on == [response.plan.steps[0].step_id]
     assert await repositories["plans"].get(response.plan.plan_id, tenant_id="t1", user_id="u1")
+
+
+async def test_confirmed_plan_control_routes_current_step_without_llm(
+    settings, registry_service, repositories
+) -> None:
+    plan_service = PlanService(repositories["plans"])
+    plan = Plan(
+        plan_id="plan_controlled",
+        user_id="u1",
+        tenant_id="t1",
+        session_id="s1",
+        status="running",
+        current_step_id="step_1",
+        steps=[
+            PlanStep(step_id="step_1", agent_id="summarizer", description="Summarize."),
+            PlanStep(
+                step_id="step_2",
+                agent_id="summarizer",
+                description="Continue.",
+                depends_on=["step_1"],
+            ),
+        ],
+    )
+    await plan_service.save_plan(plan)
+    llm = FailingLLM()
+    service = RouterService(
+        settings=settings,
+        registry=registry_service,
+        plan_service=plan_service,
+        llm_client=llm,
+    )
+
+    response = await service.route(
+        RouteRequest.model_validate(
+            {
+                "request_id": "request_plan_control",
+                "session_id": "s1",
+                "source": "plan_control",
+                "plan_id": "plan_controlled",
+                "step_id": "step_1",
+                "user": {
+                    "id": "u1",
+                    "roles": ["operator"],
+                    "attributes": {"tenant_id": "t1"},
+                },
+                "input": {"text": "plan:continue"},
+            }
+        )
+    )
+
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "summarizer"
+    assert response.invocation is not None
+    assert llm.calls == 0
 
 
 async def test_router_overwrites_forged_plan_owner_requires_tenant_and_preserves_event_owner(

@@ -158,6 +158,14 @@ class RouterService:
         )
         base_context = _with_evidence_metadata(base_context, evidence_result)
         base_context = _with_filter_metadata(base_context, tag_filter, available_agent_ids)
+        plan_route = await self._route_controlled_plan_step(
+            request,
+            active_plan=active_plan,
+            base_context=base_context,
+            assembly_session=assembly_session,
+        )
+        if plan_route is not None:
+            return plan_route
         knowledge_reply = base_context.metadata.get("knowledge_direct_reply")
         if isinstance(knowledge_reply, dict) and knowledge_reply.get("message"):
             message = str(knowledge_reply["message"])
@@ -209,6 +217,59 @@ class RouterService:
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
         return response
+
+    async def _route_controlled_plan_step(
+        self,
+        request: RouteRequest,
+        *,
+        active_plan,
+        base_context,
+        assembly_session=None,
+    ) -> RouteResponse | None:
+        if request.source not in {"plan_control", "agent_event"} or active_plan is None:
+            return None
+        if (
+            active_plan.status in {"completed", "failed", "cancelled"}
+            or not active_plan.current_step_id
+        ):
+            return None
+        step = next(
+            (item for item in active_plan.steps if item.step_id == active_plan.current_step_id),
+            None,
+        )
+        if step is None:
+            raise RoutingError("Active Plan current step is missing")
+        if step.agent_id not in base_context.candidate_agent_ids:
+            raise RoutingError("Active Plan step is outside the candidate set")
+        response = RouteResponse(
+            request_id=request.request_id or f"req_{uuid4().hex}",
+            session_id=request.session_id,
+            decision=RouteDecision(
+                status="ok",
+                action="open_agent",
+                target_agent_id=step.agent_id,
+                confidence=1.0,
+                reason="Continue the current confirmed Plan step.",
+                message=f"Routing to {step.agent_id}.",
+            ),
+            context=base_context.model_copy(
+                update={
+                    "relation": "continue_current"
+                    if request.source == "agent_event"
+                    else "new_task",
+                    "current_agent_id": None,
+                }
+            ),
+            plan=active_plan,
+        )
+        response = await self._clarify_or_attach_invocation(
+            response,
+            request,
+            active_plan=active_plan,
+            assembly_session=assembly_session,
+        )
+        response = self._finalize_assistant_message(response)
+        return await self._after_route(request, response)
 
     async def route_decision_shadow(self, request: RouteRequest) -> RouteResponse:
         shadow = copy(self)
