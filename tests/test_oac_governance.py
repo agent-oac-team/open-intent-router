@@ -42,9 +42,12 @@ from host_apps.oac.config import (
 
 
 @pytest.mark.asyncio
-async def test_fallback_off_does_not_block_the_next_healthy_primary() -> None:
+@pytest.mark.parametrize("mode", ["off", "read_only"])
+async def test_route_without_route_fallback_does_not_block_the_next_healthy_primary(
+    mode: str,
+) -> None:
     gateway = IRSFallbackGateway(
-        mode="off",
+        mode=mode,
         policy_version="test",
         circuit=CircuitBreaker(failure_threshold=1, recovery_seconds=60),
     )
@@ -62,7 +65,7 @@ async def test_fallback_off_does_not_block_the_next_healthy_primary() -> None:
         return {"route": "ok"}
 
     async def unused_fallback():
-        raise AssertionError("fallback must not run while fallback mode is off")
+        raise AssertionError("route fallback must not run in this mode")
 
     with pytest.raises(RuntimeError, match="transient primary failure"):
         await gateway.execute(
