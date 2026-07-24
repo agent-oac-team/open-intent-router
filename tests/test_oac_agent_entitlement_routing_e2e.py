@@ -206,15 +206,20 @@ async def test_evidence_override_cannot_restore_unauthorized_agent() -> None:
     assert response.context.metadata["permission_denied"] is True
 
 
-async def test_unauthorized_generated_plan_step_is_rejected() -> None:
+async def test_unauthorized_generated_plan_step_returns_permission_denied() -> None:
     registry = await _registry(_agent("strategy_analysis", [OPS, SALES]))
     service = RouterService(
         settings=registry.settings,
         registry=registry,
         llm_client=UnauthorizedPlanLLM(),
     )
-    with pytest.raises(RoutingError, match="Plan contains an Agent outside"):
-        await service.route(_request(SALES, "make a plan"))
+    response = await service.route(_request(SALES, "make a plan"))
+
+    assert response.decision.action == "unsupported"
+    assert response.decision.status == "unsupported"
+    assert response.plan is None
+    assert response.invocation is None
+    assert response.context.metadata["permission_denied"] is True
 
 
 async def test_llm_target_and_restored_plan_cannot_escape_candidates() -> None:

@@ -203,6 +203,7 @@ class RouterService:
         output = self._normalize_candidate_context(output, base_context, candidate_ids)
         output = self._bind_exit_target(output, request)
         output = self._ensure_plan_for_multi_task(output, request, candidates)
+        output = self._deny_unavailable_plan_agents(output)
         output = self._collapse_single_step_plan(output, request)
         output = await self._apply_plan_policy(output)
         output = output.model_copy(update={"request_id": request_id})
@@ -930,6 +931,44 @@ class RouterService:
                     message=f"Routing to {step.agent_id}.",
                 ),
                 "context": output.context.model_copy(update={"relation": relation}),
+                "execution_policy": None,
+                "next_action": None,
+                "plan": None,
+                "invocation": None,
+            }
+        )
+
+    def _deny_unavailable_plan_agents(self, output: RouteResponse) -> RouteResponse:
+        if output.plan is None:
+            return output
+        candidate_ids = set(output.context.candidate_agent_ids)
+        unavailable = sorted(
+            {step.agent_id for step in output.plan.steps if step.agent_id not in candidate_ids}
+        )
+        if not unavailable:
+            return output
+
+        message = "当前账号无法使用计划中的部分能力，请调整任务或联系管理员开通权限。"
+        return output.model_copy(
+            update={
+                "assistant_message": message,
+                "decision": RouteDecision(
+                    status="unsupported",
+                    action="unsupported",
+                    confidence=output.decision.confidence,
+                    reason="Generated Plan contains an unavailable Agent.",
+                    message=message,
+                ),
+                "context": output.context.model_copy(
+                    update={
+                        "relation": "unsupported",
+                        "metadata": {
+                            **output.context.metadata,
+                            "permission_denied": True,
+                            "unavailable_plan_agent_ids": unavailable,
+                        },
+                    }
+                ),
                 "execution_policy": None,
                 "next_action": None,
                 "plan": None,
