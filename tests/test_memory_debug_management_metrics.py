@@ -861,6 +861,7 @@ async def test_pending_resolution_projects_authoritative_trace_without_changing_
         "revision_id": current.current_revision_id,
         "operation": "update",
         "index_status": "pending",
+        "index_operation_status": "pending",
     }
     await _drain_memory_index(memory)
     recalled = await memory.recall(

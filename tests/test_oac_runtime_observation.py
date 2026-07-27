@@ -639,6 +639,7 @@ def test_runtime_observation_stream_reports_a_gap_discovered_after_connect() -> 
         )
         initial = await anext(response.body_iterator)
         assert '"completeness":"complete"' in str(initial)
+        assert '"recovered_memory_revisions":[]' in str(initial)
         repository.fail_appends = True
         assert (
             await trace_service.try_record(

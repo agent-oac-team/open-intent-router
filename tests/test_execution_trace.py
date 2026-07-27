@@ -5,17 +5,20 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.db.session import create_all_tables, create_engine, create_session_factory
+from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.execution_traces import (
     DatabaseExecutionTraceRepository,
     ExecutionTraceRepository,
     MemoryExecutionTraceRepository,
 )
+from app.repositories.memory_index_operations import MemoryIndexOutboxRepository
 from app.schemas.execution_traces import (
     ExecutionTraceEvent,
     ExecutionTraceEventDraft,
     ExecutionTraceQuery,
     trace_id_for_turn,
 )
+from app.schemas.memory import MemoryIndexOperation, MemoryItem
 from app.schemas.turns import CanonicalTurn, TurnSemanticResponse, TurnStatus, TurnUserInput
 from app.services.execution_trace_service import ExecutionTraceConflict, ExecutionTraceService
 
@@ -378,6 +381,90 @@ async def test_incomplete_trace_recovers_terminal_canonical_state_after_service_
         "state_version": 4,
     }
     assert [event.event_offset for event in snapshot.events] == [1, 2]
+
+
+async def test_trace_snapshot_recovers_current_memory_index_state_without_faking_events() -> None:
+    repository = MemoryExecutionTraceRepository()
+    initial = ExecutionTraceService(repository)
+    occurred_at = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    await initial.record(
+        ExecutionTraceEventDraft(
+            trace_id="trace_turn-1",
+            tenant_id="tenant-1",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+            event_type="memory_revision",
+            stage="revision_recorded",
+            status="completed",
+            source="oir:memory_revision",
+            source_event_id="memory-revision:rev-1:turn-1",
+            facts={
+                "memory_id": "memory-1",
+                "revision_id": "rev-1",
+                "operation": "add",
+                "index_status": "pending",
+                "index_operation_status": "pending",
+            },
+            occurred_at=occurred_at,
+        )
+    )
+    memory_items = MemoryItemRepository()
+    await memory_items.add(
+        MemoryItem(
+            memory_id="memory-1",
+            scope="user_preference",
+            subject_id="user-1",
+            user_id="user-1",
+            tenant_id="tenant-1",
+            content="private preference",
+            current_revision_id="rev-1",
+            current_revision_no=1,
+            index_status="ready",
+        )
+    )
+    index_operations = MemoryIndexOutboxRepository()
+    await index_operations.add(
+        MemoryIndexOperation(
+            idempotency_key="add:memory-1:rev-1",
+            operation="add",
+            memory_id="memory-1",
+            revision_id="rev-1",
+            tenant_id="tenant-1",
+            status="completed",
+            attempt_count=1,
+            updated_at=datetime(2026, 7, 22, 10, 1, tzinfo=UTC),
+        )
+    )
+    restarted = ExecutionTraceService(
+        repository,
+        memory_items=memory_items,
+        index_operations=index_operations,
+    )
+
+    snapshot = await restarted.snapshot(
+        ExecutionTraceQuery(
+            tenant_id="tenant-1",
+            user_id="user-1",
+            session_id="session-1",
+            turn_id="turn-1",
+        )
+    )
+
+    assert snapshot.completeness == "complete"
+    assert snapshot.recovered is True
+    assert [event.event_offset for event in snapshot.events] == [1]
+    assert [value.model_dump() for value in snapshot.recovered_memory_revisions] == [
+        {
+            "source": "canonical_memory",
+            "memory_id": "memory-1",
+            "revision_id": "rev-1",
+            "operation": "add",
+            "index_status": "ready",
+            "index_operation_status": "completed",
+        }
+    ]
+    assert "private preference" not in snapshot.model_dump_json()
 
 
 class _TurnPort:

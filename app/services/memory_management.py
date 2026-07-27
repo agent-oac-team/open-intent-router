@@ -600,6 +600,9 @@ class MemoryManagementService:
                         "revision_id": revision_id,
                         "operation": operation,
                         "index_status": str(payload.get("provider_status") or "not_required"),
+                        "index_operation_status": str(
+                            payload.get("provider_status") or "not_required"
+                        ),
                     },
                 )
             )

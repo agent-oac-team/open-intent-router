@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import Settings
+from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.memory import (
     MemoryEvent,
     MemoryIndexOperation,
@@ -56,6 +57,8 @@ class MemoryIndexOperationWorker:
         owner: str,
         claim_tenant_id: str | None = None,
         clock: Callable[[], datetime] | None = None,
+        execution_traces=None,
+        turns=None,
     ) -> None:
         self.settings = settings
         self.adapter = adapter
@@ -65,6 +68,8 @@ class MemoryIndexOperationWorker:
         self.owner = owner
         self.claim_tenant_id = claim_tenant_id
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.execution_traces = execution_traces
+        self.turns = turns
 
     async def run_once(self) -> MemoryIndexWorkerResult | None:
         now = self.clock()
@@ -77,8 +82,12 @@ class MemoryIndexOperationWorker:
         if operation is None:
             return None
         item = await self.repository.get_by_id(operation.memory_id, tenant_id=operation.tenant_id)
+        await self._project_index_trace(operation, item)
         if operation.operation != MemoryIndexOperationType.DELETE and (
-            item is None or item.lifecycle_status != "active" or _expired(item, now)
+            item is None
+            or item.lifecycle_status != "active"
+            or _expired(item, now)
+            or item.current_revision_id != operation.revision_id
         ):
             return await self._complete_superseded(operation, item)
         provider_started = time.perf_counter()
@@ -205,11 +214,71 @@ class MemoryIndexOperationWorker:
                     duplicate_count=len(provider_result.duplicate_external_ids),
                 )
             )
+        current = await self.repository.get_by_id(
+            completed.memory_id, tenant_id=completed.tenant_id
+        )
+        await self._project_index_trace(completed, current)
         return MemoryIndexWorkerResult(
             operation=completed,
             provider_result=provider_result,
             completed=True,
         )
+
+    async def _project_index_trace(
+        self, operation: MemoryIndexOperation, item: MemoryItem | None
+    ) -> None:
+        if (
+            self.execution_traces is None
+            or self.turns is None
+            or item is None
+            or item.user_id is None
+            or item.tenant_id is None
+            or operation.revision_id is None
+            or item.current_revision_id != operation.revision_id
+        ):
+            return
+        for raw_turn_id in item.canonical_refs:
+            turn_id = raw_turn_id.removeprefix("turn:")
+            try:
+                turn = await self.turns.get_turn(
+                    turn_id=turn_id,
+                    tenant_id=item.tenant_id,
+                    user_id=item.user_id,
+                )
+                if turn is None:
+                    continue
+                await self.execution_traces.try_record(
+                    ExecutionTraceEventDraft(
+                        trace_id=trace_id_for_turn(turn.turn_id),
+                        tenant_id=turn.tenant_id,
+                        user_id=turn.user_id,
+                        session_id=turn.session_id,
+                        turn_id=turn.turn_id,
+                        event_type="memory_revision",
+                        stage=f"index_{operation.status.value}",
+                        status=operation.status.value,
+                        source="oir:memory_index_worker",
+                        source_event_id=(
+                            f"memory-index:{operation.index_operation_id}:"
+                            f"{operation.status.value}:{operation.attempt_count}:{turn.turn_id}"
+                        ),
+                        facts={
+                            "memory_id": item.memory_id,
+                            "revision_id": operation.revision_id,
+                            "operation": operation.operation.value,
+                            "index_status": (
+                                item.index_status.value
+                                if item.index_status is not None
+                                else "pending"
+                            ),
+                            "index_operation_status": operation.status.value,
+                        },
+                        occurred_at=operation.updated_at,
+                    )
+                )
+            except Exception:
+                # Runtime observation must never change the indexing outcome.
+                continue
 
     async def _fail(
         self,
@@ -259,6 +328,8 @@ class MemoryIndexOperationWorker:
                     error_code=error_code,
                 )
             )
+        current = await self.repository.get_by_id(failed.memory_id, tenant_id=failed.tenant_id)
+        await self._project_index_trace(failed, current)
         return MemoryIndexWorkerResult(
             operation=failed,
             provider_result=provider_result,

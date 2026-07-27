@@ -11,6 +11,7 @@ from app.schemas.execution_traces import (
     ExecutionTraceEvent,
     ExecutionTraceEventDraft,
     ExecutionTraceQuery,
+    ExecutionTraceRecoveredMemoryRevision,
     ExecutionTraceRecoveredState,
     ExecutionTraceSnapshot,
     ExecutionTraceWriteResult,
@@ -26,9 +27,18 @@ class _TraceGap:
 
 
 class ExecutionTraceService:
-    def __init__(self, repository: ExecutionTraceRepository, *, canonical_turns=None) -> None:
+    def __init__(
+        self,
+        repository: ExecutionTraceRepository,
+        *,
+        canonical_turns=None,
+        memory_items=None,
+        index_operations=None,
+    ) -> None:
         self.repository = repository
         self.canonical_turns = canonical_turns
+        self.memory_items = memory_items
+        self.index_operations = index_operations
         self._pending_gaps: dict[tuple[str, str, str, str], dict[str, _TraceGap]] = {}
         self._reported_gaps: dict[tuple[str, str, str, str], dict[str, _TraceGap]] = {}
         self._gap_lock = asyncio.Lock()
@@ -150,6 +160,7 @@ class ExecutionTraceService:
         query: ExecutionTraceQuery,
         snapshot: ExecutionTraceSnapshot,
     ) -> ExecutionTraceSnapshot:
+        snapshot = await self._with_recovered_memory_state(query, snapshot)
         if snapshot.completeness != "incomplete" or self.canonical_turns is None:
             return snapshot
         try:
@@ -171,6 +182,73 @@ class ExecutionTraceService:
                     outcome=outcome,
                     state_version=turn.state_version,
                 ),
+            }
+        )
+
+    async def _with_recovered_memory_state(
+        self,
+        query: ExecutionTraceQuery,
+        snapshot: ExecutionTraceSnapshot,
+    ) -> ExecutionTraceSnapshot:
+        if self.memory_items is None or self.index_operations is None:
+            return snapshot
+        latest_by_revision: dict[tuple[str, str], ExecutionTraceEvent] = {}
+        for event in snapshot.events:
+            if event.event_type != "memory_revision":
+                continue
+            memory_id = event.facts.get("memory_id")
+            revision_id = event.facts.get("revision_id")
+            if isinstance(memory_id, str) and isinstance(revision_id, str):
+                latest_by_revision[(memory_id, revision_id)] = event
+        recovered: list[ExecutionTraceRecoveredMemoryRevision] = []
+        for (memory_id, revision_id), event in latest_by_revision.items():
+            try:
+                item = await self.memory_items.get_by_id(memory_id, tenant_id=query.tenant_id)
+                if (
+                    item is None
+                    or item.user_id != query.user_id
+                    or item.current_revision_id != revision_id
+                    or item.index_status is None
+                ):
+                    continue
+                operations = await self.index_operations.list_for_memory(
+                    memory_id,
+                    tenant_id=query.tenant_id,
+                    limit=100,
+                )
+            except Exception:
+                continue
+            operation = next(
+                (value for value in operations if value.revision_id == revision_id),
+                None,
+            )
+            index_status = item.index_status.value
+            operation_status = operation.status.value if operation is not None else None
+            if (
+                event.facts.get("index_status") == index_status
+                and event.facts.get("index_operation_status") == operation_status
+            ):
+                continue
+            operation_name = (
+                operation.operation.value
+                if operation is not None
+                else str(event.facts.get("operation") or "unknown")
+            )
+            recovered.append(
+                ExecutionTraceRecoveredMemoryRevision(
+                    memory_id=memory_id,
+                    revision_id=revision_id,
+                    operation=operation_name,
+                    index_status=index_status,
+                    index_operation_status=operation_status,
+                )
+            )
+        if not recovered:
+            return snapshot
+        return snapshot.model_copy(
+            update={
+                "recovered": True,
+                "recovered_memory_revisions": recovered,
             }
         )
 

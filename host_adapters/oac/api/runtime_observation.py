@@ -119,6 +119,9 @@ def _trace_metadata(snapshot: ExecutionTraceSnapshot) -> dict[str, object]:
             if snapshot.recovered_state is not None
             else None
         ),
+        "recovered_memory_revisions": [
+            value.model_dump(mode="json") for value in snapshot.recovered_memory_revisions
+        ],
     }
 
 

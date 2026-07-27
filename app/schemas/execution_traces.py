@@ -57,7 +57,15 @@ _FACT_KEYS: dict[str, frozenset[str]] = {
             "revision_id",
         }
     ),
-    "memory_revision": frozenset({"memory_id", "revision_id", "operation", "index_status"}),
+    "memory_revision": frozenset(
+        {
+            "memory_id",
+            "revision_id",
+            "operation",
+            "index_status",
+            "index_operation_status",
+        }
+    ),
     "trace_integrity": frozenset({"reason_code", "failed_source", "failure_id", "recovered"}),
 }
 
@@ -168,6 +176,15 @@ class ExecutionTraceRecoveredState(BaseModel):
     state_version: int = Field(ge=1)
 
 
+class ExecutionTraceRecoveredMemoryRevision(BaseModel):
+    source: Literal["canonical_memory"] = "canonical_memory"
+    memory_id: str = Field(min_length=1, max_length=128)
+    revision_id: str = Field(min_length=1, max_length=128)
+    operation: str = Field(min_length=1, max_length=64)
+    index_status: str = Field(min_length=1, max_length=64)
+    index_operation_status: str | None = Field(default=None, max_length=64)
+
+
 class ExecutionTraceSnapshot(BaseModel):
     trace_id: str | None = None
     events: list[ExecutionTraceEvent] = Field(default_factory=list)
@@ -176,6 +193,10 @@ class ExecutionTraceSnapshot(BaseModel):
     incomplete_reason_codes: list[str] = Field(default_factory=list, max_length=20)
     recovered: bool = False
     recovered_state: ExecutionTraceRecoveredState | None = None
+    recovered_memory_revisions: list[ExecutionTraceRecoveredMemoryRevision] = Field(
+        default_factory=list,
+        max_length=20,
+    )
 
 
 class ExecutionTraceWriteResult(BaseModel):

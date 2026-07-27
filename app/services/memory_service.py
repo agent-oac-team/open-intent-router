@@ -54,6 +54,8 @@ class MemoryService:
         index_worker: MemoryIndexOperationWorker | None = None,
         formation_repository=None,
         runtime_policy: MemoryRuntimePolicy | None = None,
+        execution_traces=None,
+        turns=None,
     ) -> None:
         self.settings = settings
         self.runtime_policy = runtime_policy or settings.memory_runtime_policy
@@ -71,6 +73,8 @@ class MemoryService:
             outbox=self.index_outbox,
             lifecycle_store=self.lifecycle_store,
             owner=f"explicit-memory-index-{uuid4().hex}",
+            execution_traces=execution_traces,
+            turns=turns,
         )
         self.ttl_sweeper = ttl_sweeper or self._build_ttl_sweeper()
 

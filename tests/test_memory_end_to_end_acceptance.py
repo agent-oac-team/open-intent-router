@@ -265,6 +265,7 @@ async def test_memory_processor_projects_bounded_execution_trace_for_canonical_t
     assert decision.facts["operation"] == "add"
     assert decision.facts["decision_status"] == "accepted"
     assert revision.facts["index_status"] == "pending"
+    assert revision.facts["index_operation_status"] == "pending"
     assert "用户偏好中文回复" not in snapshot.model_dump_json()
 
     oversized_trace_identity = job.model_copy(update={"job_id": "j" * 513})

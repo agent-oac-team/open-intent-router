@@ -240,6 +240,8 @@ def get_memory_service() -> MemoryService:
         repository=repositories["memory_items"],
         formation_repository=get_memory_formation_repository(),
         runtime_policy=get_memory_runtime_policy(),
+        execution_traces=get_memory_index_trace_service(),
+        turns=get_turn_service(),
     )
 
 
@@ -589,6 +591,17 @@ def get_execution_trace_repository():
 
 @lru_cache
 def get_execution_trace_service() -> ExecutionTraceService:
+    memory_service = get_memory_service()
+    return ExecutionTraceService(
+        get_execution_trace_repository(),
+        canonical_turns=get_turn_service(),
+        memory_items=memory_service.repository,
+        index_operations=memory_service.index_outbox,
+    )
+
+
+@lru_cache
+def get_memory_index_trace_service() -> ExecutionTraceService:
     return ExecutionTraceService(
         get_execution_trace_repository(),
         canonical_turns=get_turn_service(),

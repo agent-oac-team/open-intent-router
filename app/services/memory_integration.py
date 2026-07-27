@@ -507,9 +507,14 @@ class MemoryFormationProcessor:
                 )
                 if result.revision is None:
                     continue
-                index_status = (
+                index_operation_status = (
                     result.index_operation.status.value
                     if result.index_operation is not None
+                    else None
+                )
+                index_status = (
+                    result.item.index_status.value
+                    if result.item is not None and result.item.index_status is not None
                     else None
                 )
                 await self._try_record_trace(
@@ -531,6 +536,7 @@ class MemoryFormationProcessor:
                             "revision_id": result.revision.revision_id,
                             "operation": result.revision.operation.value,
                             "index_status": index_status,
+                            "index_operation_status": index_operation_status,
                         },
                         occurred_at=result.revision.created_at,
                     )

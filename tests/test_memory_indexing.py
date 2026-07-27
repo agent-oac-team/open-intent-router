@@ -6,6 +6,7 @@ from app.core.config import Settings
 from app.db.models import MemoryIndexOperationModel, MemoryItemModel, MemoryRevisionModel
 from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository, MemoryItemRepository
+from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.repositories.memory_formation import MemoryFormationTurnJobRepository
 from app.repositories.memory_index_operations import (
     DatabaseMemoryIndexOutboxRepository,
@@ -16,7 +17,9 @@ from app.repositories.memory_lifecycle_store import (
     MemoryLifecycleStore,
 )
 from app.repositories.memory_revisions import MemoryRevisionLedgerRepository
+from app.repositories.turns import MemoryTurnRepository
 from app.schemas.common import UserContext
+from app.schemas.execution_traces import ExecutionTraceQuery
 from app.schemas.memory import (
     MemoryDecisionStatus,
     MemoryFormationJob,
@@ -32,6 +35,8 @@ from app.schemas.memory import (
     MemoryRevisionOperation,
     MemoryWriteCandidate,
 )
+from app.schemas.turns import CanonicalTurn, TurnUserInput
+from app.services.execution_trace_service import ExecutionTraceService
 from app.services.memory_adapter import (
     Mem0MemoryAdapter,
     MemoryProviderOperationStatus,
@@ -43,6 +48,7 @@ from app.services.memory_indexing import (
 )
 from app.services.memory_lifecycle import MemoryLifecycleService, MemoryTtlSweeper
 from app.services.memory_service import MemoryService
+from app.services.turn_service import TurnService
 
 
 async def test_governed_add_sends_one_canonical_item_with_inference_disabled() -> None:
@@ -238,6 +244,263 @@ async def test_index_worker_completes_mapping_and_never_completes_provider_failu
     assert failed.provider_result.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
     stored_failed = await repository.get_by_id("mem_fail", tenant_id="t1")
     assert stored_failed is not None and stored_failed.index_status == "out_of_sync"
+
+
+async def test_index_worker_projects_claimed_and_completed_state_for_current_revision() -> None:
+    settings = _settings()
+    repository, outbox, store = _stores()
+    item = _item(memory_id="mem_trace", revision_id="rev_trace", content="indexed").model_copy(
+        update={"canonical_refs": ["turn_trace"]}
+    )
+    await repository.add(item)
+    await outbox.add(_index_add(item))
+    turn_repository = MemoryTurnRepository()
+    now = datetime.now(UTC)
+    turn = CanonicalTurn(
+        turn_id="turn_trace",
+        tenant_id="t1",
+        user_id="u1",
+        session_id="session_trace",
+        request_id="request_trace",
+        source="host_chat",
+        user_input=TurnUserInput(text="remember this"),
+        created_at=now,
+        updated_at=now,
+    )
+    await turn_repository.create_idempotent(turn)
+    turns = TurnService(turn_repository)
+    traces = ExecutionTraceService(MemoryExecutionTraceRepository(), canonical_turns=turns)
+    worker = MemoryIndexOperationWorker(
+        settings=settings,
+        adapter=_adapter(repository, IndexFakeMem0()),
+        repository=repository,
+        outbox=outbox,
+        lifecycle_store=store,
+        owner="worker-trace",
+        execution_traces=traces,
+        turns=turns,
+    )
+
+    result = await worker.run_once()
+
+    assert result is not None and result.completed is True
+    snapshot = await traces.snapshot(
+        ExecutionTraceQuery(
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_trace",
+            turn_id="turn_trace",
+        )
+    )
+    revisions = [event for event in snapshot.events if event.event_type == "memory_revision"]
+    assert [(event.status, event.facts) for event in revisions] == [
+        (
+            "claimed",
+            {
+                "memory_id": "mem_trace",
+                "revision_id": "rev_trace",
+                "operation": "add",
+                "index_status": "pending",
+                "index_operation_status": "claimed",
+            },
+        ),
+        (
+            "completed",
+            {
+                "memory_id": "mem_trace",
+                "revision_id": "rev_trace",
+                "operation": "add",
+                "index_status": "ready",
+                "index_operation_status": "completed",
+            },
+        ),
+    ]
+    assert await worker.run_once() is None
+    replay_snapshot = await traces.snapshot(
+        ExecutionTraceQuery(
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_trace",
+            turn_id="turn_trace",
+        )
+    )
+    assert [event.event_offset for event in replay_snapshot.events] == [1, 2]
+
+
+async def test_index_worker_projects_retry_with_out_of_sync_canonical_state() -> None:
+    settings = _settings()
+    repository, outbox, store = _stores()
+    item = _item(memory_id="mem_retry_trace", revision_id="rev_retry_trace", content="retry").model_copy(
+        update={"canonical_refs": ["turn_retry_trace"]}
+    )
+    await repository.add(item)
+    await outbox.add(_index_add(item))
+    turn_repository = MemoryTurnRepository()
+    now = datetime.now(UTC)
+    await turn_repository.create_idempotent(
+        CanonicalTurn(
+            turn_id="turn_retry_trace",
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_retry_trace",
+            request_id="request_retry_trace",
+            source="host_chat",
+            user_input=TurnUserInput(text="remember this"),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    turns = TurnService(turn_repository)
+    traces = ExecutionTraceService(MemoryExecutionTraceRepository(), canonical_turns=turns)
+    client = IndexFakeMem0()
+    client.fail_add = True
+    worker = MemoryIndexOperationWorker(
+        settings=settings,
+        adapter=_adapter(repository, client),
+        repository=repository,
+        outbox=outbox,
+        lifecycle_store=store,
+        owner="worker-retry-trace",
+        execution_traces=traces,
+        turns=turns,
+    )
+
+    result = await worker.run_once()
+
+    assert result is not None and result.operation.status == "retry"
+    snapshot = await traces.snapshot(
+        ExecutionTraceQuery(
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_retry_trace",
+            turn_id="turn_retry_trace",
+        )
+    )
+    assert snapshot.events[-1].facts == {
+        "memory_id": "mem_retry_trace",
+        "revision_id": "rev_retry_trace",
+        "operation": "add",
+        "index_status": "out_of_sync",
+        "index_operation_status": "retry",
+    }
+
+
+async def test_index_worker_does_not_project_or_index_a_stale_revision() -> None:
+    settings = _settings()
+    repository, outbox, store = _stores()
+    current = _item(
+        memory_id="mem_stale_trace",
+        revision_id="rev_current",
+        content="current value",
+    ).model_copy(update={"canonical_refs": ["turn_stale_trace"]})
+    await repository.add(current)
+    stale_operation = _index_add(current).model_copy(
+        update={
+            "revision_id": "rev_stale",
+            "idempotency_key": "add:mem_stale_trace:rev_stale",
+        }
+    )
+    await outbox.add(stale_operation)
+    turn_repository = MemoryTurnRepository()
+    now = datetime.now(UTC)
+    await turn_repository.create_idempotent(
+        CanonicalTurn(
+            turn_id="turn_stale_trace",
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_stale_trace",
+            request_id="request_stale_trace",
+            source="host_chat",
+            user_input=TurnUserInput(text="remember current value"),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    turns = TurnService(turn_repository)
+    traces = ExecutionTraceService(MemoryExecutionTraceRepository(), canonical_turns=turns)
+    client = IndexFakeMem0()
+    worker = MemoryIndexOperationWorker(
+        settings=settings,
+        adapter=_adapter(repository, client),
+        repository=repository,
+        outbox=outbox,
+        lifecycle_store=store,
+        owner="worker-stale-trace",
+        execution_traces=traces,
+        turns=turns,
+    )
+
+    result = await worker.run_once()
+
+    assert result is not None
+    assert result.provider_result.status == MemoryProviderOperationStatus.SUPERSEDED
+    assert client.add_calls == []
+    stored = await repository.get_by_id(current.memory_id, tenant_id="t1")
+    assert stored is not None and stored.index_status == "pending"
+    snapshot = await traces.snapshot(
+        ExecutionTraceQuery(
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_stale_trace",
+            turn_id="turn_stale_trace",
+        )
+    )
+    assert snapshot.events == []
+
+
+async def test_index_worker_projects_dead_letter_terminal_state() -> None:
+    settings = _settings()
+    repository, outbox, store = _stores()
+    item = _item(
+        memory_id="mem_dead_trace",
+        revision_id="rev_dead_trace",
+        content="dead letter",
+    ).model_copy(update={"canonical_refs": ["turn_dead_trace"]})
+    await repository.add(item)
+    await outbox.add(_index_add(item).model_copy(update={"max_attempts": 1}))
+    turn_repository = MemoryTurnRepository()
+    now = datetime.now(UTC)
+    await turn_repository.create_idempotent(
+        CanonicalTurn(
+            turn_id="turn_dead_trace",
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_dead_trace",
+            request_id="request_dead_trace",
+            source="host_chat",
+            user_input=TurnUserInput(text="remember this"),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    turns = TurnService(turn_repository)
+    traces = ExecutionTraceService(MemoryExecutionTraceRepository(), canonical_turns=turns)
+    client = IndexFakeMem0()
+    client.fail_add = True
+    worker = MemoryIndexOperationWorker(
+        settings=settings,
+        adapter=_adapter(repository, client),
+        repository=repository,
+        outbox=outbox,
+        lifecycle_store=store,
+        owner="worker-dead-trace",
+        execution_traces=traces,
+        turns=turns,
+    )
+
+    result = await worker.run_once()
+
+    assert result is not None and result.operation.status == "dead_letter"
+    snapshot = await traces.snapshot(
+        ExecutionTraceQuery(
+            tenant_id="t1",
+            user_id="u1",
+            session_id="session_dead_trace",
+            turn_id="turn_dead_trace",
+        )
+    )
+    assert snapshot.events[-1].facts["index_status"] == "dead_letter"
+    assert snapshot.events[-1].facts["index_operation_status"] == "dead_letter"
 
 
 async def test_index_worker_does_not_write_non_active_canonical_item() -> None:
