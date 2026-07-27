@@ -201,6 +201,7 @@ class RouterService:
         )
         output = self._bind_plan_ownership(output, request)
         output = self._normalize_candidate_context(output, base_context, candidate_ids)
+        output = self._normalize_agent_continuation(output, request)
         output = self._bind_exit_target(output, request)
         output = self._ensure_plan_for_multi_task(output, request, candidates)
         output = self._deny_unavailable_plan_agents(output)
@@ -365,6 +366,83 @@ class RouterService:
                 "decision": output.decision.model_copy(
                     update={"target_agent_id": request.current_agent.agent_id}
                 )
+            }
+        )
+
+    def _normalize_agent_continuation(
+        self,
+        output: RouteResponse,
+        request: RouteRequest,
+    ) -> RouteResponse:
+        if output.decision.action != "continue_agent":
+            return output
+        target = output.decision.target_agent_id
+        current = request.current_agent.agent_id if request.current_agent else None
+        current_session = request.current_agent.agent_session_id if request.current_agent else None
+        if target == current and current_session:
+            return output
+        if target not in output.context.candidate_agent_ids:
+            message = "当前账号无法继续使用该能力，请调整任务或联系管理员开通权限。"
+            metadata = {
+                **output.context.metadata,
+                "permission_denied": True,
+                "route_normalization": {
+                    "from_action": "continue_agent",
+                    "to_action": "unsupported",
+                    "reason": "target_not_available",
+                },
+            }
+            return output.model_copy(
+                update={
+                    "assistant_message": message,
+                    "decision": RouteDecision(
+                        status="unsupported",
+                        action="unsupported",
+                        confidence=output.decision.confidence,
+                        reason="The continuation target is not available to the current Principal.",
+                        message=message,
+                    ),
+                    "context": output.context.model_copy(
+                        update={
+                            "relation": "unsupported",
+                            "current_agent_id": None,
+                            "metadata": metadata,
+                        }
+                    ),
+                    "execution_policy": None,
+                    "next_action": None,
+                    "plan": None,
+                    "invocation": None,
+                }
+            )
+
+        reason = (
+            "agent_session_missing"
+            if target == current
+            else "target_differs_from_prior_agent"
+        )
+        metadata = {
+            **output.context.metadata,
+            "route_normalization": {
+                "from_action": "continue_agent",
+                "to_action": "open_agent",
+                "reason": reason,
+            },
+        }
+        return output.model_copy(
+            update={
+                "decision": output.decision.model_copy(update={"action": "open_agent"}),
+                "context": output.context.model_copy(
+                    update={
+                        "relation": (
+                            "switch_agent"
+                            if current and target != current
+                            else "new_task"
+                        ),
+                        "current_agent_id": None,
+                        "metadata": metadata,
+                    }
+                ),
             }
         )
 

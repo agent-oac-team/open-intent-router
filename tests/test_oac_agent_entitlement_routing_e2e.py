@@ -47,7 +47,13 @@ async def _registry(*agents: AgentDefinition) -> AgentRegistryService:
     return registry
 
 
-def _request(entitlement: str, text: str, *, current_agent: str | None = None):
+def _request(
+    entitlement: str,
+    text: str,
+    *,
+    current_agent: str | None = None,
+    current_agent_session_id: str | None = "agent-session-1",
+):
     payload = {
         "session_id": "session-1",
         "user": {
@@ -60,7 +66,10 @@ def _request(entitlement: str, text: str, *, current_agent: str | None = None):
     }
     if current_agent:
         payload["source"] = "agent_chat"
-        payload["current_agent"] = {"agent_id": current_agent}
+        payload["current_agent"] = {
+            "agent_id": current_agent,
+            "agent_session_id": current_agent_session_id,
+        }
     return RouteRequest.model_validate(payload)
 
 
@@ -84,6 +93,26 @@ class SelectFirstLLM:
                 relation="continue_current" if self.action == "continue_agent" else "new_task",
                 current_agent_id=(target if self.action == "continue_agent" else None),
                 candidate_agent_ids=self.candidates,
+            ),
+        )
+
+
+class MismatchedContinuationLLM:
+    async def route(self, payload):
+        current = payload.request.current_agent.agent_id
+        target = next(item.agent_id for item in payload.candidates if item.agent_id != current)
+        return RouteResponse(
+            request_id=payload.request.request_id or "request-switch",
+            session_id=payload.request.session_id,
+            decision=RouteDecision(
+                action="continue_agent",
+                target_agent_id=target,
+                confidence=1,
+            ),
+            context=RouteContext(
+                relation="continue_current",
+                current_agent_id=target,
+                candidate_agent_ids=[item.agent_id for item in payload.candidates],
             ),
         )
 
@@ -135,6 +164,23 @@ class UnauthorizedTargetLLM:
             session_id=payload.request.session_id,
             decision=RouteDecision(action="open_agent", target_agent_id="production_schedule"),
             context=RouteContext(candidate_agent_ids=["production_schedule"]),
+        )
+
+
+class UnauthorizedContinuationLLM:
+    async def route(self, payload):
+        return RouteResponse(
+            request_id=payload.request.request_id or "request-unauthorized-continuation",
+            session_id=payload.request.session_id,
+            decision=RouteDecision(
+                action="continue_agent",
+                target_agent_id="production_schedule",
+            ),
+            context=RouteContext(
+                relation="continue_current",
+                current_agent_id="production_schedule",
+                candidate_agent_ids=["production_schedule"],
+            ),
         )
 
 
@@ -248,3 +294,89 @@ async def test_continue_agent_requires_current_agent_to_remain_entitled() -> Non
         settings=registry.settings, registry=registry, llm_client=MustNotRun()
     ).route(_request(SALES, "continue", current_agent="production_schedule"))
     assert response.decision.action == "unsupported"
+
+
+async def test_mismatched_continue_agent_is_normalized_to_authorized_switch() -> None:
+    registry = await _registry(
+        _agent("strategy_analysis", [OPS]),
+        _agent("production_schedule", [OPS]),
+    )
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=MismatchedContinuationLLM(),
+    ).route(_request(OPS, "改为内容生产", current_agent="strategy_analysis"))
+
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "production_schedule"
+    assert response.context.relation == "switch_agent"
+    assert response.context.current_agent_id is None
+
+
+async def test_unavailable_continue_agent_is_normalized_to_unsupported() -> None:
+    registry = await _registry(_agent("strategy_analysis", [SALES]))
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=UnauthorizedContinuationLLM(),
+    ).route(_request(SALES, "改为内容生产", current_agent="strategy_analysis"))
+
+    assert response.decision.action == "unsupported"
+    assert response.decision.status == "unsupported"
+    assert response.decision.target_agent_id is None
+    assert response.context.relation == "unsupported"
+    assert response.context.metadata["permission_denied"] is True
+
+
+async def test_continue_agent_without_agent_session_opens_a_new_agent_run() -> None:
+    registry = await _registry(_agent("strategy_analysis", [OPS]))
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=SelectFirstLLM(action="continue_agent"),
+    ).route(
+        _request(
+            OPS,
+            "继续完善刚才的方案",
+            current_agent="strategy_analysis",
+            current_agent_session_id=None,
+        )
+    )
+
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "strategy_analysis"
+    assert response.context.relation == "new_task"
+    assert response.context.current_agent_id is None
+    assert response.context.metadata["route_normalization"]["reason"] == "agent_session_missing"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["内容生产", "我喜欢给客户的文案是温和的风格"],
+)
+async def test_reported_old_session_inputs_never_fail_on_a_stale_prior_agent(text: str) -> None:
+    registry = await _registry(
+        _agent("strategy_analysis", [OPS]),
+        _agent("content_production", [OPS]),
+    )
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=MismatchedContinuationLLM(),
+    ).route(_request(OPS, text, current_agent="strategy_analysis"))
+
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "content_production"
+    assert response.context.current_agent_id is None
+
+
+async def test_reported_preference_input_is_valid_without_prior_agent_evidence() -> None:
+    registry = await _registry(_agent("strategy_analysis", [OPS]))
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=SelectFirstLLM(),
+    ).route(_request(OPS, "我喜欢给客户的文案是温和的风格"))
+
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "strategy_analysis"

@@ -21,6 +21,8 @@ from host_adapters.oac.schemas.registry import RegistryAgent  # noqa: E402
 
 DEFAULT_SOURCE = Path("/Users/lijingtong/project/intent_recon_sys/sql/agent_registry.csv")
 INITIAL_MEMORY_AGENT_IDS = frozenset({"strategy_analysis", "compliance_review"})
+STRATEGY_ANALYSIS_AGENT_ID = "strategy_analysis"
+STRATEGY_ANALYSIS_ROUTE = "/analysis"
 
 
 def load_irs_agents(path: Path) -> list[AgentDefinition]:
@@ -119,12 +121,18 @@ def build_reconciliation_report(agents: list[AgentDefinition]) -> dict[str, Any]
 
 
 def _row_to_agent(row: dict[str, str]) -> AgentDefinition:
+    agent_id = row["agent_id"].strip()
+    bot_id = row.get("bot_id", "").strip()
+    route_path = row.get("route_path", "").strip()
+    if agent_id == STRATEGY_ANALYSIS_AGENT_ID:
+        bot_id = ""
+        route_path = STRATEGY_ANALYSIS_ROUTE
     legacy = RegistryAgent(
-        agent_id=row["agent_id"].strip(),
+        agent_id=agent_id,
         name=row["name"].strip(),
         description=row["description"].strip(),
-        bot_id=row.get("bot_id", "").strip(),
-        route_path=row.get("route_path", "").strip(),
+        bot_id=bot_id,
+        route_path=route_path,
         allowed_user_tags=_json_list(row.get("allowed_user_tags")),
         positive_keywords=_json_list(row.get("positive_keywords")),
         negative_keywords=_json_list(row.get("negative_keywords")),

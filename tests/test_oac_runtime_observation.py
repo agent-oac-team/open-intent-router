@@ -390,6 +390,78 @@ def test_ui_handoff_rejects_unowned_turn_and_conflicting_source_identity() -> No
     assert len([event for event in snapshot.events if event.event_type == "ui_handoff"]) == 1
 
 
+def test_page_workflow_projects_started_provider_stage_and_terminal_result() -> None:
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    asyncio.run(trace_service.record(_event()))
+    client = _client(trace_service, user_id="user-1")
+    path = "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/page-workflows"
+    base = {
+        "event_id": "started",
+        "run_id": "analysis-run-1",
+        "workflow_id": "7658193531173126184",
+        "agent_id": "strategy_analysis",
+        "capability": "demand_analysis",
+        "occurred_at": "2026-07-22T10:02:00Z",
+    }
+
+    assert client.post(path, json={**base, "status": "started"}).status_code == 202
+    assert client.post(
+        path,
+        json={**base, "event_id": "stage-1", "status": "stage", "stage_name": "需求要素提取"},
+    ).status_code == 202
+    assert client.post(
+        path,
+        json={**base, "event_id": "completed", "status": "completed", "result_summary": "已形成需求分析"},
+    ).status_code == 202
+
+    snapshot = asyncio.run(
+        trace_service.snapshot(
+            ExecutionTraceQuery(
+                tenant_id="oac",
+                user_id="user-1",
+                session_id="session-1",
+                turn_id="turn-1",
+            )
+        )
+    )
+    events = [event for event in snapshot.events if event.run_id == "analysis-run-1"]
+    assert [(event.event_type, event.stage, event.status) for event in events] == [
+        ("agent_run", "started", "running"),
+        ("agent_event", "provider_stage", "running"),
+        ("agent_result", "result_received", "completed"),
+    ]
+    assert events[1].facts["provider_stage_name"] == "需求要素提取"
+    assert events[2].facts["result_summary"] == "已形成需求分析"
+    assert all(event.evidence_refs[0].reference_id == base["workflow_id"] for event in events)
+
+
+def test_page_workflow_rejects_unowned_turn_and_invalid_lifecycle_payload() -> None:
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    asyncio.run(trace_service.record(_event()))
+    client = _client(trace_service, user_id="user-1")
+    payload = {
+        "event_id": "failed",
+        "run_id": "analysis-run-1",
+        "workflow_id": "7658193531173126184",
+        "agent_id": "strategy_analysis",
+        "capability": "demand_analysis",
+        "status": "failed",
+        "occurred_at": "2026-07-22T10:02:00Z",
+    }
+
+    unowned = client.post(
+        "/api/v1/runtime-observation/sessions/session-1/turns/turn-other/page-workflows",
+        json={**payload, "error_code": "provider_failed"},
+    )
+    invalid = client.post(
+        "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/page-workflows",
+        json=payload,
+    )
+
+    assert unowned.status_code == 404
+    assert invalid.status_code == 422
+
+
 def test_runtime_observation_stream_starts_after_the_snapshot_watermark() -> None:
     repository = LegacyMemoryTraceRepository(
         ExecutionTraceEvent(**_event().model_dump(), event_offset=1)

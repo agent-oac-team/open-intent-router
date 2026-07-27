@@ -10,6 +10,7 @@ from app.schemas.execution_traces import (
     ExecutionTraceEventDraft,
     ExecutionTraceQuery,
     ExecutionTraceSnapshot,
+    TraceEvidenceRef,
     trace_id_for_turn,
 )
 from app.schemas.memory import MemoryManagementOperationResponse, MemoryPendingDecisionEvidence
@@ -20,6 +21,7 @@ from host_adapters.oac.identity import authorize_host_operation
 from host_adapters.oac.identity.models import HostAuthorizationError, TrustedHostIdentity
 from host_adapters.oac.schemas.runtime_observation import (
     MemoryDecisionActionRequest,
+    PageWorkflowEventRequest,
     RuntimeObservationAcceptedResponse,
     UiHandoffEventRequest,
 )
@@ -198,6 +200,60 @@ async def runtime_observation_handoff(
     )
 
 
+@router.post(
+    "/sessions/{session_id}/turns/{turn_id}/page-workflows",
+    status_code=202,
+    response_model=RuntimeObservationAcceptedResponse,
+)
+async def runtime_observation_page_workflow(
+    session_id: str,
+    turn_id: str,
+    request: PageWorkflowEventRequest,
+    identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
+    ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
+) -> RuntimeObservationAcceptedResponse:
+    _write_trace(identity)
+    await _verify_owned_turn(
+        ports,
+        identity=identity,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    event_type, stage, status, facts = _page_workflow_lifecycle(request)
+    try:
+        trace_complete = await _trace_service(ports).try_record(
+            ExecutionTraceEventDraft(
+                trace_id=trace_id_for_turn(turn_id),
+                tenant_id=identity.tenant_id,
+                user_id=identity.user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=request.run_id,
+                event_type=event_type,
+                stage=stage,
+                status=status,
+                source="oac:page_workflow",
+                source_event_id=f"{request.run_id}:{request.event_id}",
+                facts=facts,
+                evidence_refs=[
+                    TraceEvidenceRef(
+                        reference_type="provider_workflow",
+                        reference_id=request.workflow_id,
+                        label="page workflow",
+                    )
+                ],
+                occurred_at=request.occurred_at,
+            )
+        )
+    except ExecutionTraceConflict as exc:
+        raise HTTPException(status_code=409, detail="page_workflow_source_conflict") from exc
+    return RuntimeObservationAcceptedResponse(
+        accepted=True,
+        observation_status="complete" if trace_complete else "incomplete",
+        incomplete_reason_codes=[] if trace_complete else ["trace_projection_write_failed"],
+    )
+
+
 @router.get(
     "/sessions/{session_id}/turns/{turn_id}/memory-decisions/{decision_id}/evidence",
     response_model=MemoryPendingDecisionEvidence,
@@ -344,6 +400,57 @@ def _handoff_lifecycle(status: str) -> tuple[str, str]:
     if status == "completed":
         return "target_opened", "completed"
     return "target_open_failed", "failed"
+
+
+def _page_workflow_lifecycle(
+    request: PageWorkflowEventRequest,
+) -> tuple[str, str, str, dict[str, object]]:
+    if request.status == "started":
+        return (
+            "agent_run",
+            "started",
+            "running",
+            {
+                "agent_id": request.agent_id,
+                "capability": request.capability,
+                "invoker_type": "ui_handoff",
+                "delegated": False,
+            },
+        )
+    if request.status == "stage":
+        return (
+            "agent_event",
+            "provider_stage",
+            "running",
+            {
+                "agent_id": request.agent_id,
+                "capability": request.capability,
+                "provider_stage_name": request.stage_name,
+            },
+        )
+    if request.status == "completed":
+        return (
+            "agent_result",
+            "result_received",
+            "completed",
+            {
+                "agent_id": request.agent_id,
+                "capability": request.capability,
+                "result_summary": request.result_summary,
+                "artifact_count": 0,
+            },
+        )
+    return (
+        "agent_result",
+        "failed",
+        "failed",
+        {
+            "agent_id": request.agent_id,
+            "capability": request.capability,
+            "error_code": request.error_code,
+            "artifact_count": 0,
+        },
+    )
 
 
 def _parse_last_event_id(value: str | None) -> int:
