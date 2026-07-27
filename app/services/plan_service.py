@@ -229,23 +229,64 @@ class PlanService:
         *,
         tenant_id: str,
         user_id: str,
+        request_id: str | None = None,
+        expected_state_version: int | None = None,
         publish: bool = True,
     ) -> PlanActionResponse:
         plan = await self.get_plan(plan_id, tenant_id=tenant_id, user_id=user_id)
         if plan is None:
             raise ValueError("Plan not found")
-        if plan.status == "running":
+        if request_id is not None and plan.last_event_id == request_id:
             return PlanActionResponse(
                 plan_id=plan_id,
                 status=plan.status,
                 current_step_id=plan.current_step_id,
+                next_action=plan.next_action,
+                state_version=plan.state_version,
+                transitioned=True,
+            )
+        if expected_state_version is not None and plan.state_version != expected_state_version:
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status=plan.status,
+                current_step_id=plan.current_step_id,
+                next_action=plan.next_action,
+                state_version=plan.state_version,
             )
         if plan.status != "pending":
-            raise ValueError(f"Plan cannot be confirmed from status={plan.status}")
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status=plan.status,
+                current_step_id=plan.current_step_id,
+                next_action=plan.next_action,
+                state_version=plan.state_version,
+            )
         updated = plan.model_copy(update={"status": "running"})
-        await self.save_plan(updated, event_type="confirm", publish=publish)
+        try:
+            stored = await self.save_plan(
+                updated,
+                event_type="confirm",
+                event_id=request_id,
+                publish=publish,
+            )
+        except PlanStateConflict:
+            canonical = await self.get_plan(plan_id, tenant_id=tenant_id, user_id=user_id)
+            if canonical is None:
+                raise
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status=canonical.status,
+                current_step_id=canonical.current_step_id,
+                next_action=canonical.next_action,
+                state_version=canonical.state_version,
+            )
         return PlanActionResponse(
-            plan_id=plan_id, status="running", current_step_id=updated.current_step_id
+            plan_id=plan_id,
+            status=stored.status,
+            current_step_id=stored.current_step_id,
+            next_action=stored.next_action,
+            state_version=stored.state_version,
+            transitioned=True,
         )
 
     async def cancel(
@@ -260,7 +301,12 @@ class PlanService:
         if plan is None:
             raise ValueError("Plan not found")
         if plan.status == "cancelled":
-            return PlanActionResponse(plan_id=plan_id, status="cancelled", current_step_id=None)
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status="cancelled",
+                current_step_id=None,
+                state_version=plan.state_version,
+            )
         if plan.status in {"completed", "failed"}:
             raise ValueError(f"Plan cannot be cancelled from status={plan.status}")
         updated_steps = [
@@ -277,8 +323,13 @@ class PlanService:
                 "next_action": None,
             }
         )
-        await self.save_plan(updated, event_type="cancel", publish=publish)
-        return PlanActionResponse(plan_id=plan_id, status="cancelled", current_step_id=None)
+        stored = await self.save_plan(updated, event_type="cancel", publish=publish)
+        return PlanActionResponse(
+            plan_id=plan_id,
+            status="cancelled",
+            current_step_id=None,
+            state_version=stored.state_version,
+        )
 
     async def apply_agent_event(
         self,
@@ -343,6 +394,9 @@ class PlanService:
                 "current_step_id": current_step_id,
                 "status": plan_status,
                 "last_event_id": event.event_id,
+                "next_action": (
+                    None if event_status in {"completed", "failed"} else plan.next_action
+                ),
             }
         )
         return await self.save_plan(

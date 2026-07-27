@@ -8,7 +8,7 @@
 
 ## API Surface
 
-- Central：Route、Navigation Event、Agent Event、Plan Confirm。
+- Central：Route、Navigation Event、Agent Event、Active Plan Snapshot、Plan Confirm。
 - Registry：GET、POST、PUT、enabled PATCH、DELETE。
 - Knowledge：Search、Grouped Search、Exact Read、Assets、Chunks。
 - Knowledge Admin：Upload、List、Detail、Chunks、Retry、Delete。

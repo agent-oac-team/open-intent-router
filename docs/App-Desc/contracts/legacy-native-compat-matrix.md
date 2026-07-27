@@ -5,6 +5,7 @@
 | `POST /api/v1/central/route` | route_stateful | Routing、Turn、Delegated Run | 仅 `not_accepted` |
 | `POST /api/v1/central/events/navigation` | runtime_write | Events | 禁止 |
 | `POST /api/v1/central/events/agent` | runtime_write | Delegated Run、Events | 禁止 |
+| `GET /api/v1/central/active-plan` | read_only | Plans | 禁止 |
 | `POST /api/v1/central/plans/{id}/confirm` | runtime_write | Plans | 禁止 |
 | `GET /api/v1/admin/agent-registry` | read_only | Registry | 按策略只读 |
 | Registry POST/PUT/PATCH/DELETE | control_write | Registry | 禁止 |

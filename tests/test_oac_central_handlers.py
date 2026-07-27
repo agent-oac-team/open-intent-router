@@ -17,7 +17,7 @@ from app.schemas.delegated_runs import (
 )
 from app.schemas.events import AgentEventResponse
 from app.schemas.execution_traces import ExecutionTraceQuery
-from app.schemas.plans import Plan, PlanActionResponse, PlanStep
+from app.schemas.plans import NextAction, Plan, PlanActionResponse, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketService
@@ -54,6 +54,8 @@ class RoutingPort:
                 tenant_id="oac",
                 user_id="trusted-user",
                 session_id=request.session_id,
+                state_version=4,
+                next_action=NextAction(type="confirm_plan", plan_id="plan-1"),
                 steps=[PlanStep(step_id="step-1", agent_id="agent-1", description="do it")],
             )
         return RouteResponse(
@@ -247,6 +249,8 @@ class EventPort:
 
 class PlanPort:
     def __init__(self) -> None:
+        self.confirm_request_id = None
+        self.accepted_confirm_request_id = None
         self.plan = Plan(
             plan_id="plan-1",
             tenant_id="oac",
@@ -258,11 +262,42 @@ class PlanPort:
     async def get_plan(self, plan_id, *, tenant_id, user_id):
         return self.plan if (tenant_id, user_id) == ("oac", "trusted-user") else None
 
-    async def confirm(self, plan_id, *, tenant_id, user_id, publish=True):
+    async def get_active_plan(self, session_id, *, tenant_id, user_id):
+        if (
+            session_id == self.plan.session_id
+            and (tenant_id, user_id) == ("oac", "trusted-user")
+            and self.plan.status in {"pending", "running", "blocked"}
+        ):
+            return self.plan
+        return None
+
+    async def confirm(
+        self,
+        plan_id,
+        *,
+        tenant_id,
+        user_id,
+        request_id=None,
+        expected_state_version=None,
+        publish=True,
+    ):
+        del publish
+        self.confirm_request_id = request_id
+        transitioned = request_id == self.accepted_confirm_request_id or (
+            self.plan.state_version == expected_state_version and self.plan.status == "pending"
+        )
+        if transitioned:
+            if self.plan.status == "pending":
+                self.accepted_confirm_request_id = request_id
+                self.plan = self.plan.model_copy(
+                    update={"status": "running", "state_version": self.plan.state_version + 1}
+                )
         return PlanActionResponse(
             plan_id=plan_id,
-            status="running",
-            current_step_id="step-1",
+            status=self.plan.status,
+            current_step_id=self.plan.current_step_id,
+            state_version=self.plan.state_version,
+            transitioned=transitioned,
         )
 
 
@@ -615,6 +650,7 @@ def test_pre_cutover_agent_event_is_quarantined_before_core_mutation() -> None:
 
 def test_navigation_and_plan_confirm_keep_legacy_status_and_shape() -> None:
     client, _, events = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     navigation = client.post(
         "/api/v1/central/events/navigation",
         json={
@@ -629,12 +665,41 @@ def test_navigation_and_plan_confirm_keep_legacy_status_and_shape() -> None:
     assert navigation.json() == {"accepted": True}
     assert events.navigation[0].user_id == "trusted-user"
 
-    confirm = client.post("/api/v1/central/plans/plan-1/confirm")
+    confirm = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-1", "expected_state_version": 0},
+    )
     assert confirm.status_code == 200
+    assert ports.plans.confirm_request_id == "confirm-1"
     assert confirm.json()["current_step"]["runtime_status"] == "running"
-    duplicate = client.post("/api/v1/central/plans/plan-1/confirm")
+    duplicate = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-1", "expected_state_version": 0},
+    )
     assert duplicate.status_code == 200
-    assert duplicate.json() == confirm.json()
+    assert duplicate.json()["status"] == confirm.json()["status"] == "running"
+    assert duplicate.json()["state_version"] == confirm.json()["state_version"]
+    assert duplicate.json()["conflict"] is False
+    stale = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-2", "expected_state_version": 0},
+    )
+    assert stale.status_code == 200
+    assert stale.json()["conflict"] is True
+
+    active = client.get("/api/v1/central/active-plan?session_id=session-1")
+    assert active.status_code == 200
+    assert active.json()["plan"]["status"] == "running"
+    assert active.json()["plan"]["state_version"] == confirm.json()["state_version"]
+
+
+def test_active_plan_does_not_disclose_another_users_plan() -> None:
+    client, _, _ = _client(user_id="other-user")
+
+    active = client.get("/api/v1/central/active-plan?session_id=session-1")
+
+    assert active.status_code == 200
+    assert active.json() == {"plan": None}
 
 
 @pytest.mark.parametrize(
@@ -714,7 +779,10 @@ class StubIRSRouteClient:
         }
 
     other_client, _, _ = _client(user_id="other-user")
-    rejected = other_client.post("/api/v1/central/plans/plan-1/confirm")
+    rejected = other_client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-other", "expected_state_version": 0},
+    )
     assert rejected.status_code == 404
 
 
@@ -777,6 +845,9 @@ def test_central_route_e2e_covers_all_legacy_actions(action, expects_ticket) -> 
     assert response.json()["route"]["action"] == action
     assert bool(response.json().get("execution_ticket")) is expects_ticket
     assert bool(response.json().get("plan")) is (action == "show_plan")
+    if action == "show_plan":
+        assert response.json()["plan"]["state_version"] == 4
+        assert response.json()["next_action"]["type"] == "confirm_plan"
 
 
 def test_completed_agent_event_retry_returns_duplicate_without_second_effect() -> None:

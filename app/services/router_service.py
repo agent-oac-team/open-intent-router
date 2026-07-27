@@ -27,7 +27,7 @@ from app.schemas.turns import TurnUserInput
 from app.services.context_service import ContextService
 from app.services.invocation_service import build_invocation_input, missing_required_inputs
 from app.services.plan_builder import build_ordered_plan_from_text
-from app.services.plan_service import PlanService
+from app.services.plan_service import PlanService, PlanStateConflict
 from app.services.registry_service import AgentRegistryService
 from app.services.task_continuation import requests_plan_continuation
 from app.services.turn_service import TurnService
@@ -206,6 +206,7 @@ class RouterService:
         output = self._ensure_plan_for_multi_task(output, request, candidates)
         output = self._deny_unavailable_plan_agents(output)
         output = self._collapse_single_step_plan(output, request)
+        output = self._normalize_agent_continuation(output, request)
         output = await self._apply_plan_policy(output)
         output = output.model_copy(update={"request_id": request_id})
         output = await self._post_validate(output, request)
@@ -230,11 +231,32 @@ class RouterService:
     ) -> RouteResponse | None:
         if request.source not in {"plan_control", "agent_event"} or active_plan is None:
             return None
-        if (
-            active_plan.status in {"completed", "failed", "cancelled"}
-            or not active_plan.current_step_id
-        ):
-            return None
+        if active_plan.status in {"completed", "failed", "cancelled"}:
+            message = {
+                "completed": "计划已完成。",
+                "failed": "计划执行失败。",
+                "cancelled": "计划已取消。",
+            }[active_plan.status]
+            response = RouteResponse(
+                request_id=request.request_id or f"req_{uuid4().hex}",
+                session_id=request.session_id,
+                assistant_message=message,
+                decision=RouteDecision(
+                    status="ok",
+                    action="reply",
+                    confidence=1.0,
+                    reason="Return the Canonical terminal Plan state.",
+                    message=message,
+                ),
+                context=base_context.model_copy(
+                    update={"relation": "continue_current", "current_agent_id": None}
+                ),
+                plan=active_plan,
+                next_action=None,
+            )
+            return await self._after_route(request, response)
+        if not active_plan.current_step_id:
+            raise RoutingError("Active Plan current step is missing")
         step = next(
             (item for item in active_plan.steps if item.step_id == active_plan.current_step_id),
             None,
@@ -243,6 +265,9 @@ class RouterService:
             raise RoutingError("Active Plan current step is missing")
         if step.agent_id not in base_context.candidate_agent_ids:
             raise RoutingError("Active Plan step is outside the candidate set")
+        agent = await self.registry.get_definition(step.agent_id)
+        if agent is None:
+            raise RoutingError("Active Plan Agent no longer exists")
         response = RouteResponse(
             request_id=request.request_id or f"req_{uuid4().hex}",
             session_id=request.session_id,
@@ -264,6 +289,12 @@ class RouterService:
             ),
             plan=active_plan,
         )
+        response = self._project_controlled_plan_step(
+            response,
+            request=request,
+            agent=agent,
+            step=step,
+        )
         response = await self._clarify_or_attach_invocation(
             response,
             request,
@@ -272,6 +303,57 @@ class RouterService:
         )
         response = self._finalize_assistant_message(response)
         return await self._after_route(request, response)
+
+    def _project_controlled_plan_step(
+        self,
+        response: RouteResponse,
+        *,
+        request: RouteRequest,
+        agent: AgentDefinition,
+        step,
+    ) -> RouteResponse:
+        plan = response.plan
+        if plan is None:
+            return response
+        invocation_input = _build_invocation_input(agent, response, request)
+        missing = _missing_required_inputs(agent, invocation_input)
+        if missing:
+            message = f"请补充以下信息后再继续：{', '.join(missing)}。"
+            next_action = NextAction(
+                type="collect_input",
+                message=message,
+                agent_id=agent.agent_id,
+                plan_id=plan.plan_id,
+                step_id=step.step_id,
+                params={"missing_inputs": missing},
+                metadata={"missing_inputs": missing, "target_agent_id": agent.agent_id},
+            )
+        elif agent.type == "ui_handoff":
+            next_action = NextAction(
+                type="open_ui",
+                message="需要打开对应页面继续执行。",
+                agent_id=agent.agent_id,
+                plan_id=plan.plan_id,
+                step_id=step.step_id,
+                route=agent.ui_handoff.route,
+                params=agent.ui_handoff.params,
+            )
+        else:
+            next_action = NextAction(
+                type="wait_for_agent_event",
+                message="当前步骤正在执行，等待 Agent 返回结果。",
+                agent_id=agent.agent_id,
+                plan_id=plan.plan_id,
+                step_id=step.step_id,
+            )
+        steps = [
+            item.model_copy(update={"status": "blocked"}) if item.step_id == step.step_id else item
+            for item in plan.steps
+        ]
+        projected = plan.model_copy(
+            update={"status": "blocked", "steps": steps, "next_action": next_action}
+        )
+        return response.model_copy(update={"plan": projected, "next_action": next_action})
 
     async def route_decision_shadow(self, request: RouteRequest) -> RouteResponse:
         shadow = copy(self)
@@ -416,11 +498,7 @@ class RouterService:
                 }
             )
 
-        reason = (
-            "agent_session_missing"
-            if target == current
-            else "target_differs_from_prior_agent"
-        )
+        reason = "agent_session_missing" if target == current else "target_differs_from_prior_agent"
         metadata = {
             **output.context.metadata,
             "route_normalization": {
@@ -435,9 +513,7 @@ class RouterService:
                 "context": output.context.model_copy(
                     update={
                         "relation": (
-                            "switch_agent"
-                            if current and target != current
-                            else "new_task"
+                            "switch_agent" if current and target != current else "new_task"
                         ),
                         "current_agent_id": None,
                         "metadata": metadata,
@@ -831,7 +907,25 @@ class RouterService:
 
     async def _after_route(self, request: RouteRequest, response: RouteResponse) -> RouteResponse:
         if self.plan_service and response.plan is not None:
-            await self.plan_service.save_plan(response.plan)
+            existing = await self.plan_service.get_plan(
+                response.plan.plan_id,
+                tenant_id=response.plan.tenant_id,
+                user_id=response.plan.user_id,
+            )
+            if existing is None or response.plan != existing:
+                try:
+                    stored = await self.plan_service.save_plan(response.plan)
+                except PlanStateConflict:
+                    stored = await self.plan_service.get_plan(
+                        response.plan.plan_id,
+                        tenant_id=response.plan.tenant_id,
+                        user_id=response.plan.user_id,
+                    )
+                    if stored is None:
+                        raise
+                response = response.model_copy(
+                    update={"plan": stored, "next_action": stored.next_action}
+                )
         if self.turn_service and response.plan is not None:
             tenant_id = request.user.tenant_id
             if not tenant_id:

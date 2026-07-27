@@ -104,6 +104,11 @@ async def test_duplicate_event_replays_plan_projection_after_first_publish_failu
             user_id="u1",
             tenant_id="t1",
             session_id="s1",
+            next_action={
+                "type": "wait_for_agent_event",
+                "plan_id": "p_state",
+                "step_id": "s1",
+            },
             steps=[{"step_id": "s1", "agent_id": "summarizer", "description": "run"}],
         )
     )
@@ -246,6 +251,7 @@ async def test_agent_event_mapping_and_terminal_state_do_not_regress() -> None:
         user_id="u1",
     )
     assert completed and completed.status == "completed" and completed.current_step_id is None
+    assert completed.next_action is None
     late = await service.apply_agent_event(
         AgentEvent(
             event_id="event_late_running",

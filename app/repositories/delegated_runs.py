@@ -1186,6 +1186,7 @@ def _complete_plan_step(plan: Plan, command: DelegatedRunCompleteCommand) -> Pla
             "steps": steps,
             "status": "completed" if remaining is None else "running",
             "current_step_id": remaining,
+            "next_action": None,
             "state_version": plan.state_version + 1,
             "last_event_id": command.event_id,
             "updated_at": command.occurred_at,
@@ -1275,6 +1276,16 @@ async def _fail_plan_step(
     plan.status = "failed"
     plan.current_step_id = None
     plan.state_version += 1
+    metadata = loads(plan.original_query, {})
+    metadata.update(
+        {
+            "next_action": None,
+            "last_event_id": command.event_id,
+            "state_version": plan.state_version,
+            "formation_event_type": "update",
+        }
+    )
+    plan.original_query = dumps(metadata)
     plan.updated_at = command.occurred_at
 
 
@@ -1300,6 +1311,7 @@ def _failed_plan(
             "steps": steps,
             "status": "failed",
             "current_step_id": None,
+            "next_action": None,
             "state_version": plan.state_version + 1,
             "last_event_id": command.event_id,
             "updated_at": failed_at,

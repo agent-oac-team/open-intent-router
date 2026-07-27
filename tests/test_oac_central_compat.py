@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from app.schemas.common import ArtifactRef, UserContext
-from app.schemas.plans import Plan, PlanActionResponse, PlanStep
+from app.schemas.plans import NextAction, Plan, PlanActionResponse, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
 from host_adapters.oac.mappers.central import (
     agent_event_to_native,
@@ -150,6 +150,8 @@ def test_event_navigation_and_plan_mappers_preserve_legacy_semantics() -> None:
         session_id="session-1",
         status="running",
         current_step_id="step-1",
+        state_version=3,
+        next_action=NextAction(type="open_ui", route="/poster", step_id="step-1"),
         steps=[PlanStep(step_id="step-1", agent_id="agent-1", description="do it")],
     )
     projected = plan_confirm_to_compat(
@@ -163,6 +165,8 @@ def test_event_navigation_and_plan_mappers_preserve_legacy_semantics() -> None:
         "description": "do it",
         "runtime_status": "running",
     }
+    assert projected.state_version == 3
+    assert projected.next_action and projected.next_action.type == "open_ui"
 
 
 def test_error_projection_hides_internal_failures() -> None:

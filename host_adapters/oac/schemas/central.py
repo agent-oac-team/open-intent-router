@@ -71,10 +71,26 @@ class LegacyPlanStep(StrictBaseModel):
     runtime_status: str | None = None
 
 
+class LegacyNextAction(StrictBaseModel):
+    type: Literal["confirm_plan", "open_ui", "collect_input", "wait_for_agent_event", "none"] = (
+        "none"
+    )
+    message: str = ""
+    agent_id: str | None = None
+    plan_id: str | None = None
+    step_id: str | None = None
+    route: str | None = None
+    params: JsonDict = Field(default_factory=dict)
+    metadata: JsonDict = Field(default_factory=dict)
+
+
 class LegacyPlan(StrictBaseModel):
     plan_id: str
     current_step: str
     steps: list[LegacyPlanStep]
+    status: str = "pending"
+    state_version: int = Field(default=0, ge=0)
+    next_action: LegacyNextAction | None = None
 
 
 class CentralRouteResponse(StrictBaseModel):
@@ -83,7 +99,12 @@ class CentralRouteResponse(StrictBaseModel):
     route: LegacyRoute
     context: LegacyRouteContext
     plan: LegacyPlan | None = None
+    next_action: LegacyNextAction | None = None
     execution_ticket: str | None = None
+
+
+class ActivePlanResponse(StrictBaseModel):
+    plan: LegacyPlan | None = None
 
 
 class NavigationEventRequest(StrictBaseModel):
@@ -135,6 +156,14 @@ class PlanConfirmResponse(StrictBaseModel):
     status: str
     current_step_id: str | None = None
     current_step: JsonDict | None = None
+    state_version: int = Field(default=0, ge=0)
+    next_action: LegacyNextAction | None = None
+    conflict: bool = False
+
+
+class PlanConfirmRequest(StrictBaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    expected_state_version: int = Field(ge=0)
 
 
 class CompatErrorResponse(StrictBaseModel):

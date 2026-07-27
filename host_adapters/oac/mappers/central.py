@@ -76,7 +76,10 @@ def route_response_to_compat(
             relation=response.context.relation,
             artifact_refs=[_artifact_id(item) for item in response.context.artifact_refs],
         ),
-        plan=_plan_to_legacy(response.plan) if response.plan else None,
+        plan=plan_to_compat(response.plan) if response.plan else None,
+        next_action=_next_action_to_compat(
+            response.next_action or (response.plan.next_action if response.plan else None)
+        ),
         execution_ticket=execution_ticket,
     )
 
@@ -152,6 +155,8 @@ def plan_confirm_to_compat(response: PlanActionResponse, *, plan: Plan) -> PlanC
             if step
             else None
         ),
+        state_version=plan.state_version,
+        next_action=_next_action_to_compat(plan.next_action),
     )
 
 
@@ -179,11 +184,14 @@ def _artifact_id(item: ArtifactRef) -> str:
     return item.artifact_id
 
 
-def _plan_to_legacy(plan: Plan) -> LegacyPlan:
+def plan_to_compat(plan: Plan) -> LegacyPlan:
     current = plan.current_step_id or (plan.steps[0].step_id if plan.steps else "")
     return LegacyPlan(
         plan_id=plan.plan_id,
         current_step=current,
+        status=plan.status,
+        state_version=plan.state_version,
+        next_action=_next_action_to_compat(plan.next_action),
         steps=[
             LegacyPlanStep(
                 step_id=step.step_id,
@@ -194,3 +202,7 @@ def _plan_to_legacy(plan: Plan) -> LegacyPlan:
             for step in plan.steps
         ],
     )
+
+
+def _next_action_to_compat(next_action):
+    return next_action.model_dump(mode="json") if next_action is not None else None

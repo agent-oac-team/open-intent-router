@@ -227,6 +227,8 @@ class PlanApplicationPort(Protocol):
         *,
         tenant_id: str,
         user_id: str,
+        request_id: str | None = None,
+        expected_state_version: int | None = None,
         publish: bool = True,
     ) -> PlanActionResponse: ...
 

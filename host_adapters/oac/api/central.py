@@ -33,17 +33,20 @@ from host_adapters.oac.mappers.central import (
     agent_event_to_native,
     navigation_event_to_native,
     plan_confirm_to_compat,
+    plan_to_compat,
     project_error,
     route_request_to_native,
     route_response_to_compat,
 )
 from host_adapters.oac.schemas.central import (
     AcceptedResponse,
+    ActivePlanResponse,
     AgentEventCompatResponse,
     AgentEventRequest,
     CentralRouteRequest,
     CentralRouteResponse,
     NavigationEventRequest,
+    PlanConfirmRequest,
     PlanConfirmResponse,
 )
 from host_apps.oac.config import OacHostSettings, get_oac_host_settings
@@ -57,6 +60,21 @@ from host_apps.oac.dependencies import (
 )
 
 router = APIRouter(prefix="/api/v1/central", tags=["legacy-central"])
+
+
+@router.get("/active-plan", response_model=ActivePlanResponse)
+async def active_plan(
+    session_id: str,
+    identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
+    ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
+) -> ActivePlanResponse:
+    _authorize(identity, "read_only")
+    plan = await ports.plans.get_active_plan(
+        session_id,
+        tenant_id=identity.tenant_id,
+        user_id=identity.user_id,
+    )
+    return ActivePlanResponse(plan=plan_to_compat(plan) if plan is not None else None)
 
 
 @router.post("/route", response_model=CentralRouteResponse)
@@ -621,6 +639,7 @@ async def agent_event(
 @router.post("/plans/{plan_id}/confirm", response_model=PlanConfirmResponse)
 async def confirm_plan(
     plan_id: str,
+    request: PlanConfirmRequest,
     identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
     ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
 ) -> PlanConfirmResponse:
@@ -637,8 +656,18 @@ async def confirm_plan(
             plan_id,
             tenant_id=identity.tenant_id,
             user_id=identity.user_id,
+            request_id=request.request_id,
+            expected_state_version=request.expected_state_version,
         )
-        return plan_confirm_to_compat(response, plan=plan)
+        canonical = await ports.plans.get_plan(
+            plan_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+        )
+        if canonical is None:
+            raise KeyError(plan_id)
+        projected = plan_confirm_to_compat(response, plan=canonical)
+        return projected.model_copy(update={"conflict": not response.transitioned})
     except Exception as exc:
         _raise_projected(exc)
 

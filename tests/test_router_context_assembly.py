@@ -295,8 +295,7 @@ async def test_enforced_router_projection_contains_all_governed_backend_sources(
         RouteRequest.model_validate(
             {
                 "session_id": "full_session",
-                "source": "agent_event",
-                "event_id": "full_event",
+                "source": "host_chat",
                 "user": {"id": "u1", "roles": ["operator"], "attributes": {"tenant_id": "t1"}},
                 "input": {"text": "continue"},
                 "current_agent": {"agent_id": "summarizer"},

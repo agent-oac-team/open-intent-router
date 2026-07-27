@@ -3,7 +3,7 @@ import pytest
 from app.core.config import Settings
 from app.core.errors import RoutingError
 from app.plugins.evidence import EvidenceResult
-from app.repositories.memory import MemoryAgentDefinitionRepository
+from app.repositories.memory import MemoryAgentDefinitionRepository, MemoryPlanRepository
 from app.schemas.agents import (
     AccessPolicy,
     AgentDefinition,
@@ -13,6 +13,7 @@ from app.schemas.agents import (
 )
 from app.schemas.plans import Plan, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
+from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
 
@@ -30,6 +31,30 @@ def _agent(agent_id: str, entitlements: list[str]) -> AgentDefinition:
         access_policy=AccessPolicy(allow_tenants=["oac"], any_entitlements=entitlements),
         invocation=InvocationSpec(type="ui_handoff"),
         ui_handoff=UiHandoffSpec(mode="route", route=f"/{agent_id}"),
+    )
+
+
+def _provider_agent(
+    agent_id: str,
+    entitlements: list[str],
+    *,
+    required_inputs: list[str] | None = None,
+) -> AgentDefinition:
+    required = required_inputs or []
+    return AgentDefinition(
+        agent_id=agent_id,
+        name=agent_id,
+        description=f"{agent_id} provider",
+        type="provider_platform",
+        trigger=TriggerSpec(keywords=[agent_id]),
+        access_policy=AccessPolicy(allow_tenants=["oac"], any_entitlements=entitlements),
+        required_inputs=required,
+        input_schema={
+            "type": "object",
+            "properties": {item: {"type": "string"} for item in required},
+            "required": required,
+        },
+        invocation=InvocationSpec(type="provider_platform"),
     )
 
 
@@ -71,6 +96,24 @@ def _request(
             "agent_session_id": current_agent_session_id,
         }
     return RouteRequest.model_validate(payload)
+
+
+def _plan_request(plan_id: str) -> RouteRequest:
+    return RouteRequest.model_validate(
+        {
+            "request_id": f"route-{plan_id}",
+            "session_id": "session-1",
+            "source": "plan_control",
+            "plan_id": plan_id,
+            "user": {
+                "id": "42",
+                "roles": ["operator"],
+                "entitlements": [OPS],
+                "attributes": {"tenant_id": "oac"},
+            },
+            "input": {"text": "continue"},
+        }
+    )
 
 
 class SelectFirstLLM:
@@ -153,6 +196,23 @@ class UnauthorizedPlanLLM:
                         description="unauthorized",
                     )
                 ],
+            ),
+        )
+
+
+class SingleStepCurrentAgentPlanLLM:
+    async def route(self, payload):
+        target = payload.candidates[0].agent_id
+        return RouteResponse(
+            request_id=payload.request.request_id or "request-single-plan",
+            session_id=payload.request.session_id,
+            decision=RouteDecision(action="show_plan"),
+            context=RouteContext(candidate_agent_ids=[target], relation="multi_task"),
+            plan=Plan(
+                plan_id="single-plan",
+                tenant_id="forged",
+                user_id="forged",
+                steps=[PlanStep(step_id="step-1", agent_id=target, description="single")],
             ),
         )
 
@@ -350,6 +410,29 @@ async def test_continue_agent_without_agent_session_opens_a_new_agent_run() -> N
     assert response.context.metadata["route_normalization"]["reason"] == "agent_session_missing"
 
 
+async def test_collapsed_single_step_plan_without_agent_session_opens_a_new_run() -> None:
+    registry = await _registry(_agent("strategy_analysis", [OPS]))
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=SingleStepCurrentAgentPlanLLM(),
+    ).route(
+        _request(
+            OPS,
+            "继续完成这一项",
+            current_agent="strategy_analysis",
+            current_agent_session_id=None,
+        )
+    )
+
+    assert response.plan is None
+    assert response.decision.action == "open_agent"
+    assert response.decision.target_agent_id == "strategy_analysis"
+    assert response.context.relation == "new_task"
+    assert response.context.current_agent_id is None
+    assert response.context.metadata["route_normalization"]["reason"] == "agent_session_missing"
+
+
 @pytest.mark.parametrize(
     "text",
     ["内容生产", "我喜欢给客户的文案是温和的风格"],
@@ -380,3 +463,151 @@ async def test_reported_preference_input_is_valid_without_prior_agent_evidence()
 
     assert response.decision.action == "open_agent"
     assert response.decision.target_agent_id == "strategy_analysis"
+
+
+async def test_confirmed_ui_plan_projects_one_canonical_open_ui_action() -> None:
+    registry = await _registry(_agent("marketing_poster", [OPS]))
+    plans = PlanService(MemoryPlanRepository())
+    created = await plans.save_plan(
+        Plan(
+            plan_id="ui-plan",
+            tenant_id="oac",
+            user_id="42",
+            session_id="session-1",
+            status="running",
+            steps=[
+                PlanStep(
+                    step_id="poster-step",
+                    agent_id="marketing_poster",
+                    description="open poster",
+                )
+            ],
+        )
+    )
+    service = RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=MustNotRun(),
+        plan_service=plans,
+    )
+
+    response = await service.route(_plan_request("ui-plan"))
+    replay = await service.route(_plan_request("ui-plan"))
+
+    assert response.plan is not None
+    assert response.plan.status == "blocked"
+    assert response.plan.steps[0].status == "blocked"
+    assert response.plan.next_action is not None
+    assert response.plan.next_action.type == "open_ui"
+    assert response.plan.next_action.route == "/marketing_poster"
+    assert response.next_action == response.plan.next_action
+    assert response.plan.state_version == created.state_version + 1
+    assert replay.plan is not None
+    assert replay.plan.state_version == response.plan.state_version
+
+
+async def test_confirmed_provider_plan_projects_wait_for_agent_event() -> None:
+    registry = await _registry(_provider_agent("content_production", [OPS]))
+    plans = PlanService(MemoryPlanRepository())
+    await plans.save_plan(
+        Plan(
+            plan_id="provider-plan",
+            tenant_id="oac",
+            user_id="42",
+            session_id="session-1",
+            status="running",
+            steps=[
+                PlanStep(
+                    step_id="content-step",
+                    agent_id="content_production",
+                    description="produce content",
+                )
+            ],
+        )
+    )
+
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=MustNotRun(),
+        plan_service=plans,
+    ).route(_plan_request("provider-plan"))
+
+    assert response.plan is not None
+    assert response.plan.status == "blocked"
+    assert response.plan.next_action is not None
+    assert response.plan.next_action.type == "wait_for_agent_event"
+    assert response.plan.next_action.agent_id == "content_production"
+    assert response.invocation is not None
+
+
+async def test_confirmed_plan_with_missing_input_projects_collect_input() -> None:
+    registry = await _registry(
+        _provider_agent("content_production", [OPS], required_inputs=["topic"])
+    )
+    plans = PlanService(MemoryPlanRepository())
+    await plans.save_plan(
+        Plan(
+            plan_id="input-plan",
+            tenant_id="oac",
+            user_id="42",
+            session_id="session-1",
+            status="running",
+            steps=[
+                PlanStep(
+                    step_id="content-step",
+                    agent_id="content_production",
+                    description="produce content",
+                )
+            ],
+        )
+    )
+
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=MustNotRun(),
+        plan_service=plans,
+    ).route(_plan_request("input-plan"))
+
+    assert response.plan is not None
+    assert response.plan.status == "blocked"
+    assert response.plan.next_action is not None
+    assert response.plan.next_action.type == "collect_input"
+    assert response.plan.next_action.metadata["missing_inputs"] == ["topic"]
+    assert response.decision.action == "clarify"
+    assert response.invocation is None
+
+
+async def test_terminal_plan_control_returns_canonical_completion_without_llm() -> None:
+    registry = await _registry(_agent("marketing_poster", [OPS]))
+    plans = PlanService(MemoryPlanRepository())
+    completed = await plans.save_plan(
+        Plan(
+            plan_id="completed-plan",
+            tenant_id="oac",
+            user_id="42",
+            session_id="session-1",
+            status="completed",
+            steps=[
+                PlanStep(
+                    step_id="poster-step",
+                    agent_id="marketing_poster",
+                    description="open poster",
+                    status="completed",
+                )
+            ],
+        )
+    )
+
+    response = await RouterService(
+        settings=registry.settings,
+        registry=registry,
+        llm_client=MustNotRun(),
+        plan_service=plans,
+    ).route(_plan_request("completed-plan"))
+
+    assert response.decision.action == "reply"
+    assert response.assistant_message == "计划已完成。"
+    assert response.plan == completed
+    assert response.next_action is None

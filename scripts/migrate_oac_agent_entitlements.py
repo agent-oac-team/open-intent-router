@@ -19,7 +19,7 @@ from host_adapters.oac.authz import OAC_BUNDLE_CATALOG  # noqa: E402
 BASELINE = {
     "strategy_analysis": (
         ("展业版", "运营版"),
-        "6671724190f0922131f564f3aa2d4950e4ec753d8dd02a475244c1b6f372aaf1",
+        "12950a69672629371ee0bdcf6397d2bd3990c7b46d497be6325e4adf12f59527",
     ),
     "compliance_review": (
         ("展业版", "运营版"),

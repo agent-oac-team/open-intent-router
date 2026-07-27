@@ -80,6 +80,8 @@ class PlanActionResponse(StrictBaseModel):
     status: PlanStatus
     current_step_id: str | None = None
     next_action: NextAction | None = None
+    state_version: int = Field(default=0, ge=0)
+    transitioned: bool = False
 
 
 class PlanExecutionRequest(StrictBaseModel):

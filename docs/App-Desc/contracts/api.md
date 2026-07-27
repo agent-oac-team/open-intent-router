@@ -301,6 +301,16 @@ Execution Trace 是 append-only 的观察投影，不是 Turn、Run、Result、M
 
 `source_repaired` 是带真实 offset 的 `trace_integrity` 补写事件，只说明来源投影已修复，不会把 Snapshot 标记为 `recovered=true`。只有查询时从已有终态 Canonical Turn 重建终态观察摘要，Snapshot 才返回 `recovered=true`，并提供有界 `recovered_state={source:"canonical_turn",status,outcome,state_version}`。该恢复不合成中间事件，也不把不完整 Trace 改判为完整。
 
+## OAC Plan Host Adapter
+
+以下入口属于 OAC Host Adapter，只接受受信 V2 User Host 身份。Plan 的 `status`、`state_version`、当前 Step 和 `next_action` 均来自 OIR Canonical Plan，OAC Session 消息和浏览器本地状态不得覆盖这些字段。
+
+- `GET /api/v1/central/active-plan?session_id={session_id}`：返回当前 owner 在该 OIR Session 中最新的 `pending/running/blocked` Plan；没有 Active Plan 时返回 `plan=null`。用于刷新、跨标签页和跨设备恢复，不返回其他用户或租户的 Plan。
+- `POST /api/v1/central/plans/{plan_id}/confirm`：请求体必须包含稳定 `request_id` 和 `expected_state_version`，成功转换时将 `request_id` 记录为确认事件身份。同一确认身份的重放仍被识别为该转换的 owner，允许宿主从响应中断处继续；其他并发、陈旧或终态请求返回最新 Canonical Plan，并以 `conflict=true` 阻止宿主再次创建受控路由或 Provider 副作用。
+- `POST /api/v1/central/route` 的 `source=plan_control|agent_event`：对当前 Step 按 Registry 定义投影唯一协作动作。UI Handoff 返回 `blocked + open_ui`；缺少输入返回 `blocked + collect_input`；外部 Agent 返回 `blocked + wait_for_agent_event`。终态 Plan 直接返回 Canonical 完成、失败或取消状态，不重新交给 LLM 判断。
+
+兼容 Plan 响应包含 `status`、`state_version` 和 `next_action`。`next_action` 是唯一 Host 协作指令；终态必须清除陈旧动作。本期 OAC Host 未实现 Plan Step 重试契约，即使收到未知重试 metadata 也不展示重试按钮。
+
 ## Agent Entitlement 授权
 
 通用 `UserContext` 可携带 `entitlements: string[]`，Agent `access_policy` 可配置 `any_entitlements: string[]`。两者只接受安全 ASCII 值，去空、去重并稳定排序，按完整字符串精确匹配。`any_entitlements` 内部为 OR，与其他非空 Policy 维度为 AND；空数组保持旧 Policy 兼容。
