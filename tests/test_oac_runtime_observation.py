@@ -405,14 +405,25 @@ def test_page_workflow_projects_started_provider_stage_and_terminal_result() -> 
     }
 
     assert client.post(path, json={**base, "status": "started"}).status_code == 202
-    assert client.post(
-        path,
-        json={**base, "event_id": "stage-1", "status": "stage", "stage_name": "需求要素提取"},
-    ).status_code == 202
-    assert client.post(
-        path,
-        json={**base, "event_id": "completed", "status": "completed", "result_summary": "已形成需求分析"},
-    ).status_code == 202
+    assert (
+        client.post(
+            path,
+            json={**base, "event_id": "stage-1", "status": "stage", "stage_name": "需求要素提取"},
+        ).status_code
+        == 202
+    )
+    assert (
+        client.post(
+            path,
+            json={
+                **base,
+                "event_id": "completed",
+                "status": "completed",
+                "result_summary": "已形成需求分析",
+            },
+        ).status_code
+        == 202
+    )
 
     snapshot = asyncio.run(
         trace_service.snapshot(

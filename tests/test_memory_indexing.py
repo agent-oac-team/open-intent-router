@@ -330,9 +330,9 @@ async def test_index_worker_projects_claimed_and_completed_state_for_current_rev
 async def test_index_worker_projects_retry_with_out_of_sync_canonical_state() -> None:
     settings = _settings()
     repository, outbox, store = _stores()
-    item = _item(memory_id="mem_retry_trace", revision_id="rev_retry_trace", content="retry").model_copy(
-        update={"canonical_refs": ["turn_retry_trace"]}
-    )
+    item = _item(
+        memory_id="mem_retry_trace", revision_id="rev_retry_trace", content="retry"
+    ).model_copy(update={"canonical_refs": ["turn_retry_trace"]})
     await repository.add(item)
     await outbox.add(_index_add(item))
     turn_repository = MemoryTurnRepository()
