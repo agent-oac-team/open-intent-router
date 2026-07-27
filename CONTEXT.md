@@ -102,6 +102,18 @@ _避免_：Route Decision、Plan、Agent Run
 OIR 请求 Host App 打开页面或继续完成交互的协作结果，而不是后端业务执行。
 _避免_：后端 Invocation、直接页面跳转实现
 
+**Prior Agent Context（前序 Agent 上下文）**：
+关于前一轮 Agent Session 和最近一次 Agent Run 的受信事实，可作为本轮路由判断的 Evidence，但不表示该 Agent 仍可继续承接请求。
+_避免_：Current Agent、前端选中的 Agent、最近访问页面
+
+**Current Agent（当前 Agent）**：
+OIR 结合本轮 Intent、Entitlement 和有效 Agent Session，判断为本轮应继续承接请求的同一聊天 Agent；它是本轮 Route Decision 的结论，不是 Host 持久状态。
+_避免_：前端保存的 Agent ID、最后打开的 Agent、UI Handoff 目标
+
+**Agent Continuation（Agent 续接）**：
+在新的语义轮次中沿用同一 Agent Session，并建立新的 Agent Run；它不是向仍在运行的 Agent Run 插入指令。
+_避免_：复用终态 Agent Run、运行中追加指令、UI Handoff
+
 **Workflow（工作流）**：
 封装自身内部步骤的可路由能力；对 OIR 而言，它可以作为一个 Agent 被调用。
 _避免_：OIR Plan、任意多轮对话
@@ -119,7 +131,7 @@ _避免_：Agent Run、聊天消息
 _避免_：Route Action、Plan Status、权限策略
 
 **Next Action（下一步动作）**：
-OIR 明确要求用户或 Host App 在流程继续前完成的协作事项。
+OIR 明确要求用户或 Host App 在流程继续前完成的单一当前协作事项。
 _避免_：Route Decision、Plan Status、内部任务队列
 
 ### 运行事实
@@ -167,6 +179,14 @@ _避免_：Agent Run 状态、业务结果、默认完整
 **Recovered Snapshot（恢复快照）**：
 轨迹事件存在缺口时从 Canonical Data 恢复的当前状态投影，不代表原始事件顺序或缺失期间的实时过程。
 _避免_：Canonical Data、原始 Agent Event、推测的执行时间线
+
+**Execution Acceptance（执行受理）**：
+受信服务持久化稳定请求身份及适用的 Canonical Turn、Plan 或 Agent Run 身份，并承担把该执行推进到受控终态的时点。
+_避免_：浏览器开始 loading、HTTP 连接建立、用户点击发送
+
+**Execution Ownership（执行所有权）**：
+独立于观察客户端连接，推进已受理执行并持久化其状态与结果的责任。
+_避免_：React 组件生命周期、SSE 订阅、当前可见页面
 
 **Delegated Run（委托运行）**：
 由 Host App 或外部 Agent 执行、但仍由 OIR 跟踪所有权和生命周期的 Agent Run。
@@ -229,6 +249,14 @@ _避免_：Memory Revision、向量记录、Turn Capsule
 **Memory Revision（记忆修订）**：
 Memory Item 在一次受治理变化后的不可混淆版本。
 _避免_：新的 Memory Item、Provider 历史记录
+
+**Memory Index State（记忆索引状态）**：
+Memory Item 与其检索投影之间当前同步关系的规范事实，决定该 Memory 是否可被后续 Recall 使用。
+_避免_：Index Operation 状态、向量记录状态、Execution Trace 事件
+
+**Index Operation（索引操作）**：
+将特定 Memory Revision 同步到检索投影的一次可重试工作；其状态描述处理过程，不取代 Memory Index State。
+_避免_：Memory Item 可用状态、Memory Revision、Execution Trace 事件
 
 **Knowledge（知识）**：
 由组织管理、可被多个请求检索引用的参考内容，不是从某个用户对话形成的长期记忆。
