@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from app.repositories.memory_formation import (
     DatabaseMemoryFormationTurnJobRepository,
     MemoryFormationTurnJobRepository,
 )
+from app.repositories.memory_revisions import DatabaseMemoryRevisionLedgerRepository
 from app.repositories.memory_traces import (
     DatabaseMemoryFormationTraceRepository,
     MemoryFormationTraceRepository,
@@ -791,6 +793,215 @@ async def test_pending_update_confirm_is_preconditioned_and_idempotent(
         pass
     else:
         raise AssertionError("idempotency replay with a changed payload must conflict")
+
+
+async def test_pending_add_confirm_creates_revision_without_existing_target() -> None:
+    items, memory, _, _, _ = _services(Settings(storage_backend="memory", memory_mode="on"))
+    pending = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(content="Check weekend livestream lighting", confidence=0.8),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.AMBIGUOUS_CONFLICT,
+                suffix="pending-add",
+            ),
+            redacted_trace={},
+        )
+    )
+    traces = _TraceCollector()
+    management = MemoryManagementService(memory_service=memory, execution_traces=traces)
+
+    response = await management.resolve_pending(
+        decision_id=pending.event.event_id,
+        action="confirm",
+        tenant_id="t1",
+        user_id="u1",
+        actor="u1",
+        reason="approve new memory",
+        idempotency_key="trace-confirm-add-1",
+        expected_revision_id=None,
+        trace_session_id="session_1",
+        trace_turn_id="turn_1",
+    )
+    assert response.status == "completed"
+    assert response.memory_id
+    current = await items.get_by_id(response.memory_id, tenant_id="t1")
+    assert current and current.content == "Check weekend livestream lighting"
+    assert current.current_revision_no == 1
+    assert [event.event_type for event in traces.events] == [
+        "memory_decision",
+        "memory_revision",
+    ]
+    assert traces.events[0].facts["operation"] == "add"
+    assert traces.events[1].facts == {
+        "memory_id": current.memory_id,
+        "revision_id": current.current_revision_id,
+        "operation": "add",
+        "index_status": "pending",
+        "index_operation_status": "pending",
+    }
+    replay = await management.resolve_pending(
+        decision_id=pending.event.event_id,
+        action="confirm",
+        tenant_id="t1",
+        user_id="u1",
+        actor="u1",
+        reason="approve new memory",
+        idempotency_key="trace-confirm-add-1",
+        expected_revision_id=None,
+        trace_session_id="session_1",
+        trace_turn_id="turn_1",
+    )
+    assert replay.idempotent_replay is True
+    await _drain_memory_index(memory)
+    recalled = await memory.recall(
+        MemoryRecallRequest(
+            query="lighting",
+            user=UserContext(id="u1", attributes={"tenant_id": "t1"}),
+            scopes=["user_preference"],
+            max_items=10,
+        )
+    )
+    assert [item.content for item in recalled.context.items] == [
+        "Check weekend livestream lighting"
+    ]
+
+
+async def test_pending_add_concurrent_confirmation_creates_one_revision() -> None:
+    items, memory, _, _, management = _services(
+        Settings(storage_backend="memory", memory_mode="on")
+    )
+    pending = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(content="Check studio lighting", confidence=0.8),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.AMBIGUOUS_CONFLICT,
+                suffix="pending-add-concurrent",
+            ),
+            redacted_trace={},
+        )
+    )
+
+    async def confirm():
+        return await management.resolve_pending(
+            decision_id=pending.event.event_id,
+            action="confirm",
+            tenant_id="t1",
+            user_id="u1",
+            actor="u1",
+            reason="approve concurrent memory",
+            idempotency_key="confirm-add-concurrent",
+            expected_revision_id=None,
+        )
+
+    first, second = await asyncio.gather(confirm(), confirm())
+
+    assert first.memory_id == second.memory_id
+    active = await items.list_active(
+        tenant_id="t1",
+        user_id="u1",
+        scopes=["user_preference"],
+        limit=10,
+    )
+    assert len(active) == 1
+    assert active[0].current_revision_no == 1
+    operations = await memory.index_outbox.list_for_memory(active[0].memory_id, tenant_id="t1")
+    assert len([operation for operation in operations if operation.operation == "add"]) == 1
+    assert (
+        len([event for event in items.events if event.event_type == "memory_pending_confirm"]) == 1
+    )
+
+
+async def test_database_pending_add_concurrent_conflict_has_one_terminal_state(tmp_path) -> None:
+    settings = Settings(
+        storage_backend="database",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'add-resolution-concurrent.db'}",
+        memory_mode="on",
+    )
+    await create_all_tables(settings)
+    session_factory = create_session_factory(settings)
+    items = DatabaseMemoryItemRepository(session_factory)
+    formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
+    job = await formation.add_job(
+        MemoryFormationJob(
+            job_id="job_pending_add_concurrent",
+            trigger="structured_event",
+            mode="observe",
+            tenant_id="t1",
+            user_id="u1",
+            idempotency_key="job-pending-add-concurrent",
+            model_version="model-v1",
+            prompt_version="prompt-v1",
+            policy_version="policy-v1",
+        )
+    )
+    memory = MemoryService(
+        settings=settings,
+        repository=items,
+        formation_repository=formation,
+    )
+    pending = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(content="Check concurrent lighting", confidence=0.8),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.AMBIGUOUS_CONFLICT,
+                job_id=job.job_id,
+                suffix="pending-add-database-concurrent",
+            ),
+            redacted_trace={},
+        )
+    )
+    management = MemoryManagementService(memory_service=memory)
+
+    async def confirm(*, reason: str, idempotency_key: str):
+        return await management.resolve_pending(
+            decision_id=pending.event.event_id,
+            action="confirm",
+            tenant_id="t1",
+            user_id="u1",
+            actor="u1",
+            reason=reason,
+            idempotency_key=idempotency_key,
+            expected_revision_id=None,
+        )
+
+    results = await asyncio.gather(
+        confirm(reason="approve concurrent memory A", idempotency_key="confirm-add-database-a"),
+        confirm(reason="approve concurrent memory B", idempotency_key="confirm-add-database-b"),
+        return_exceptions=True,
+    )
+
+    completed = [result for result in results if not isinstance(result, BaseException)]
+    conflicts = [result for result in results if isinstance(result, MemoryManagementConflict)]
+    assert len(completed) == 1
+    assert len(conflicts) == 1
+    active = await items.list_active(
+        tenant_id="t1",
+        user_id="u1",
+        scopes=["user_preference"],
+        limit=10,
+    )
+    assert len(active) == 1
+    assert active[0].current_revision_id
+    revisions = await DatabaseMemoryRevisionLedgerRepository(session_factory).list_for_memory(
+        active[0].memory_id,
+        tenant_id="t1",
+        user_id="u1",
+        subject_type="user",
+        subject_id="u1",
+    )
+    assert [revision.revision_no for revision in revisions] == [1]
+    operations = await memory.index_outbox.list_for_memory(active[0].memory_id, tenant_id="t1")
+    assert len([operation for operation in operations if operation.operation == "add"]) == 1
+    events = await items.list_events(
+        tenant_id="t1", user_id="u1", memory_id=active[0].memory_id, limit=100
+    )
+    assert len([event for event in events if event.event_type == "memory_pending_confirm"]) == 1
 
 
 async def test_pending_resolution_projects_authoritative_trace_without_changing_outcome() -> None:
@@ -2223,4 +2434,113 @@ async def test_database_pending_delete_recovers_after_claim_only_restart(tmp_pat
     )
     assert recovered.status == "completed"
     assert len([operation for operation in operations if operation.operation == "delete"]) == 1
+    assert len([event for event in events if event.event_type == "memory_pending_confirm"]) == 1
+
+
+async def test_database_pending_add_recovers_after_completion_event_crash(tmp_path) -> None:
+    settings = Settings(
+        storage_backend="database",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'add-resolution-crash.db'}",
+        memory_mode="on",
+    )
+    await create_all_tables(settings)
+    session_factory = create_session_factory(settings)
+    items = DatabaseMemoryItemRepository(session_factory)
+    formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
+    job = await formation.add_job(
+        MemoryFormationJob(
+            job_id="job_pending_add_crash",
+            trigger="structured_event",
+            mode="observe",
+            tenant_id="t1",
+            user_id="u1",
+            idempotency_key="job-pending-add-crash",
+            model_version="model-v1",
+            prompt_version="prompt-v1",
+            policy_version="policy-v1",
+        )
+    )
+    memory = MemoryService(
+        settings=settings,
+        repository=items,
+        formation_repository=formation,
+    )
+    pending = await memory.lifecycle.apply(
+        CandidatePolicyResult(
+            candidate=_candidate(content="Check recovery lighting", confidence=0.8),
+            operation=_operation(
+                operation=MemoryOperation.PENDING,
+                status=MemoryDecisionStatus.PENDING,
+                reason=MemoryFormationReasonCode.AMBIGUOUS_CONFLICT,
+                job_id=job.job_id,
+                suffix="pending-add-crash",
+            ),
+            redacted_trace={},
+        )
+    )
+    management = MemoryManagementService(memory_service=memory)
+
+    async def crash_before_completion(**_kwargs):
+        raise RuntimeError("simulated process exit")
+
+    management._complete_resolution = crash_before_completion
+    with pytest.raises(RuntimeError, match="simulated process exit"):
+        await management.resolve_pending(
+            decision_id=pending.event.event_id,
+            action="confirm",
+            tenant_id="t1",
+            user_id="u1",
+            actor="u1",
+            reason="confirm persisted add",
+            idempotency_key="db-add-crash",
+            expected_revision_id=None,
+        )
+
+    restarted_items = DatabaseMemoryItemRepository(create_session_factory(settings))
+    restarted_formation = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    restarted_memory = MemoryService(
+        settings=settings,
+        repository=restarted_items,
+        formation_repository=restarted_formation,
+    )
+    recovered = await MemoryManagementService(memory_service=restarted_memory).resolve_pending(
+        decision_id=pending.event.event_id,
+        action="confirm",
+        tenant_id="t1",
+        user_id="u1",
+        actor="u1",
+        reason="confirm persisted add",
+        idempotency_key="db-add-crash",
+        expected_revision_id=None,
+    )
+
+    assert recovered.status == "completed"
+    assert recovered.memory_id
+    active = await restarted_items.list_active(
+        tenant_id="t1",
+        user_id="u1",
+        scopes=["user_preference"],
+        limit=10,
+    )
+    assert len(active) == 1
+    assert active[0].memory_id == recovered.memory_id
+    assert active[0].current_revision_id
+    revisions = await DatabaseMemoryRevisionLedgerRepository(
+        create_session_factory(settings)
+    ).list_for_memory(
+        recovered.memory_id,
+        tenant_id="t1",
+        user_id="u1",
+        subject_type="user",
+        subject_id="u1",
+    )
+    assert [revision.revision_no for revision in revisions] == [1]
+    assert active[0].current_revision_id == revisions[0].revision_id
+    operations = await restarted_memory.index_outbox.list_for_memory(
+        recovered.memory_id, tenant_id="t1"
+    )
+    assert len([operation for operation in operations if operation.operation == "add"]) == 1
+    events = await restarted_items.list_events(
+        tenant_id="t1", user_id="u1", memory_id=recovered.memory_id, limit=100
+    )
     assert len([event for event in events if event.event_type == "memory_pending_confirm"]) == 1

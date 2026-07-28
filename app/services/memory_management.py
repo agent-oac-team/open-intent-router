@@ -242,32 +242,42 @@ class MemoryManagementService:
             )
         accepted = None
         if action == "confirm":
-            if candidate.proposed_operation.value not in {"add", "update", "delete"}:
+            proposed_operation = candidate.proposed_operation.value
+            if proposed_operation not in {"add", "update", "delete"}:
                 raise MemoryManagementConflict("Pending decision is not confirmable")
-            if not operation.memory_id:
-                raise MemoryManagementConflict("Pending decision target is unavailable")
-            item = await self.repository.get_by_id(operation.memory_id, tenant_id=tenant_id)
-            if item is None or not _owned(item, user_id=user_id, admin=admin):
-                raise MemoryManagementNotFound("Memory operation target not found")
-            if expected_revision_id is None:
-                raise MemoryManagementConflict("expected_revision_id is required")
-            _check_revision(item.current_revision_id, expected_revision_id)
-            if operation.revision_id != expected_revision_id:
-                raise MemoryManagementConflict("Pending decision precondition changed")
-            target_operation = (
-                MemoryOperation.UPDATE
-                if candidate.proposed_operation.value in {"add", "update"}
-                else MemoryOperation.DELETE
-            )
+            if proposed_operation == "add" and operation.memory_id is None:
+                if expected_revision_id is not None:
+                    raise MemoryManagementConflict("Pending decision precondition changed")
+                target_operation = MemoryOperation.ADD
+            else:
+                if not operation.memory_id:
+                    raise MemoryManagementConflict("Pending decision target is unavailable")
+                item = await self.repository.get_by_id(operation.memory_id, tenant_id=tenant_id)
+                if item is None or not _owned(item, user_id=user_id, admin=admin):
+                    raise MemoryManagementNotFound("Memory operation target not found")
+                if expected_revision_id is None:
+                    raise MemoryManagementConflict("expected_revision_id is required")
+                _check_revision(item.current_revision_id, expected_revision_id)
+                if operation.revision_id != expected_revision_id:
+                    raise MemoryManagementConflict("Pending decision precondition changed")
+                target_operation = (
+                    MemoryOperation.UPDATE
+                    if proposed_operation in {"add", "update"}
+                    else MemoryOperation.DELETE
+                )
             accepted = operation.model_copy(
                 update={
                     "operation_id": _stable_id("mfop", f"resolve\x1f{decision_id}\x1f{action}"),
                     "operation": target_operation,
                     "decision_status": MemoryDecisionStatus.ACCEPTED,
                     "reason_code": (
-                        MemoryFormationReasonCode.ACCEPTED_UPDATE
-                        if target_operation == MemoryOperation.UPDATE
-                        else MemoryFormationReasonCode.AUTHORIZED_DELETE
+                        MemoryFormationReasonCode.ACCEPTED_NEW
+                        if target_operation == MemoryOperation.ADD
+                        else (
+                            MemoryFormationReasonCode.ACCEPTED_UPDATE
+                            if target_operation == MemoryOperation.UPDATE
+                            else MemoryFormationReasonCode.AUTHORIZED_DELETE
+                        )
                     ),
                     "source": "admin_management" if admin else "user_management",
                     "metadata": {
@@ -340,6 +350,7 @@ class MemoryManagementService:
             )
             raise MemoryManagementConflict("Pending decision precondition changed") from exc
         index = result.index_operation
+        applied = result.operation
         return await self._complete_resolution(
             pending=pending,
             action=action,
@@ -347,11 +358,11 @@ class MemoryManagementService:
             reason=reason,
             idempotency_key=idempotency_key,
             admin=admin,
-            operation_id=accepted.operation_id,
+            operation_id=applied.operation_id,
             index_operation_id=index.index_operation_id if index else None,
             provider_status=index.status.value if index else None,
-            memory_id=accepted.memory_id,
-            operation=accepted.operation.value,
+            memory_id=applied.memory_id,
+            operation=applied.operation.value,
             revision_id=result.revision.revision_id if result.revision else None,
             trace_session_id=trace_session_id,
             trace_turn_id=trace_turn_id,
