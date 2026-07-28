@@ -140,6 +140,7 @@ class AgentEventRequest(StrictBaseModel):
     artifact_refs: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
     execution_ticket: str | None = None
+    expected_state_version: int | None = Field(default=None, ge=0)
 
 
 class AgentEventCompatResponse(StrictBaseModel):
@@ -148,6 +149,8 @@ class AgentEventCompatResponse(StrictBaseModel):
     accepted: bool
     duplicate: bool = False
     route_required: bool = True
+    conflict: bool | None = None
+    plan: LegacyPlan | None = None
 
 
 class PlanConfirmResponse(StrictBaseModel):

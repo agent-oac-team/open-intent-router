@@ -291,7 +291,11 @@ async def navigation_event(
     return AcceptedResponse(accepted=True)
 
 
-@router.post("/events/agent", response_model=AgentEventCompatResponse)
+@router.post(
+    "/events/agent",
+    response_model=AgentEventCompatResponse,
+    response_model_exclude_none=True,
+)
 async def agent_event(
     request: AgentEventRequest,
     response: Response,
@@ -315,6 +319,33 @@ async def agent_event(
             accepted=False,
             route_required=False,
         )
+    if request.expected_state_version is not None:
+        canonical_plan = (
+            await ports.plans.get_plan(
+                request.plan_id,
+                tenant_id=identity.tenant_id,
+                user_id=identity.user_id,
+            )
+            if request.plan_id
+            else None
+        )
+        current_step_matches = bool(
+            canonical_plan
+            and request.step_id
+            and canonical_plan.current_step_id == request.step_id
+            and canonical_plan.state_version == request.expected_state_version
+            and canonical_plan.status not in {"completed", "failed", "cancelled"}
+        )
+        if not current_step_matches:
+            return AgentEventCompatResponse(
+                event_id=request.event_id,
+                session_id=request.session_id,
+                accepted=False,
+                duplicate=True,
+                route_required=False,
+                conflict=True,
+                plan=plan_to_compat(canonical_plan) if canonical_plan else None,
+            )
     owner = f"agent-event:{request.event_id}"
     try:
         if request.execution_ticket:
@@ -633,6 +664,26 @@ async def agent_event(
             route_required=True,
         )
     except (ExecutionTicketError, ValueError) as exc:
+        if request.expected_state_version is not None and request.plan_id:
+            canonical_plan = await ports.plans.get_plan(
+                request.plan_id,
+                tenant_id=identity.tenant_id,
+                user_id=identity.user_id,
+            )
+            if canonical_plan and (
+                canonical_plan.current_step_id != request.step_id
+                or canonical_plan.state_version != request.expected_state_version
+                or canonical_plan.status in {"completed", "failed", "cancelled"}
+            ):
+                return AgentEventCompatResponse(
+                    event_id=request.event_id,
+                    session_id=request.session_id,
+                    accepted=False,
+                    duplicate=True,
+                    route_required=False,
+                    conflict=True,
+                    plan=plan_to_compat(canonical_plan),
+                )
         _raise_projected(exc)
 
 

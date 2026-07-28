@@ -475,6 +475,165 @@ def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace(
     assert "secret upstream detail" not in snapshot.model_dump_json()
 
 
+def test_stale_plan_step_completion_returns_canonical_plan_without_claiming_a_ticket() -> None:
+    client, delegated, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    ports.plans.plan = Plan(
+        plan_id="plan-1",
+        tenant_id="oac",
+        user_id="trusted-user",
+        session_id="session-1",
+        status="blocked",
+        current_step_id="step-2",
+        state_version=4,
+        next_action=NextAction(
+            type="open_ui",
+            plan_id="plan-1",
+            step_id="step-2",
+            route="/production",
+        ),
+        steps=[
+            PlanStep(
+                step_id="step-1",
+                agent_id="agent-1",
+                status="completed",
+                description="first",
+            ),
+            PlanStep(
+                step_id="step-2",
+                agent_id="agent-2",
+                status="blocked",
+                description="second",
+            ),
+        ],
+    )
+
+    response = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "plan_step_complete_plan-1_step-1_v3",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "plan_id": "plan-1",
+            "step_id": "step-1",
+            "expected_state_version": 3,
+            "status": "completed",
+            "event_type": "agent_result",
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["conflict"] is True
+    assert response.json()["duplicate"] is True
+    assert response.json()["route_required"] is False
+    assert response.json()["plan"]["current_step"] == "step-2"
+    assert response.json()["plan"]["state_version"] == 4
+    assert delegated.completed is None
+
+
+def test_current_plan_step_completion_with_expected_version_still_completes_run() -> None:
+    client, delegated, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    ports.plans.plan = ports.plans.plan.model_copy(update={"status": "blocked", "state_version": 3})
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "plan-step-route",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "plan_control",
+            "plan_id": "plan-1",
+            "step_id": "step-1",
+        },
+    )
+    assert route.status_code == 200
+
+    response = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "plan_step_complete_plan-1_step-1_v3",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "plan_id": "plan-1",
+            "step_id": "step-1",
+            "expected_state_version": 3,
+            "status": "completed",
+            "event_type": "agent_result",
+            "execution_ticket": route.json()["execution_ticket"],
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["duplicate"] is False
+    assert "conflict" not in response.json()
+    assert delegated.completed is not None
+
+
+def test_plan_step_completion_converges_when_plan_advances_after_precondition_check() -> None:
+    client, _, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    ports.plans.plan = ports.plans.plan.model_copy(update={"status": "blocked", "state_version": 3})
+
+    class CompetingDelegatedPort(DelegatedPort):
+        async def complete(self, command):
+            del command
+            ports.plans.plan = Plan(
+                plan_id="plan-1",
+                tenant_id="oac",
+                user_id="trusted-user",
+                session_id="session-1",
+                status="completed",
+                state_version=4,
+                steps=[
+                    PlanStep(
+                        step_id="step-1",
+                        agent_id="agent-1",
+                        status="completed",
+                        description="done",
+                    )
+                ],
+            )
+            raise ValueError("Plan version conflict")
+
+    competing = CompetingDelegatedPort()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        delegated_runs=competing,
+    )
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "competing-plan-step-route",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "plan_control",
+            "plan_id": "plan-1",
+            "step_id": "step-1",
+        },
+    )
+    response = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "plan_step_complete_plan-1_step-1_v3",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "plan_id": "plan-1",
+            "step_id": "step-1",
+            "expected_state_version": 3,
+            "status": "completed",
+            "event_type": "agent_result",
+            "execution_ticket": route.json()["execution_ticket"],
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["conflict"] is True
+    assert response.json()["plan"]["status"] == "completed"
+    assert response.json()["plan"]["state_version"] == 4
+
+
 def test_agent_error_event_uses_failure_state_machine_even_with_a_nonterminal_status() -> None:
     client, delegated, _ = _client()
 
