@@ -1,6 +1,6 @@
 {
   "contract": "oac-irs-migration-baseline/v1",
-  "generated_at": "2026-07-20T08:39:23.901562+00:00",
+  "generated_at": "2026-07-28T01:34:39.101370+00:00",
   "irs_source_revision": "348cf93fa3441108481631b7768d5ab7670c706e",
   "oac_source_revision": "cd97c1b with working-tree evidence at 2026-07-16",
   "counts": {
@@ -14,8 +14,8 @@
   "artifacts": [
     {
       "path": "README.md",
-      "sha256": "cb3adfc631611a737164578b4aebb455e49dc7aebf93748e6a0b16c9f245f0cf",
-      "bytes": 1921
+      "sha256": "af2fbee9c32a7c9a086fd494a767048a543418f31a6460272248248418bc9155",
+      "bytes": 2036
     },
     {
       "path": "execution-ticket/v1/README.md",
@@ -26,6 +26,16 @@
       "path": "execution-ticket/v1/contract.json",
       "sha256": "2f2801e8a791c29361f6c4fdd697c9267e8911a475247f3f45ca8b6007ca1a87",
       "bytes": 2533
+    },
+    {
+      "path": "execution-ticket/v2/README.md",
+      "sha256": "2543b75177027096c9ea740d751ed42dae23854d84934ed1ac5db80caa3891c9",
+      "bytes": 868
+    },
+    {
+      "path": "execution-ticket/v2/contract.json",
+      "sha256": "5b40978133bc062cfb7f2c47acc9770f1412a4ac3fc1c94b022cb915cb48f129",
+      "bytes": 1636
     },
     {
       "path": "golden/knowledge/v1/dataset.json",

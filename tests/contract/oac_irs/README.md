@@ -11,7 +11,8 @@
 - `golden/route/v1`：8 种 action 和权限/意图维度 Route Golden Dataset。
 - `golden/knowledge/v1`：Search/Grouped/Read/Assets/Chunks 与 6 份原始文件语义基线。
 - `identity/v2`：OAC Host HMAC current-only Envelope、credential profiles、重放防护和 key rotation 契约。
-- `execution-ticket/v1`：Ticket Wire/运行态字段位置和向后兼容规则。
+- `execution-ticket/v1`：冻结的 Ticket Wire/运行态字段位置和向后兼容规则。
+- `execution-ticket/v2`：Plan Step 稳定动作身份、条件版本与 Canonical 冲突收敛规则。
 - `migration-records`：接口差异、URL 矩阵、IRS 性能基线与切换阈值。
 - `baseline-index.json`：以上文件的 SHA-256 和数量清单。
 

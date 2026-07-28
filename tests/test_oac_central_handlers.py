@@ -173,6 +173,8 @@ class DelegatedPort:
                 tenant_id=command.tenant_id,
                 user_id=command.user_id,
                 agent_id=command.agent_id,
+                plan_id=command.plan_id,
+                step_id=command.step_id,
                 status=DelegatedRunStatus.RUNNING,
                 state_version=1,
                 deadline_at=command.deadline_at,
@@ -531,7 +533,7 @@ def test_stale_plan_step_completion_returns_canonical_plan_without_claiming_a_ti
     assert delegated.completed is None
 
 
-def test_current_plan_step_completion_with_expected_version_still_completes_run() -> None:
+def test_current_plan_step_completion_without_restored_ticket_uses_unique_mapping() -> None:
     client, delegated, _ = _client()
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports.plans.plan = ports.plans.plan.model_copy(update={"status": "blocked", "state_version": 3})
@@ -545,6 +547,7 @@ def test_current_plan_step_completion_with_expected_version_still_completes_run(
             "source": "plan_control",
             "plan_id": "plan-1",
             "step_id": "step-1",
+            "plan_action": "continue",
         },
     )
     assert route.status_code == 200
@@ -560,7 +563,6 @@ def test_current_plan_step_completion_with_expected_version_still_completes_run(
             "expected_state_version": 3,
             "status": "completed",
             "event_type": "agent_result",
-            "execution_ticket": route.json()["execution_ticket"],
         },
     )
 
