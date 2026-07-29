@@ -34,6 +34,7 @@ from app.schemas.knowledge_assets import (
     KnowledgeSourceRef,
 )
 from app.schemas.memory import (
+    MemoryGovernanceRepairResponse,
     MemoryGovernanceResponse,
     MemoryManagementOperationResponse,
     MemoryPendingDecisionEvidence,
@@ -113,6 +114,16 @@ class MemoryGovernanceApplicationPort(Protocol):
         page: int = 1,
         page_size: int = 20,
     ) -> MemoryGovernanceResponse: ...
+
+    async def repair(
+        self,
+        *,
+        tenant_id: str,
+        memory_id: str,
+        expected_version: str,
+        expected_anomaly: str,
+        idempotency_key: str,
+    ) -> MemoryGovernanceRepairResponse: ...
 
 
 @runtime_checkable

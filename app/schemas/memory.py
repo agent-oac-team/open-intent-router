@@ -603,7 +603,8 @@ class MemoryGovernanceItem(StrictBaseModel):
         "provider_residual",
         "canonical_not_closed",
     ]
-    status: Literal["needs_attention", "blocked"]
+    status: Literal["needs_attention", "blocked", "repairing"]
+    version: str = Field(min_length=1, max_length=128)
     content: str | None = None
     content_state: Literal["present", "cleared"]
     safe_reason: str = Field(max_length=128)
@@ -617,6 +618,26 @@ class MemoryGovernanceResponse(StrictBaseModel):
     page_size: int = Field(default=20, ge=1, le=100)
     total: int = Field(default=0, ge=0)
     healthy: bool = True
+
+
+class MemoryGovernanceRepairRequest(StrictBaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=256)
+    expected_version: str = Field(min_length=1, max_length=128)
+    expected_anomaly: Literal[
+        "deletion_timeout",
+        "deletion_dead_letter",
+        "provider_residual",
+        "canonical_not_closed",
+    ]
+
+
+class MemoryGovernanceRepairResponse(StrictBaseModel):
+    memory_id: str
+    accepted: bool
+    status: Literal["repairing", "rejected"]
+    action: Literal["cleanup_advance", "canonical_close"] | None = None
+    reason: str
+    idempotent_replay: bool = False
 
 
 class MemoryDeleteRequest(StrictBaseModel):

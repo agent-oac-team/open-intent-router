@@ -162,6 +162,7 @@ Memory API 用于 M5 记忆召回、低风险写入候选处理、TTL 清理和�
 - `POST /api/v1/memories/cleanup`：清理已过期记忆，并记录过期事件。
 - `GET /api/v1/memories/debug`：按 user、tenant、agent、scope 或 request ID 查看当前可见记忆项、写入/过期事件、mem0 provider 状态、外部 ID 映射和最近错误摘要。按 request 查询时额外返回 `request_trace`，包含 `overall_stage/terminal/retryable/reason_code` 及 Turn、Run/Result、Outbox、Formation、Memory/Revision、Index 的有界 ID 关联。正文和 Provider 凭证不会进入该高层 trace。
 - `GET /api/v1/admin/memories/governance`：使用管理员凭证按 `tenant_id` 查询删除异常工作队列；无 `memory_id` 时按 `page/page_size` 分页，指定 `memory_id` 时返回单条详情。普通删除等待满 300 秒才进入，删除 dead-letter、确认的 Provider 残留和外部删除完成但 Canonical 未收口立即进入；Formation、普通索引不同步和 Recall 质量不进入。本接口是独立产品读模型，不复用 Memory Debug。
+- `POST /api/v1/admin/memories/governance/{memory_id}/repair`：使用具备 `control_write` 的管理员 Host 身份提交单目标治理修复。请求必须携带稳定 `idempotency_key`、查询返回的 `expected_version` 与 `expected_anomaly`；服务端在提交时重读 Canonical Item 和删除操作，只会确定性选择安全清理推进或 Canonical 收口。状态或版本变化、目标不可修复时返回 `accepted=false` 和安全原因，不执行副作用；受理只表示进入 `repairing`，不表示修复完成。
 
 `request_trace.overall_stage` 的主要值为 `turn_pending`、`turn_running`、`outbox_pending`、
 `formation_skipped`、`formation_pending/retry/dead_letter`、`completed_no_candidate`、
