@@ -51,6 +51,26 @@ class MemoryIndexOutboxRepository:
             for operation in sorted(values, key=lambda item: item.updated_at, reverse=True)[:limit]
         ]
 
+    async def latest_deletes_for_memories(
+        self, memory_ids: list[str], *, tenant_id: str
+    ) -> dict[str, MemoryIndexOperation]:
+        requested = set(memory_ids)
+        latest: dict[str, MemoryIndexOperation] = {}
+        operations = sorted(
+            self.operations.values(),
+            key=lambda item: (item.updated_at, item.index_operation_id),
+            reverse=True,
+        )
+        for operation in operations:
+            if (
+                operation.tenant_id == tenant_id
+                and operation.memory_id in requested
+                and operation.operation == "delete"
+                and operation.memory_id not in latest
+            ):
+                latest[operation.memory_id] = operation.model_copy(deep=True)
+        return latest
+
     async def accept_governance_repair(
         self,
         index_operation_id: str,
@@ -60,6 +80,8 @@ class MemoryIndexOutboxRepository:
         idempotency_key: str,
         now: datetime,
         requeue: bool,
+        expected_version: str | None = None,
+        expected_anomaly: str | None = None,
     ) -> tuple[MemoryIndexOperation, bool]:
         async with self._lock:
             operation = self.operations.get(index_operation_id)
@@ -67,12 +89,23 @@ class MemoryIndexOutboxRepository:
                 raise ValueError("Governance repair target not found")
             previous_key = operation.last_error_metadata.get("governance_repair_key")
             if previous_key == idempotency_key:
+                if (
+                    operation.last_error_metadata.get("governance_expected_version")
+                    != expected_version
+                    or operation.last_error_metadata.get("governance_expected_anomaly")
+                    != expected_anomaly
+                ):
+                    raise ValueError("Governance repair request identity changed")
                 return operation.model_copy(deep=True), True
+            if not requeue and previous_key:
+                raise ValueError("Canonical governance repair is already claimed")
             if operation.status != expected_status:
                 raise ValueError("Governance repair status changed")
             metadata = {
                 **operation.last_error_metadata,
                 "governance_repair_key": idempotency_key,
+                "governance_expected_version": expected_version,
+                "governance_expected_anomaly": expected_anomaly,
             }
             updates = {"last_error_metadata": metadata, "updated_at": now}
             if requeue:
@@ -311,6 +344,36 @@ class DatabaseMemoryIndexOutboxRepository:
             )
             return [_operation_from_row(row) for row in rows]
 
+    async def latest_deletes_for_memories(
+        self, memory_ids: list[str], *, tenant_id: str
+    ) -> dict[str, MemoryIndexOperation]:
+        if not memory_ids:
+            return {}
+        async with self.session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryIndexOperationModel)
+                        .where(
+                            MemoryIndexOperationModel.memory_id.in_(memory_ids),
+                            MemoryIndexOperationModel.tenant_id == tenant_id,
+                            MemoryIndexOperationModel.operation == "delete",
+                        )
+                        .order_by(
+                            MemoryIndexOperationModel.updated_at.desc(),
+                            MemoryIndexOperationModel.index_operation_id.desc(),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        latest: dict[str, MemoryIndexOperation] = {}
+        for row in rows:
+            if row.memory_id not in latest:
+                latest[row.memory_id] = _operation_from_row(row)
+        return latest
+
     async def accept_governance_repair(
         self,
         index_operation_id: str,
@@ -320,6 +383,8 @@ class DatabaseMemoryIndexOutboxRepository:
         idempotency_key: str,
         now: datetime,
         requeue: bool,
+        expected_version: str | None = None,
+        expected_anomaly: str | None = None,
     ) -> tuple[MemoryIndexOperation, bool]:
         async with self.session_factory() as session:
             row = await session.scalar(
@@ -333,13 +398,25 @@ class DatabaseMemoryIndexOutboxRepository:
             if row is None:
                 raise ValueError("Governance repair target not found")
             operation = _operation_from_row(row)
-            if operation.last_error_metadata.get("governance_repair_key") == idempotency_key:
+            previous_key = operation.last_error_metadata.get("governance_repair_key")
+            if previous_key == idempotency_key:
+                if (
+                    operation.last_error_metadata.get("governance_expected_version")
+                    != expected_version
+                    or operation.last_error_metadata.get("governance_expected_anomaly")
+                    != expected_anomaly
+                ):
+                    raise ValueError("Governance repair request identity changed")
                 return operation, True
+            if not requeue and previous_key:
+                raise ValueError("Canonical governance repair is already claimed")
             if operation.status != expected_status:
                 raise ValueError("Governance repair status changed")
             metadata = {
                 **operation.last_error_metadata,
                 "governance_repair_key": idempotency_key,
+                "governance_expected_version": expected_version,
+                "governance_expected_anomaly": expected_anomaly,
             }
             row.last_error_metadata_text = dumps(metadata)
             row.updated_at = now

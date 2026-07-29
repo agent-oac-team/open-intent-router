@@ -43,10 +43,17 @@ def _user_availability(
     return "unavailable"
 
 
-def _concurrency_token(revision_id: str | None) -> str | None:
-    if revision_id is None:
-        return None
-    return hashlib.sha256(f"user-memory-version\x1f{revision_id}".encode()).hexdigest()
+def _concurrency_token(version: str) -> str:
+    return hashlib.sha256(f"user-memory-version\x1f{version}".encode()).hexdigest()
+
+
+def _item_concurrency_token(item) -> str:
+    version = (
+        f"revision:{item.current_revision_id}"
+        if item.current_revision_id is not None
+        else f"legacy:{item.updated_at.isoformat()}"
+    )
+    return _concurrency_token(version)
 
 
 def _target_token(memory_id: str) -> str:
@@ -101,7 +108,7 @@ class MemoryManagementService:
                     ),
                     updated_at=item.updated_at,
                     target_token=_target_token(item.memory_id),
-                    concurrency_token=_concurrency_token(item.current_revision_id),
+                    concurrency_token=_item_concurrency_token(item),
                 )
                 for index, item in enumerate(items)
             ],
@@ -119,14 +126,14 @@ class MemoryManagementService:
         user_id: str,
         idempotency_key: str,
     ) -> UserMemoryDeleteResponse:
-        candidates = await self.repository.list_active(
+        candidates = await _list_all_active(
+            self.repository,
             tenant_id=tenant_id,
             user_id=user_id,
             subject_type="user",
             subject_id=user_id,
             scopes=["user_preference", "stable_fact"],
             lifecycle_statuses=["active", "deletion_pending"],
-            limit=10_000,
         )
         target = next(
             (item for item in candidates if _target_token(item.memory_id) == target_token),
@@ -148,10 +155,10 @@ class MemoryManagementService:
                 or _target_token(audit.memory_id) != target_token
             ):
                 raise MemoryManagementNotFound("Memory operation target not found")
-            if _concurrency_token(payload.get("expected_revision_id")) != concurrency_token:
+            if payload.get("expected_concurrency_hash") != _hash_ref(concurrency_token):
                 raise MemoryManagementConflict("Memory version changed")
             return UserMemoryDeleteResponse(idempotent_replay=True)
-        if _concurrency_token(target.current_revision_id) != concurrency_token:
+        if _item_concurrency_token(target) != concurrency_token:
             raise MemoryManagementConflict("Memory version changed")
         result = await self.request_delete(
             memory_id=target.memory_id,
@@ -161,6 +168,7 @@ class MemoryManagementService:
             reason="user removed memory",
             idempotency_key=idempotency_key,
             expected_revision_id=target.current_revision_id,
+            expected_concurrency_token=concurrency_token,
         )
         return UserMemoryDeleteResponse(
             idempotent_replay=result.idempotent_replay,
@@ -212,6 +220,7 @@ class MemoryManagementService:
         reason: str,
         idempotency_key: str,
         expected_revision_id: str | None,
+        expected_concurrency_token: str | None = None,
         admin: bool = False,
     ) -> MemoryManagementOperationResponse:
         operation_id = _stable_id("mfop", f"delete\x1f{tenant_id}\x1f{actor}\x1f{idempotency_key}")
@@ -226,10 +235,16 @@ class MemoryManagementService:
                 reason=reason,
                 idempotency_key=idempotency_key,
                 expected_revision_id=expected_revision_id,
+                expected_concurrency_token=expected_concurrency_token,
                 admin=admin,
             )
         if not _owned(item, user_id=user_id, admin=admin):
             raise MemoryManagementNotFound("Memory operation target not found")
+        if (
+            expected_concurrency_token is not None
+            and _item_concurrency_token(item) != expected_concurrency_token
+        ):
+            raise MemoryManagementConflict("Memory version changed")
         _check_revision(item.current_revision_id, expected_revision_id)
         operation = MemoryLifecycleOperation(
             operation_id=operation_id,
@@ -260,6 +275,7 @@ class MemoryManagementService:
                 reason=reason,
                 idempotency_key=idempotency_key,
                 expected_revision_id=expected_revision_id,
+                expected_concurrency_token=expected_concurrency_token,
                 admin=admin,
             )
         except ValueError as exc:
@@ -540,6 +556,7 @@ class MemoryManagementService:
         reason,
         idempotency_key,
         expected_revision_id,
+        expected_concurrency_token,
         admin,
     ) -> MemoryManagementOperationResponse:
         audit = await self.repository.get_event(
@@ -553,6 +570,7 @@ class MemoryManagementService:
             reason=reason,
             idempotency_key=idempotency_key,
             expected_revision_id=expected_revision_id,
+            expected_concurrency_token=expected_concurrency_token,
             admin=admin,
         )
         index_operation_id = audit.payload.get("index_operation_id")
@@ -769,8 +787,23 @@ class MemoryManagementService:
         reason,
         idempotency_key,
         expected_revision_id,
+        expected_concurrency_token,
         admin,
     ) -> None:
+        payload = {
+            "action": action,
+            "actor": actor,
+            "target_user_id": target_user_id,
+            "reason": redact_text(reason, max_length=500),
+            "admin": admin,
+            "idempotency_hash": _hash_ref(idempotency_key),
+            "operation_id": operation.operation_id,
+            "index_operation_id": _delete_index_operation_id(operation),
+            "expected_revision_id": expected_revision_id,
+            "target_revision_id": operation.revision_id,
+        }
+        if expected_concurrency_token is not None:
+            payload["expected_concurrency_hash"] = _hash_ref(expected_concurrency_token)
         await self.repository.add_event(
             MemoryEvent(
                 event_id=_stable_id("mevt", f"audit\x1f{operation.operation_id}"),
@@ -782,18 +815,7 @@ class MemoryManagementService:
                 formation_job_id=operation.formation_job_id,
                 memory_key=operation.memory_key,
                 decision_status="accepted",
-                payload={
-                    "action": action,
-                    "actor": actor,
-                    "target_user_id": target_user_id,
-                    "reason": redact_text(reason, max_length=500),
-                    "admin": admin,
-                    "idempotency_hash": _hash_ref(idempotency_key),
-                    "operation_id": operation.operation_id,
-                    "index_operation_id": _delete_index_operation_id(operation),
-                    "expected_revision_id": expected_revision_id,
-                    "target_revision_id": operation.revision_id,
-                },
+                payload=payload,
             )
         )
 
@@ -904,6 +926,7 @@ def _validate_management_audit(
     reason: str,
     idempotency_key: str,
     expected_revision_id: str | None,
+    expected_concurrency_token: str | None,
     admin: bool,
 ) -> None:
     payload = event.payload if isinstance(event.payload, dict) else {}
@@ -915,6 +938,8 @@ def _validate_management_audit(
         "idempotency_hash": _hash_ref(idempotency_key),
         "expected_revision_id": expected_revision_id,
     }
+    if expected_concurrency_token is not None:
+        expected["expected_concurrency_hash"] = _hash_ref(expected_concurrency_token)
     if any(payload.get(key) != value for key, value in expected.items()):
         raise MemoryManagementConflict("Idempotency key payload changed")
 
@@ -929,3 +954,19 @@ def _hash_ref(value: str) -> str:
 
 def _stable_id(prefix: str, value: str) -> str:
     return f"{prefix}_{hashlib.sha256(value.encode()).hexdigest()[:32]}"
+
+
+async def _list_all_active(repository, **filters):
+    items = []
+    offset = 0
+    batch_size = 1000
+    while True:
+        batch = await repository.list_active(
+            **filters,
+            offset=offset,
+            limit=batch_size,
+        )
+        items.extend(batch)
+        if len(batch) < batch_size:
+            return items
+        offset += len(batch)

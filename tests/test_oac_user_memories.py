@@ -157,6 +157,47 @@ def test_authenticated_user_memory_api_returns_only_current_principal_product_fi
     assert client.get("/api/v1/user-memories?memory_type=task_memory").status_code == 422
 
 
+def test_user_memory_api_rejects_non_user_host_credentials() -> None:
+    class MemoryPort:
+        async def list_user_memories(self, **_kwargs):
+            raise AssertionError("non-user credential reached personal memory service")
+
+    ports = OacAdapterApplicationPorts(
+        routing=SimpleNamespace(),
+        knowledge=SimpleNamespace(),
+        knowledge_assets=SimpleNamespace(),
+        registry=SimpleNamespace(),
+        events=SimpleNamespace(),
+        plans=SimpleNamespace(),
+        delegated_runs=SimpleNamespace(),
+        turns=SimpleNamespace(),
+        memory_management=MemoryPort(),
+    )
+    identity = TrustedHostIdentity(
+        key_id="admin-key",
+        audience="test",
+        principal_type="user",
+        tenant_id="oac",
+        user_id="admin-1",
+        groups=(),
+        credential_class="oac_admin",
+        claims_version="oac-admin-principal-v1",
+        roles=(),
+        active_bundle_id="",
+        policy_version="oac-control-v1",
+        signature_version="v2",
+        request_operation="user-memory-read",
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
+    app.dependency_overrides[get_trusted_host_identity] = lambda: identity
+
+    response = TestClient(app).get("/api/v1/user-memories")
+
+    assert response.status_code == 403
+
+
 def test_authenticated_user_delete_api_accepts_opaque_target_and_product_response() -> None:
     repository = MemoryItemRepository()
     asyncio.run(repository.add(_item("mine-delete")))
@@ -272,3 +313,127 @@ def test_user_memory_delete_hides_cross_subject_and_controls_version_conflict() 
             raise AssertionError("stale version must conflict")
 
     asyncio.run(verify())
+
+
+def test_legacy_memory_without_revision_has_a_safe_deletion_token() -> None:
+    repository = MemoryItemRepository()
+    legacy = _item("legacy").model_copy(
+        update={"current_revision_id": None, "current_revision_no": None}
+    )
+    asyncio.run(repository.add(legacy))
+    service = _service(repository)
+    captured: dict[str, object] = {}
+
+    async def request_delete(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(idempotent_replay=False)
+
+    service.request_delete = request_delete  # type: ignore[method-assign]
+    listed = asyncio.run(
+        service.list_user_memories(
+            tenant_id="oac",
+            user_id="7",
+            memory_type=None,
+            page=1,
+        )
+    ).items[0]
+
+    response = asyncio.run(
+        service.delete_user_memory(
+            target_token=listed.target_token,
+            concurrency_token=listed.concurrency_token,
+            tenant_id="oac",
+            user_id="7",
+            idempotency_key="delete-legacy",
+        )
+    )
+
+    assert listed.concurrency_token
+    assert captured["expected_revision_id"] is None
+    assert captured["expected_concurrency_token"] == listed.concurrency_token
+    assert response.accepted is True
+
+
+def test_legacy_delete_rechecks_token_after_authoritative_reread() -> None:
+    class RacingRepository(MemoryItemRepository):
+        reads = 0
+
+        async def get_by_id(self, memory_id: str, **kwargs):
+            self.reads += 1
+            current = await super().get_by_id(memory_id, **kwargs)
+            if current is not None and self.reads == 1:
+                changed = current.model_copy(
+                    update={"updated_at": current.updated_at + timedelta(seconds=1)}
+                )
+                await self.add(changed)
+                return changed
+            return current
+
+    repository = RacingRepository()
+    legacy = _item("legacy-race").model_copy(
+        update={"current_revision_id": None, "current_revision_no": None}
+    )
+    asyncio.run(repository.add(legacy))
+    service = _service(repository)
+    listed = asyncio.run(
+        service.list_user_memories(
+            tenant_id="oac",
+            user_id="7",
+            memory_type=None,
+            page=1,
+        )
+    ).items[0]
+
+    async def delete() -> None:
+        try:
+            await service.delete_user_memory(
+                target_token=listed.target_token,
+                concurrency_token=listed.concurrency_token,
+                tenant_id="oac",
+                user_id="7",
+                idempotency_key="delete-legacy-race",
+            )
+        except MemoryManagementConflict:
+            return
+        raise AssertionError("authoritative reread must reject a stale legacy token")
+
+    asyncio.run(delete())
+
+
+def test_personal_delete_finds_a_target_beyond_the_first_scan_batch() -> None:
+    repository = MemoryItemRepository()
+
+    async def seed() -> None:
+        for index in range(1000):
+            await repository.add(_item(f"zzz-{index:04}"))
+        await repository.add(_item("aaa-target"))
+
+    asyncio.run(seed())
+    service = _service(repository)
+    captured: dict[str, object] = {}
+
+    async def request_delete(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(idempotent_replay=False)
+
+    service.request_delete = request_delete  # type: ignore[method-assign]
+    target = asyncio.run(
+        service.list_user_memories(
+            tenant_id="oac",
+            user_id="7",
+            memory_type=None,
+            page=51,
+        )
+    ).items[0]
+
+    asyncio.run(
+        service.delete_user_memory(
+            target_token=target.target_token,
+            concurrency_token=target.concurrency_token,
+            tenant_id="oac",
+            user_id="7",
+            idempotency_key="delete-beyond-first-batch",
+        )
+    )
+
+    assert captured["memory_id"] == "aaa-target"

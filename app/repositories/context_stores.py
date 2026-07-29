@@ -58,6 +58,7 @@ class MemoryItemRepository:
         agent_id: str | None = None,
         lifecycle_statuses: list[str] | None = None,
         index_statuses: list[str] | None = None,
+        offset: int = 0,
         limit: int = 20,
     ) -> list[MemoryItem]:
         now = datetime.now(UTC)
@@ -87,7 +88,11 @@ class MemoryItemRepository:
         values = [item for item in values if _memory_visible_for_lifecycle_query(item, now)]
         return [
             item.model_copy(deep=True)
-            for item in sorted(values, key=lambda item: item.updated_at, reverse=True)[:limit]
+            for item in sorted(
+                values,
+                key=lambda item: (item.updated_at, item.memory_id),
+                reverse=True,
+            )[offset : offset + limit]
         ]
 
     async def list_user_memories_page(
@@ -486,6 +491,7 @@ class DatabaseMemoryItemRepository:
         agent_id: str | None = None,
         lifecycle_statuses: list[str] | None = None,
         index_statuses: list[str] | None = None,
+        offset: int = 0,
         limit: int = 20,
     ) -> list[MemoryItem]:
         async with self.session_factory() as session:
@@ -521,9 +527,16 @@ class DatabaseMemoryItemRepository:
             )
             if index_statuses:
                 stmt = stmt.where(MemoryItemModel.index_status.in_(index_statuses))
-            stmt = stmt.order_by(desc(MemoryItemModel.updated_at))
+            stmt = (
+                stmt.order_by(
+                    desc(MemoryItemModel.updated_at),
+                    desc(MemoryItemModel.memory_id),
+                )
+                .offset(offset)
+                .limit(limit)
+            )
             rows = (await session.execute(stmt)).scalars().all()
-            return [_memory_from_row(row) for row in rows][:limit]
+            return [_memory_from_row(row) for row in rows]
 
     async def list_user_memories_page(
         self,

@@ -623,6 +623,59 @@ async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> N
         )
         assert all(claim is not None for claim in outbox_claims)
         assert len({claim.index_operation_id for claim in outbox_claims if claim}) == 2
+
+        governance_operation = await outbox_a.add(
+            MemoryIndexOperation(
+                index_operation_id=f"pg_governance_{suffix}",
+                idempotency_key=f"pg-governance:{suffix}",
+                operation="delete",
+                memory_id=f"pg_governance_memory_{suffix}",
+                tenant_id=tenant_id,
+                status="completed",
+            )
+        )
+        governance_claims = await asyncio.gather(
+            outbox_a.accept_governance_repair(
+                governance_operation.index_operation_id,
+                tenant_id=tenant_id,
+                expected_status=governance_operation.status,
+                idempotency_key="repair-a",
+                now=old_deadline,
+                requeue=False,
+                expected_version="version-1",
+                expected_anomaly="canonical_not_closed",
+            ),
+            outbox_b.accept_governance_repair(
+                governance_operation.index_operation_id,
+                tenant_id=tenant_id,
+                expected_status=governance_operation.status,
+                idempotency_key="repair-b",
+                now=old_deadline,
+                requeue=False,
+                expected_version="version-1",
+                expected_anomaly="canonical_not_closed",
+            ),
+            return_exceptions=True,
+        )
+        assert sum(not isinstance(value, Exception) for value in governance_claims) == 1
+        assert sum(isinstance(value, ValueError) for value in governance_claims) == 1
+        winner_index = next(
+            index
+            for index, value in enumerate(governance_claims)
+            if not isinstance(value, Exception)
+        )
+        winner_key = ("repair-a", "repair-b")[winner_index]
+        _, replay = await outbox_a.accept_governance_repair(
+            governance_operation.index_operation_id,
+            tenant_id=tenant_id,
+            expected_status=governance_operation.status,
+            idempotency_key=winner_key,
+            now=old_deadline,
+            requeue=False,
+            expected_version="version-1",
+            expected_anomaly="canonical_not_closed",
+        )
+        assert replay is True
     finally:
         await _cleanup(first_factory, tenant_id=tenant_id)
         await first_factory.kw["bind"].dispose()

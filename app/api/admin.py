@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.security import AdminActor, require_admin_token
@@ -146,6 +148,7 @@ async def admin_memory_debug(
 async def admin_memory_governance(
     tenant_id: str,
     memory_id: str | None = None,
+    status: Literal["needs_attention", "blocked", "repairing"] | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     service: MemoryGovernanceService = Depends(get_memory_governance_service),
@@ -153,6 +156,7 @@ async def admin_memory_governance(
     return await service.query(
         tenant_id=tenant_id,
         memory_id=memory_id,
+        status=status,
         page=page,
         page_size=page_size,
     )

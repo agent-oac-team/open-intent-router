@@ -23,39 +23,55 @@ class MemoryGovernanceService:
         *,
         tenant_id: str,
         memory_id: str | None = None,
+        status: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> MemoryGovernanceResponse:
-        items = await self.memory_service.repository.list_active(
-            tenant_id=tenant_id,
-            lifecycle_statuses=["deletion_pending"],
-            limit=10000,
-        )
+        if memory_id is not None:
+            item = await self.memory_service.repository.get_by_id(memory_id, tenant_id=tenant_id)
+            items = (
+                [item]
+                if item is not None
+                and item.tenant_id == tenant_id
+                and item.lifecycle_status == "deletion_pending"
+                else []
+            )
+        else:
+            items = await _list_all_active(
+                self.memory_service.repository,
+                tenant_id=tenant_id,
+                lifecycle_statuses=["deletion_pending"],
+            )
         anomalies: list[MemoryGovernanceItem] = []
         now = self.clock()
-        for item in items:
-            if item.tenant_id != tenant_id:
-                continue
-            if memory_id is not None and item.memory_id != memory_id:
-                continue
+        if memory_id is not None:
             operations = await self.memory_service.index_worker.outbox.list_for_memory(
-                item.memory_id, tenant_id=tenant_id
+                memory_id, tenant_id=tenant_id
             )
-            deletion = next(
-                (
-                    operation
-                    for operation in operations
-                    if operation.operation == MemoryIndexOperationType.DELETE
-                ),
-                None,
-            )
-            age = max(0.0, (now - _utc(item.updated_at)).total_seconds())
-            classified = _classify(item=item, operation=deletion, age=age)
-            if classified is not None:
-                anomalies.append(classified)
+            deletions = {
+                memory_id: next(
+                    (
+                        operation
+                        for operation in operations
+                        if operation.operation == MemoryIndexOperationType.DELETE
+                    ),
+                    None,
+                )
+            }
+            _append_anomalies(anomalies, items, deletions, tenant_id=tenant_id, now=now)
+        else:
+            for start in range(0, len(items), 1000):
+                batch = items[start : start + 1000]
+                deletions = (
+                    await self.memory_service.index_worker.outbox.latest_deletes_for_memories(
+                        [item.memory_id for item in batch],
+                        tenant_id=tenant_id,
+                    )
+                )
+                _append_anomalies(anomalies, batch, deletions, tenant_id=tenant_id, now=now)
 
         anomalies.sort(key=lambda value: (value.updated_at, value.memory_id), reverse=True)
-        total = len(anomalies)
+        healthy = not anomalies
         if memory_id is not None:
             selected = anomalies[:1]
             return MemoryGovernanceResponse(
@@ -63,15 +79,18 @@ class MemoryGovernanceService:
                 page=1,
                 page_size=1,
                 total=len(selected),
-                healthy=not selected,
+                healthy=healthy,
             )
+        if status is not None:
+            anomalies = [item for item in anomalies if item.status == status]
+        total = len(anomalies)
         start = (page - 1) * page_size
         return MemoryGovernanceResponse(
             items=anomalies[start : start + page_size],
             page=page,
             page_size=page_size,
             total=total,
-            healthy=total == 0,
+            healthy=healthy,
         )
 
     async def repair(
@@ -99,6 +118,12 @@ class MemoryGovernanceService:
             if deletion is not None and (
                 deletion.last_error_metadata.get("governance_repair_key") == idempotency_key
             ):
+                if not _same_repair_request(
+                    deletion,
+                    expected_version=expected_version,
+                    expected_anomaly=expected_anomaly,
+                ):
+                    return _rejected(memory_id, "幂等键对应的修复请求参数不一致")
                 return MemoryGovernanceRepairResponse(
                     memory_id=memory_id,
                     accepted=True,
@@ -111,11 +136,27 @@ class MemoryGovernanceService:
         if item.lifecycle_status != "deletion_pending" or deletion is None:
             return _rejected(memory_id, "目标当前状态不可安全修复")
         if deletion.last_error_metadata.get("governance_repair_key") == idempotency_key:
+            if not _same_repair_request(
+                deletion,
+                expected_version=expected_version,
+                expected_anomaly=expected_anomaly,
+            ):
+                return _rejected(memory_id, "幂等键对应的修复请求参数不一致")
+            canonical_close = deletion.status == MemoryIndexOperationStatus.COMPLETED
+            if canonical_close:
+                try:
+                    await self.memory_service.lifecycle_store.complete_delete_from_index(
+                        deletion,
+                        now=self.clock(),
+                        provider_status="completed",
+                    )
+                except ValueError:
+                    return _rejected(memory_id, "目标状态或版本已变化，请刷新后重试")
             return MemoryGovernanceRepairResponse(
                 memory_id=memory_id,
                 accepted=True,
                 status="repairing",
-                action="cleanup_advance",
+                action="canonical_close" if canonical_close else "cleanup_advance",
                 reason="修复请求已受理",
                 idempotent_replay=True,
             )
@@ -147,6 +188,8 @@ class MemoryGovernanceService:
                 idempotency_key=idempotency_key,
                 now=self.clock(),
                 requeue=not canonical_close,
+                expected_version=expected_version,
+                expected_anomaly=expected_anomaly,
             )
             if canonical_close:
                 await self.memory_service.lifecycle_store.complete_delete_from_index(
@@ -164,6 +207,25 @@ class MemoryGovernanceService:
             reason="修复请求已受理",
             idempotent_replay=replay,
         )
+
+
+def _append_anomalies(anomalies, items, deletions, *, tenant_id: str, now: datetime) -> None:
+    for item in items:
+        if item.tenant_id != tenant_id:
+            continue
+        deletion = deletions.get(item.memory_id)
+        age = max(0.0, (now - _utc(item.updated_at)).total_seconds())
+        classified = _classify(item=item, operation=deletion, age=age)
+        if classified is not None:
+            anomalies.append(classified)
+
+
+def _same_repair_request(operation, *, expected_version: str, expected_anomaly: str) -> bool:
+    metadata = operation.last_error_metadata
+    return (
+        metadata.get("governance_expected_version") == expected_version
+        and metadata.get("governance_expected_anomaly") == expected_anomaly
+    )
 
 
 def _classify(*, item, operation, age: float) -> MemoryGovernanceItem | None:
@@ -191,8 +253,12 @@ def _classify(*, item, operation, age: float) -> MemoryGovernanceItem | None:
         status = "needs_attention"
     elif age >= DELETION_TIMEOUT_SECONDS:
         anomaly = "deletion_timeout"
-        reason = "删除清理等待已超过 300 秒"
-        status = "needs_attention"
+        if operation is None:
+            reason = "缺少删除清理操作，无法自动修复"
+            status = "blocked"
+        else:
+            reason = "删除清理等待已超过 300 秒"
+            status = "needs_attention"
     else:
         return None
     content = item.content.strip() or None
@@ -200,6 +266,7 @@ def _classify(*, item, operation, age: float) -> MemoryGovernanceItem | None:
         memory_id=item.memory_id,
         anomaly=anomaly,
         status=status,
+        repairable=operation is not None,
         version=_version(item, operation),
         content=content,
         content_state="present" if content else "cleared",
@@ -226,3 +293,19 @@ def _rejected(memory_id: str, reason: str) -> MemoryGovernanceRepairResponse:
         status="rejected",
         reason=reason,
     )
+
+
+async def _list_all_active(repository, **filters):
+    items = []
+    offset = 0
+    batch_size = 1000
+    while True:
+        batch = await repository.list_active(
+            **filters,
+            offset=offset,
+            limit=batch_size,
+        )
+        items.extend(batch)
+        if len(batch) < batch_size:
+            return items
+        offset += len(batch)

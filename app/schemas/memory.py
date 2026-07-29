@@ -601,7 +601,7 @@ class UserMemoryListItem(StrictBaseModel):
     availability: Literal["available", "preparing", "unavailable"]
     updated_at: datetime
     target_token: str = Field(min_length=1, max_length=128)
-    concurrency_token: str | None = Field(default=None, max_length=128)
+    concurrency_token: str = Field(min_length=1, max_length=128)
 
 
 class UserMemoryListResponse(StrictBaseModel):
@@ -631,6 +631,7 @@ class MemoryGovernanceItem(StrictBaseModel):
         "canonical_not_closed",
     ]
     status: Literal["needs_attention", "blocked", "repairing"]
+    repairable: bool
     version: str = Field(min_length=1, max_length=128)
     content: str | None = None
     content_state: Literal["present", "cleared"]

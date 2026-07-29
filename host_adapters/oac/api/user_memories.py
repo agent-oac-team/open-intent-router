@@ -30,6 +30,8 @@ async def list_user_memories(
         authorize_host_operation(identity, "read_only")
     except HostAuthorizationError as exc:
         raise HTTPException(status_code=403, detail="host_operation_forbidden") from exc
+    if identity.credential_class != "oac_user":
+        raise HTTPException(status_code=403, detail="host_operation_forbidden")
     if ports.memory_management is None:
         raise HTTPException(status_code=503, detail="memory_management_unavailable")
     return await ports.memory_management.list_user_memories(
@@ -51,6 +53,8 @@ async def delete_user_memory(
         authorize_host_operation(identity, "runtime_write_own")
     except HostAuthorizationError as exc:
         raise HTTPException(status_code=403, detail="host_operation_forbidden") from exc
+    if identity.credential_class != "oac_user":
+        raise HTTPException(status_code=403, detail="host_operation_forbidden")
     if ports.memory_management is None:
         raise HTTPException(status_code=503, detail="memory_management_unavailable")
     try:

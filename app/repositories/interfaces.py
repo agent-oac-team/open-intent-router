@@ -312,6 +312,10 @@ class MemoryIndexOperationRepository(Protocol):
         self, memory_id: str, *, tenant_id: str, limit: int = 100
     ) -> list[MemoryIndexOperation]: ...
 
+    async def latest_deletes_for_memories(
+        self, memory_ids: list[str], *, tenant_id: str
+    ) -> dict[str, MemoryIndexOperation]: ...
+
     async def claim(
         self,
         *,
