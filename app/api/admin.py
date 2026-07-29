@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.security import AdminActor, require_admin_token
 from app.dependencies import (
+    get_memory_governance_service,
     get_memory_management_service,
     get_memory_observability_service,
     get_registry_service,
@@ -10,10 +11,12 @@ from app.schemas.agents import AgentDefinition, AgentEnabledRequest, AgentListRe
 from app.schemas.memory import (
     MemoryAdminActionRequest,
     MemoryDebugResponse,
+    MemoryGovernanceResponse,
     MemoryManagementOperationResponse,
     MemoryMetricsResponse,
     MemoryRuntimeHealth,
 )
+from app.services.memory_governance import MemoryGovernanceService
 from app.services.memory_management import (
     MemoryManagementConflict,
     MemoryManagementNotFound,
@@ -132,6 +135,26 @@ async def admin_memory_debug(
         memory_key=memory_key,
         decision_status=decision_status,
         limit=limit,
+    )
+
+
+@router.get(
+    "/memories/governance",
+    response_model=MemoryGovernanceResponse,
+    dependencies=[Depends(require_admin_token)],
+)
+async def admin_memory_governance(
+    tenant_id: str,
+    memory_id: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    service: MemoryGovernanceService = Depends(get_memory_governance_service),
+) -> MemoryGovernanceResponse:
+    return await service.query(
+        tenant_id=tenant_id,
+        memory_id=memory_id,
+        page=page,
+        page_size=page_size,
     )
 
 

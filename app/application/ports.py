@@ -33,7 +33,11 @@ from app.schemas.knowledge_assets import (
     KnowledgeImportJob,
     KnowledgeSourceRef,
 )
-from app.schemas.memory import MemoryManagementOperationResponse, MemoryPendingDecisionEvidence
+from app.schemas.memory import (
+    MemoryGovernanceResponse,
+    MemoryManagementOperationResponse,
+    MemoryPendingDecisionEvidence,
+)
 from app.schemas.plans import Plan, PlanActionResponse
 from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.routing import RouteRequest, RouteResponse
@@ -97,6 +101,18 @@ class DelegatedRunApplicationPort(Protocol):
 @runtime_checkable
 class KnowledgeApplicationPort(Protocol):
     async def search(self, request: KnowledgeSearchRequest) -> KnowledgeSearchResponse: ...
+
+
+@runtime_checkable
+class MemoryGovernanceApplicationPort(Protocol):
+    async def query(
+        self,
+        *,
+        tenant_id: str,
+        memory_id: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> MemoryGovernanceResponse: ...
 
 
 @runtime_checkable

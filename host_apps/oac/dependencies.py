@@ -10,6 +10,7 @@ from app.dependencies import (
     get_execution_trace_service,
     get_knowledge_asset_service,
     get_knowledge_service,
+    get_memory_governance_service,
     get_memory_management_service,
     get_plan_service,
     get_registry_service,
@@ -57,6 +58,7 @@ def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
         turns=get_turn_service(),
         execution_traces=get_execution_trace_service(),
         memory_management=get_memory_management_service(),
+        memory_governance=get_memory_governance_service(),
     )
 
 

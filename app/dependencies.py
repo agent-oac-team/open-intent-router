@@ -96,6 +96,7 @@ from app.services.memory_formation import (
     TurnOutboxFormationConsumer,
     UnavailableFormationJobProcessor,
 )
+from app.services.memory_governance import MemoryGovernanceService
 from app.services.memory_integration import (
     MemoryFormationProcessor,
     StructuredFormationPublisher,
@@ -302,6 +303,11 @@ def get_memory_observability_service() -> MemoryObservabilityService:
         outbox_repository=get_turn_outbox_repository(),
         runtime_policy=get_memory_runtime_policy(),
     )
+
+
+@lru_cache
+def get_memory_governance_service() -> MemoryGovernanceService:
+    return MemoryGovernanceService(memory_service=get_memory_service())
 
 
 @lru_cache

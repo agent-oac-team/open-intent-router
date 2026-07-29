@@ -595,6 +595,30 @@ class MemoryDebugResponse(StrictBaseModel):
     metadata: JsonDict = Field(default_factory=dict)
 
 
+class MemoryGovernanceItem(StrictBaseModel):
+    memory_id: str
+    anomaly: Literal[
+        "deletion_timeout",
+        "deletion_dead_letter",
+        "provider_residual",
+        "canonical_not_closed",
+    ]
+    status: Literal["needs_attention", "blocked"]
+    content: str | None = None
+    content_state: Literal["present", "cleared"]
+    safe_reason: str = Field(max_length=128)
+    deletion_pending_seconds: float = Field(ge=0)
+    updated_at: datetime
+
+
+class MemoryGovernanceResponse(StrictBaseModel):
+    items: list[MemoryGovernanceItem] = Field(default_factory=list)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    total: int = Field(default=0, ge=0)
+    healthy: bool = True
+
+
 class MemoryDeleteRequest(StrictBaseModel):
     idempotency_key: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=500)
