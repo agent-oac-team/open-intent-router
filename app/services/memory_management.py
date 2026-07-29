@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
 from app.core.redaction import redact_text
 from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
@@ -9,10 +10,13 @@ from app.schemas.memory import (
     MemoryEvent,
     MemoryFormationCandidate,
     MemoryFormationReasonCode,
+    MemoryIndexStatus,
     MemoryLifecycleOperation,
     MemoryManagementOperationResponse,
     MemoryOperation,
     MemoryPendingDecisionEvidence,
+    UserMemoryListItem,
+    UserMemoryListResponse,
 )
 from app.services.memory_candidate_policy import CandidatePolicyResult
 
@@ -25,6 +29,25 @@ class MemoryManagementConflict(ValueError):
     pass
 
 
+def _user_availability(
+    status: MemoryIndexStatus | str | None,
+    operation_status: str | None,
+) -> str:
+    if status == MemoryIndexStatus.READY or str(status) == "ready":
+        return "available"
+    if str(operation_status) in {"pending", "claimed", "retry"}:
+        return "preparing"
+    if status == MemoryIndexStatus.PENDING or str(status) == "pending":
+        return "preparing"
+    return "unavailable"
+
+
+def _concurrency_token(revision_id: str | None) -> str | None:
+    if revision_id is None:
+        return None
+    return hashlib.sha256(f"user-memory-version\x1f{revision_id}".encode()).hexdigest()
+
+
 class MemoryManagementService:
     def __init__(self, *, memory_service, execution_traces=None) -> None:
         self.memory_service = memory_service
@@ -32,6 +55,54 @@ class MemoryManagementService:
         self.lifecycle = memory_service.lifecycle
         self.index_repository = memory_service.index_outbox
         self.execution_traces = execution_traces
+
+    async def list_user_memories(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        memory_type: str | None,
+        page: int,
+    ) -> UserMemoryListResponse:
+        scopes = (
+            [memory_type]
+            if memory_type in {"user_preference", "stable_fact"}
+            else ["user_preference", "stable_fact"]
+        )
+        page_size = 20
+        items, total = await self.repository.list_user_memories_page(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            scopes=scopes,
+            offset=(page - 1) * page_size,
+            limit=page_size,
+        )
+        operations = [
+            await self.index_repository.list_for_memory(
+                item.memory_id,
+                tenant_id=tenant_id,
+                limit=1,
+            )
+            for item in items
+        ]
+        return UserMemoryListResponse(
+            items=[
+                UserMemoryListItem(
+                    content=item.content,
+                    memory_type=str(item.scope),
+                    availability=_user_availability(
+                        item.index_status,
+                        operations[index][0].status if operations[index] else None,
+                    ),
+                    updated_at=item.updated_at,
+                    concurrency_token=_concurrency_token(item.current_revision_id),
+                )
+                for index, item in enumerate(items)
+            ],
+            page=page,
+            total=total,
+            total_pages=math.ceil(total / page_size),
+        )
 
     async def get_pending_decision_evidence(
         self,

@@ -595,6 +595,22 @@ class MemoryDebugResponse(StrictBaseModel):
     metadata: JsonDict = Field(default_factory=dict)
 
 
+class UserMemoryListItem(StrictBaseModel):
+    content: str
+    memory_type: Literal["user_preference", "stable_fact"]
+    availability: Literal["available", "preparing", "unavailable"]
+    updated_at: datetime
+    concurrency_token: str | None = Field(default=None, max_length=128)
+
+
+class UserMemoryListResponse(StrictBaseModel):
+    items: list[UserMemoryListItem] = Field(default_factory=list)
+    page: int = Field(ge=1)
+    page_size: Literal[20] = 20
+    total: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
+
+
 class MemoryDeleteRequest(StrictBaseModel):
     idempotency_key: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=500)

@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, desc, exists, or_, select, update
+from sqlalchemy import delete, desc, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -89,6 +89,38 @@ class MemoryItemRepository:
             item.model_copy(deep=True)
             for item in sorted(values, key=lambda item: item.updated_at, reverse=True)[:limit]
         ]
+
+    async def list_user_memories_page(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        scopes: list[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[MemoryItem], int]:
+        now = datetime.now(UTC)
+        scope_set = set(scopes)
+        values = [
+            item
+            for item in self.items.values()
+            if item.tenant_id == tenant_id
+            and item.user_id == user_id
+            and item.subject_type == "user"
+            and item.subject_id == user_id
+            and str(item.scope) in scope_set
+            and item.lifecycle_status == "active"
+            and _memory_visible_for_lifecycle_query(item, now)
+        ]
+        ordered = sorted(
+            values,
+            key=lambda item: (item.updated_at, item.memory_id),
+            reverse=True,
+        )
+        return (
+            [item.model_copy(deep=True) for item in ordered[offset : offset + limit]],
+            len(ordered),
+        )
 
     async def get_current_by_key(
         self,
@@ -492,6 +524,53 @@ class DatabaseMemoryItemRepository:
             stmt = stmt.order_by(desc(MemoryItemModel.updated_at))
             rows = (await session.execute(stmt)).scalars().all()
             return [_memory_from_row(row) for row in rows][:limit]
+
+    async def list_user_memories_page(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        scopes: list[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[MemoryItem], int]:
+        async with self.session_factory() as session:
+            now = datetime.now(UTC)
+            filters = (
+                MemoryItemModel.tenant_id == tenant_id,
+                MemoryItemModel.user_id == user_id,
+                MemoryItemModel.subject_type == "user",
+                MemoryItemModel.subject_id == user_id,
+                MemoryItemModel.scope.in_(scopes),
+                MemoryItemModel.lifecycle_status == "active",
+                or_(
+                    MemoryItemModel.ttl_expires_at.is_(None),
+                    MemoryItemModel.ttl_expires_at > now,
+                ),
+            )
+            total = int(
+                await session.scalar(
+                    select(func.count()).select_from(MemoryItemModel).where(*filters)
+                )
+                or 0
+            )
+            rows = (
+                (
+                    await session.execute(
+                        select(MemoryItemModel)
+                        .where(*filters)
+                        .order_by(
+                            desc(MemoryItemModel.updated_at),
+                            desc(MemoryItemModel.memory_id),
+                        )
+                        .offset(offset)
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [_memory_from_row(row) for row in rows], total
 
     async def get_current_by_key(
         self,
