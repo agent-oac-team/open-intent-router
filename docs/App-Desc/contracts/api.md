@@ -163,6 +163,8 @@ Memory API 用于 M5 记忆召回、低风险写入候选处理、TTL 清理和�
 - `GET /api/v1/memories/debug`：按 user、tenant、agent、scope 或 request ID 查看当前可见记忆项、写入/过期事件、mem0 provider 状态、外部 ID 映射和最近错误摘要。按 request 查询时额外返回 `request_trace`，包含 `overall_stage/terminal/retryable/reason_code` 及 Turn、Run/Result、Outbox、Formation、Memory/Revision、Index 的有界 ID 关联。正文和 Provider 凭证不会进入该高层 trace。
 - `GET /api/v1/user-memories`：OAC Host V2 认证后的个人产品读接口。主体只取签名 Principal；固定每页 20 条，支持 `page` 与可选 `memory_type=user_preference|stable_fact`，按更新时间倒序返回 active 用户偏好和稳定事实。响应只含正文、产品类型、可用状态、更新时间、分页信息，以及前端不展示的目标令牌和并发令牌；不返回内部 ID、置信度、Provider、索引操作、dead-letter 或 Revision 历史。
 - `DELETE /api/v1/user-memories/{target_token}`：OAC Host V2 当前 Principal 的单目标产品删除接口。请求只接受稳定 `idempotency_key` 和列表返回的 `concurrency_token`；服务端解析目标令牌后重新校验 tenant、user、subject、scope 与版本。跨主体和不存在目标统一返回 `404`，版本变化返回 `409`。受理响应只返回 `accepted` 与 `idempotent_replay`；目标在受理事务中立即 fail-closed，从个人列表和后续 Recall 排除，异步清理状态不进入产品响应。
+- `GET /api/v1/admin/memories/governance`：使用管理员凭证按 `tenant_id` 查询删除异常工作队列；无 `memory_id` 时按 `page/page_size` 分页，指定 `memory_id` 时返回单条详情。普通删除等待满 300 秒才进入，删除 dead-letter、确认的 Provider 残留和外部删除完成但 Canonical 未收口立即进入；Formation、普通索引不同步和 Recall 质量不进入。本接口是独立产品读模型，不复用 Memory Debug。
+- `POST /api/v1/admin/memories/governance/{memory_id}/repair`：使用具备 `control_write` 的管理员 Host 身份提交单目标治理修复。请求必须携带稳定 `idempotency_key`、查询返回的 `expected_version` 与 `expected_anomaly`；服务端在提交时重读 Canonical Item 和删除操作，只会确定性选择安全清理推进或 Canonical 收口。状态或版本变化、目标不可修复时返回 `accepted=false` 和安全原因，不执行副作用；受理只表示进入 `repairing`，不表示修复完成。
 
 `request_trace.overall_stage` 的主要值为 `turn_pending`、`turn_running`、`outbox_pending`、
 `formation_skipped`、`formation_pending/retry/dead_letter`、`completed_no_candidate`、

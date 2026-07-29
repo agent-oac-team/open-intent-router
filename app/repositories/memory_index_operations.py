@@ -51,6 +51,46 @@ class MemoryIndexOutboxRepository:
             for operation in sorted(values, key=lambda item: item.updated_at, reverse=True)[:limit]
         ]
 
+    async def accept_governance_repair(
+        self,
+        index_operation_id: str,
+        *,
+        tenant_id: str,
+        expected_status: MemoryIndexOperationStatus,
+        idempotency_key: str,
+        now: datetime,
+        requeue: bool,
+    ) -> tuple[MemoryIndexOperation, bool]:
+        async with self._lock:
+            operation = self.operations.get(index_operation_id)
+            if operation is None or operation.tenant_id != tenant_id:
+                raise ValueError("Governance repair target not found")
+            previous_key = operation.last_error_metadata.get("governance_repair_key")
+            if previous_key == idempotency_key:
+                return operation.model_copy(deep=True), True
+            if operation.status != expected_status:
+                raise ValueError("Governance repair status changed")
+            metadata = {
+                **operation.last_error_metadata,
+                "governance_repair_key": idempotency_key,
+            }
+            updates = {"last_error_metadata": metadata, "updated_at": now}
+            if requeue:
+                updates.update(
+                    {
+                        "status": MemoryIndexOperationStatus.PENDING,
+                        "attempt_count": 0,
+                        "lease_owner": None,
+                        "lease_token": None,
+                        "lease_expires_at": None,
+                        "next_attempt_at": None,
+                        "last_error_code": None,
+                    }
+                )
+            stored = operation.model_copy(deep=True, update=updates)
+            self.operations[index_operation_id] = stored
+            return stored.model_copy(deep=True), False
+
     async def claim(
         self,
         *,
@@ -270,6 +310,50 @@ class DatabaseMemoryIndexOutboxRepository:
                 .all()
             )
             return [_operation_from_row(row) for row in rows]
+
+    async def accept_governance_repair(
+        self,
+        index_operation_id: str,
+        *,
+        tenant_id: str,
+        expected_status: MemoryIndexOperationStatus,
+        idempotency_key: str,
+        now: datetime,
+        requeue: bool,
+    ) -> tuple[MemoryIndexOperation, bool]:
+        async with self.session_factory() as session:
+            row = await session.scalar(
+                select(MemoryIndexOperationModel)
+                .where(
+                    MemoryIndexOperationModel.index_operation_id == index_operation_id,
+                    MemoryIndexOperationModel.tenant_id == tenant_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                raise ValueError("Governance repair target not found")
+            operation = _operation_from_row(row)
+            if operation.last_error_metadata.get("governance_repair_key") == idempotency_key:
+                return operation, True
+            if operation.status != expected_status:
+                raise ValueError("Governance repair status changed")
+            metadata = {
+                **operation.last_error_metadata,
+                "governance_repair_key": idempotency_key,
+            }
+            row.last_error_metadata_text = dumps(metadata)
+            row.updated_at = now
+            if requeue:
+                row.status = "pending"
+                row.attempt_count = 0
+                row.lease_owner = None
+                row.lease_token = None
+                row.lease_expires_at = None
+                row.next_attempt_at = None
+                row.last_error_code = None
+            await session.commit()
+            await session.refresh(row)
+            return _operation_from_row(row), False
 
     async def claim(
         self,

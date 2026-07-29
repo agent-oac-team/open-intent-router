@@ -34,6 +34,8 @@ from app.schemas.knowledge_assets import (
     KnowledgeSourceRef,
 )
 from app.schemas.memory import (
+    MemoryGovernanceRepairResponse,
+    MemoryGovernanceResponse,
     MemoryManagementOperationResponse,
     MemoryPendingDecisionEvidence,
     UserMemoryDeleteResponse,
@@ -102,6 +104,28 @@ class DelegatedRunApplicationPort(Protocol):
 @runtime_checkable
 class KnowledgeApplicationPort(Protocol):
     async def search(self, request: KnowledgeSearchRequest) -> KnowledgeSearchResponse: ...
+
+
+@runtime_checkable
+class MemoryGovernanceApplicationPort(Protocol):
+    async def query(
+        self,
+        *,
+        tenant_id: str,
+        memory_id: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> MemoryGovernanceResponse: ...
+
+    async def repair(
+        self,
+        *,
+        tenant_id: str,
+        memory_id: str,
+        expected_version: str,
+        expected_anomaly: str,
+        idempotency_key: str,
+    ) -> MemoryGovernanceRepairResponse: ...
 
 
 @runtime_checkable

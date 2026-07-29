@@ -6,6 +6,7 @@ from app.application import (
     ExecutionTraceApplicationPort,
     KnowledgeApplicationPort,
     KnowledgeAssetApplicationPort,
+    MemoryGovernanceApplicationPort,
     MemoryManagementApplicationPort,
     PlanApplicationPort,
     RegistryApplicationPort,
@@ -26,3 +27,4 @@ class OacAdapterApplicationPorts:
     turns: TurnApplicationPort
     execution_traces: ExecutionTraceApplicationPort | None = None
     memory_management: MemoryManagementApplicationPort | None = None
+    memory_governance: MemoryGovernanceApplicationPort | None = None
