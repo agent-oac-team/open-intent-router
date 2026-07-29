@@ -32,7 +32,11 @@ from app.services.memory_candidate_policy import MemoryCandidatePolicy, build_me
 from app.services.memory_formation import FormationJobWorker
 from app.services.memory_integration import MemoryFormationProcessor
 from app.services.memory_lifecycle import MemoryConsolidationService
-from app.services.memory_management import MemoryManagementNotFound, MemoryManagementService
+from app.services.memory_management import (
+    MemoryManagementConflict,
+    MemoryManagementNotFound,
+    MemoryManagementService,
+)
 from app.services.memory_observability import MemoryObservabilityService
 from app.services.memory_service import MemoryService
 from app.services.turn_service import TurnService
@@ -1013,17 +1017,56 @@ async def test_cross_tenant_formation_consolidation_debug_management_and_recall_
             idempotency_key="cross-subject-delete",
             expected_revision_id=agent_subject.current_revision_id,
         )
-    deleted = await management.request_delete(
-        memory_id=remaining_a[0].memory_id,
+    visible = await management.list_user_memories(
         tenant_id="tenant_a",
         user_id="user_a",
-        actor="user_a",
-        reason="acceptance cleanup",
-        idempotency_key="owned-delete",
-        expected_revision_id=remaining_a[0].current_revision_id,
+        memory_type="user_preference",
+        page=1,
     )
-    assert deleted.status == "pending"
+    assert len(visible.items) == 1
+    deleted = await management.delete_user_memory(
+        target_token=visible.items[0].target_token,
+        concurrency_token=visible.items[0].concurrency_token or "",
+        tenant_id="tenant_a",
+        user_id="user_a",
+        idempotency_key="owned-delete",
+    )
+    assert deleted.accepted is True
+    replay = await management.delete_user_memory(
+        target_token=visible.items[0].target_token,
+        concurrency_token=visible.items[0].concurrency_token or "",
+        tenant_id="tenant_a",
+        user_id="user_a",
+        idempotency_key="owned-delete",
+    )
+    assert replay.idempotent_replay is True
+
+    fail_closed_recall = await service.recall(
+        MemoryRecallRequest(
+            query="concise answers",
+            user=UserContext(id="user_a", attributes={"tenant_id": "tenant_a"}),
+            scopes=["user_preference"],
+            max_items=10,
+        )
+    )
+    assert fail_closed_recall.context.items == []
     await _drain_index(service)
+    completed_replay = await management.delete_user_memory(
+        target_token=visible.items[0].target_token,
+        concurrency_token=visible.items[0].concurrency_token or "",
+        tenant_id="tenant_a",
+        user_id="user_a",
+        idempotency_key="owned-delete",
+    )
+    assert completed_replay.idempotent_replay is True
+    with pytest.raises(MemoryManagementConflict, match="version changed"):
+        await management.delete_user_memory(
+            target_token=visible.items[0].target_token,
+            concurrency_token="changed-version",
+            tenant_id="tenant_a",
+            user_id="user_a",
+            idempotency_key="owned-delete",
+        )
 
     final_a = await service.recall(
         MemoryRecallRequest(

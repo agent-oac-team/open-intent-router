@@ -600,6 +600,7 @@ class UserMemoryListItem(StrictBaseModel):
     memory_type: Literal["user_preference", "stable_fact"]
     availability: Literal["available", "preparing", "unavailable"]
     updated_at: datetime
+    target_token: str = Field(min_length=1, max_length=128)
     concurrency_token: str | None = Field(default=None, max_length=128)
 
 
@@ -609,6 +610,16 @@ class UserMemoryListResponse(StrictBaseModel):
     page_size: Literal[20] = 20
     total: int = Field(ge=0)
     total_pages: int = Field(ge=0)
+
+
+class UserMemoryDeleteRequest(StrictBaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=256)
+    concurrency_token: str = Field(min_length=1, max_length=128)
+
+
+class UserMemoryDeleteResponse(StrictBaseModel):
+    accepted: Literal[True] = True
+    idempotent_replay: bool = False
 
 
 class MemoryDeleteRequest(StrictBaseModel):

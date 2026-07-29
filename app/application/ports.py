@@ -36,6 +36,7 @@ from app.schemas.knowledge_assets import (
 from app.schemas.memory import (
     MemoryManagementOperationResponse,
     MemoryPendingDecisionEvidence,
+    UserMemoryDeleteResponse,
     UserMemoryListResponse,
 )
 from app.schemas.plans import Plan, PlanActionResponse
@@ -205,6 +206,16 @@ class MemoryManagementApplicationPort(Protocol):
         memory_type: str | None,
         page: int,
     ) -> UserMemoryListResponse: ...
+
+    async def delete_user_memory(
+        self,
+        *,
+        target_token: str,
+        concurrency_token: str,
+        tenant_id: str,
+        user_id: str,
+        idempotency_key: str,
+    ) -> UserMemoryDeleteResponse: ...
 
     async def get_pending_decision_evidence(
         self,

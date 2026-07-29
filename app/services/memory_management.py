@@ -15,6 +15,7 @@ from app.schemas.memory import (
     MemoryManagementOperationResponse,
     MemoryOperation,
     MemoryPendingDecisionEvidence,
+    UserMemoryDeleteResponse,
     UserMemoryListItem,
     UserMemoryListResponse,
 )
@@ -46,6 +47,10 @@ def _concurrency_token(revision_id: str | None) -> str | None:
     if revision_id is None:
         return None
     return hashlib.sha256(f"user-memory-version\x1f{revision_id}".encode()).hexdigest()
+
+
+def _target_token(memory_id: str) -> str:
+    return hashlib.sha256(f"user-memory-target\x1f{memory_id}".encode()).hexdigest()
 
 
 class MemoryManagementService:
@@ -95,6 +100,7 @@ class MemoryManagementService:
                         operations[index][0].status if operations[index] else None,
                     ),
                     updated_at=item.updated_at,
+                    target_token=_target_token(item.memory_id),
                     concurrency_token=_concurrency_token(item.current_revision_id),
                 )
                 for index, item in enumerate(items)
@@ -102,6 +108,62 @@ class MemoryManagementService:
             page=page,
             total=total,
             total_pages=math.ceil(total / page_size),
+        )
+
+    async def delete_user_memory(
+        self,
+        *,
+        target_token: str,
+        concurrency_token: str,
+        tenant_id: str,
+        user_id: str,
+        idempotency_key: str,
+    ) -> UserMemoryDeleteResponse:
+        candidates = await self.repository.list_active(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            subject_type="user",
+            subject_id=user_id,
+            scopes=["user_preference", "stable_fact"],
+            lifecycle_statuses=["active", "deletion_pending"],
+            limit=10_000,
+        )
+        target = next(
+            (item for item in candidates if _target_token(item.memory_id) == target_token),
+            None,
+        )
+        if target is None:
+            operation_id = _stable_id(
+                "mfop", f"delete\x1f{tenant_id}\x1f{user_id}\x1f{idempotency_key}"
+            )
+            audit = await self.repository.get_event(
+                _audit_event_id(operation_id),
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+            payload = audit.payload if audit is not None else {}
+            if (
+                audit is None
+                or audit.memory_id is None
+                or _target_token(audit.memory_id) != target_token
+            ):
+                raise MemoryManagementNotFound("Memory operation target not found")
+            if _concurrency_token(payload.get("expected_revision_id")) != concurrency_token:
+                raise MemoryManagementConflict("Memory version changed")
+            return UserMemoryDeleteResponse(idempotent_replay=True)
+        if _concurrency_token(target.current_revision_id) != concurrency_token:
+            raise MemoryManagementConflict("Memory version changed")
+        result = await self.request_delete(
+            memory_id=target.memory_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            actor=user_id,
+            reason="user removed memory",
+            idempotency_key=idempotency_key,
+            expected_revision_id=target.current_revision_id,
+        )
+        return UserMemoryDeleteResponse(
+            idempotent_replay=result.idempotent_replay,
         )
 
     async def get_pending_decision_evidence(

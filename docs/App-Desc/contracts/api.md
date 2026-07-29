@@ -161,7 +161,8 @@ Memory API 用于 M5 记忆召回、低风险写入候选处理、TTL 清理和�
 - `POST /api/v1/memories/write-candidates`：提交候选记忆，服务根据置信度、敏感标记、scope TTL 等策略返回 accepted/rejected 决策。
 - `POST /api/v1/memories/cleanup`：清理已过期记忆，并记录过期事件。
 - `GET /api/v1/memories/debug`：按 user、tenant、agent、scope 或 request ID 查看当前可见记忆项、写入/过期事件、mem0 provider 状态、外部 ID 映射和最近错误摘要。按 request 查询时额外返回 `request_trace`，包含 `overall_stage/terminal/retryable/reason_code` 及 Turn、Run/Result、Outbox、Formation、Memory/Revision、Index 的有界 ID 关联。正文和 Provider 凭证不会进入该高层 trace。
-- `GET /api/v1/user-memories`：OAC Host V2 认证后的个人产品读接口。主体只取签名 Principal；固定每页 20 条，支持 `page` 与可选 `memory_type=user_preference|stable_fact`，按更新时间倒序返回 active 用户偏好和稳定事实。响应只含正文、产品类型、可用状态、更新时间、分页信息和不展示的并发令牌，不返回内部 ID、置信度、Provider、索引操作、dead-letter 或 Revision 历史。
+- `GET /api/v1/user-memories`：OAC Host V2 认证后的个人产品读接口。主体只取签名 Principal；固定每页 20 条，支持 `page` 与可选 `memory_type=user_preference|stable_fact`，按更新时间倒序返回 active 用户偏好和稳定事实。响应只含正文、产品类型、可用状态、更新时间、分页信息，以及前端不展示的目标令牌和并发令牌；不返回内部 ID、置信度、Provider、索引操作、dead-letter 或 Revision 历史。
+- `DELETE /api/v1/user-memories/{target_token}`：OAC Host V2 当前 Principal 的单目标产品删除接口。请求只接受稳定 `idempotency_key` 和列表返回的 `concurrency_token`；服务端解析目标令牌后重新校验 tenant、user、subject、scope 与版本。跨主体和不存在目标统一返回 `404`，版本变化返回 `409`。受理响应只返回 `accepted` 与 `idempotent_replay`；目标在受理事务中立即 fail-closed，从个人列表和后续 Recall 排除，异步清理状态不进入产品响应。
 
 `request_trace.overall_stage` 的主要值为 `turn_pending`、`turn_running`、`outbox_pending`、
 `formation_skipped`、`formation_pending/retry/dead_letter`、`completed_no_candidate`、
