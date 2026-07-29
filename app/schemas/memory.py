@@ -619,6 +619,7 @@ class UserMemoryDeleteRequest(StrictBaseModel):
 
 class UserMemoryDeleteResponse(StrictBaseModel):
     accepted: Literal[True] = True
+    idempotent_replay: bool = False
 
 
 class MemoryGovernanceItem(StrictBaseModel):
