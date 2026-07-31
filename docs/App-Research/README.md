@@ -52,6 +52,7 @@ OpenSpec 的当前状态判断属于可执行工作流，见 [OpenSpec 交接](.
 | [IRS 知识补数验收](validation/irs-knowledge-transition-import-report.md) | 2026-07-21 | IRS 测试环境增量补数、数据对账和旧链路验证；不作为 OIR 后续知识研发任务 |
 | [Memory Runtime Mode 本地验收](validation/simplify-memory-runtime-mode-local-acceptance.md) | 2026-07-21，部分通过 | 三态启动、Registry、自动化门禁与未完成浏览器/测试环境证据 |
 | [Memory 显式配置与不变性本地基线](validation/oir-memory-configuration-invariance-local-baseline.md) | 2026-07-31，本地隔离通过 | 独立 `MEMORY_*` 配置、无正文 CRUD/Recall 基线与环境验证缺口 |
+| [knowledge_sys 测试环境切换验收](validation/knowledge-sys-test-cutover-2026-07-31.md) | 2026-07-31，通过 | 独立部署、JWT/JWKS、真实数据、OIR 副本清理、Memory 不变性与旧中控退役证据 |
 
 测试报告只证明当时的代码、环境和样本。当前测试是否通过必须重新执行对应命令；本地 smoke 也不能替代测试环境 replay、cutover 或生产门禁。
 

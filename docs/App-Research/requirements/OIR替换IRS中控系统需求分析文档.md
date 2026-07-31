@@ -150,20 +150,20 @@ OAC 可以是一等宿主，
 
 本分析基于以下项目当前代码和文档：
 
-- `open_intent_router`：OIR Core、Context、Memory、Knowledge、Plan、Registry、API 与测试。
-- `intent_recon_sys`：IRS Central API、Agent Registry、Knowledge API、知识管理和 PostgreSQL Schema。
+- `open_intent_router`：OIR Core、Context、Memory、通用 Knowledge Provider 接口、Plan、Registry、API 与测试。
+- `knowledge_sys`：独立 Knowledge API、知识管理、审计和既有 PostgreSQL/Milvus Storage。
 - `OAC`：AI Sidebar、Central API Client、Go Central Proxy、后台 Registry、知识管理代理和 Next.js 知识精确读取代理。
 - `data/内容生产`：6 份知识原始工作簿。
 
 重点参考文档：
 
-- [OAC 共享知识库接口文档](../../../../intent_recon_sys/docs/OAC共享知识库接口文档.md)（IRS 知识库主要接口契约，知识兼容规范基线）
+- [OAC 共享知识库接口文档](../../../../knowledge_sys/docs/OAC共享知识库接口文档.md)（`knowledge_sys` 主要接口契约与兼容规范基线）
 - [OAC 从 IRS 无感迁移到 OIR 方案记录](../designs/oac-irs-to-oir-seamless-migration-plan.md)
 - [中控能力设计文档](../designs/中控能力设计文档.md)
 - [上下文模块改造需求分析文档](./上下文模块改造需求分析文档.md)
 - [Governed Context Pipeline 验收记录](../validation/governed-context-pipeline-acceptance.md)
 - [Conversation Memory Formation 上线与回退](../../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md)
-- [IRS 共享知识库需求分析文档](../../../../intent_recon_sys/docs/OAC共享知识库需求分析文档.md)
+- [共享知识库需求分析文档](../../../../knowledge_sys/docs/OAC共享知识库需求分析文档.md)
 - [OAC API 文档](../../../../OAC/docs/architecture/API.md)
 
 知识兼容结论必须按以下证据层级交叉确认：
@@ -1393,7 +1393,7 @@ Memory Formation 不从 Adapter 拼接文本，也不从孤立 Event 猜测结�
 | 术语 | 说明 |
 | --- | --- |
 | OIR | `open_intent_router`，目标通用意图路由与 Agent 编排核心 |
-| IRS | `intent_recon_sys`，当前 OAC 中控后端，迁移后下线 |
+| IRS | 已从 `knowledge_sys` 删除并由 OIR 承接的历史中控能力；测试完成后退役 |
 | OAC | 当前宿主内容运营平台 |
 | Host Adapter | 宿主协议与 OIR 通用协议之间的适配、防腐和治理层 |
 | Canonical Conversation Turn | OIR 对一次用户输入及其最终语义结果的唯一、可追溯运行记录 |

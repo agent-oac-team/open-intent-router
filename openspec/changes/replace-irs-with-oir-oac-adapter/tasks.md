@@ -43,6 +43,6 @@
 - [x] 6.2 [#21] 更新 OIR/OAC 跨仓配置、测试、文档和部署引用，Central 与 Knowledge URL 独立
 - [ ] 6.3 [#22] 收缩旧仓库、distribution、包、进程和构建标识，不修改 SQL/Milvus Storage Identifier
   - [x] 6.3a OIR Host Runtime 删除 IRS fallback 客户端、网关、配置、DI、指标和演练入口；中控失败 fail closed
-- [ ] 6.4 [#23] 切换测试环境到 `knowledge-sys-test`，停止 `oac-central-test` 并运行全部门禁
+- [x] 6.4 [#23] 切换测试环境到 `knowledge-sys-test`，停止 `oac-central-test` 并运行全部门禁
 - [ ] 6.5 [#24] 同轮发布生产 `knowledge-sys` 并永久退役 IRS 中控，不以 IRS 为回滚目标
 - [ ] 6.6 [#25] 旧 Knowledge 入口连续 7 天零流量后删除兼容和凭据转换，完成 OpenSpec、文档和证据验收
