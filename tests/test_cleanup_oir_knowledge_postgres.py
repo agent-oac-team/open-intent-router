@@ -5,7 +5,18 @@ from uuid import uuid4
 import pytest
 
 from scripts.cleanup_oir_knowledge import KNOWLEDGE_TABLES
-from scripts.cleanup_oir_knowledge_postgres import cleanup_oir_knowledge_postgres
+from scripts.cleanup_oir_knowledge_postgres import (
+    CleanupBlocked,
+    _parse_pg_tid,
+    cleanup_oir_knowledge_postgres,
+)
+
+
+def test_postgres_tid_locator_is_converted_for_asyncpg() -> None:
+    assert _parse_pg_tid("(0,3)") == (0, 3)
+    assert _parse_pg_tid("(123,45)") == (123, 45)
+    with pytest.raises(CleanupBlocked, match="invalid ctid"):
+        _parse_pg_tid("0,3")
 
 
 @pytest.mark.skipif(

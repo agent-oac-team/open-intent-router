@@ -297,7 +297,7 @@ async def _pg_history_plan(connection, tables):
                         (
                             table,
                             column,
-                            row["locator"],
+                            _parse_pg_tid(row["locator"]),
                             json.dumps(
                                 sanitized,
                                 ensure_ascii=False,
@@ -307,6 +307,14 @@ async def _pg_history_plan(connection, tables):
                         )
                     )
     return {"rows_scanned": scanned, "updates": updates}
+
+
+def _parse_pg_tid(value: str) -> tuple[int, int]:
+    """Convert PostgreSQL's textual ``ctid`` into asyncpg's native tid value."""
+    match = re.fullmatch(r"\((\d+),(\d+)\)", value)
+    if match is None:
+        raise CleanupBlocked("PostgreSQL returned an invalid ctid locator")
+    return int(match.group(1)), int(match.group(2))
 
 
 async def _pg_columns(connection) -> dict[str, dict[str, str]]:
