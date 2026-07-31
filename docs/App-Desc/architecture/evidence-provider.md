@@ -58,7 +58,9 @@ M6 引入 Evidence Provider Scheduler 后，固定问题仍保留特殊地位：
 
 ## 与知识库检索的关系
 
-从 `intent_recon_sys` 迁移而来的路由阶段知识证据，可以作为 Evidence Provider 插件；Agent 执行阶段知识检索则通过 `AgentDefinition.context.knowledge` 和 `/api/v1/knowledge/search` 治理。
+路由阶段知识证据可以作为 Evidence Provider 插件；Agent 执行阶段知识检索则通过
+`AgentDefinition.context.knowledge` 和 Provider-neutral `KnowledgeProvider.retrieve`
+治理。OIR 不提供 Knowledge HTTP API。
 
 推荐方式：
 

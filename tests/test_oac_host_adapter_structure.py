@@ -1,11 +1,11 @@
+from dataclasses import dataclass
 from importlib import import_module
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.application import KnowledgeApplicationPort, RoutingApplicationPort
+from app.application import RoutingApplicationPort
 from app.core.config import Settings
-from app.schemas.knowledge import KnowledgeSearchResponse
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_apps.oac.config import (
@@ -17,7 +17,6 @@ from host_apps.oac.config import (
 )
 from host_apps.oac.dependencies import get_oac_adapter_application_ports
 from host_apps.oac.main import create_app as create_oac_host_app
-from tests.fakes.application_ports import RecordingKnowledgePort, RecordingRoutingPort
 
 
 @pytest.mark.parametrize(
@@ -49,7 +48,7 @@ def test_oac_host_composition_root_includes_oir_core() -> None:
 
 def test_oac_host_profile_keeps_host_configuration_out_of_core(monkeypatch) -> None:
     monkeypatch.setenv("OAC_HOST_ENVIRONMENT", "test")
-    monkeypatch.setenv("OAC_HOST_IRS_FALLBACK_BASE_URL", "http://127.0.0.1:18081")
+    monkeypatch.setenv("OAC_HOST_IRS_FALLBACK_BASE_URL", "http://retired.invalid")
     monkeypatch.setenv("OAC_HOST_COZE_WORKFLOW_CREDENTIAL", "test-placeholder")
     monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./data/core-only.db")
 
@@ -58,7 +57,15 @@ def test_oac_host_profile_keeps_host_configuration_out_of_core(monkeypatch) -> N
     profile = build_oac_host_profile(core=core, host=host)
 
     assert profile.host.identity_audience == "oac-oir-adapter-test"
-    assert profile.host.irs_fallback_base_url == "http://127.0.0.1:18081"
+    for retired_name in (
+        "fallback_mode",
+        "irs_fallback_base_url",
+        "irs_fallback_service_token",
+        "irs_control_write_enabled",
+        "irs_runtime_write_enabled",
+        "irs_registry_write_enabled",
+    ):
+        assert not hasattr(profile.host, retired_name)
     assert profile.host.coze_workflow_credential is not None
     assert profile.core.database_url == "sqlite+aiosqlite:///./data/core-only.db"
     assert not hasattr(profile.core, "coze_workflow_credential")
@@ -77,11 +84,10 @@ def test_legacy_knowledge_search_path_never_guesses_protocol_from_body(payload: 
 
     response = client.post("/api/v1/knowledge/search", json=payload)
 
-    assert response.status_code == 401
-    assert response.json() == {"detail": "host_authentication_failed"}
+    assert response.status_code == 404
 
 
-def test_native_knowledge_search_is_available_only_under_internal_prefix() -> None:
+def test_native_knowledge_search_is_not_exposed_under_internal_prefix() -> None:
     client = TestClient(create_oac_host_app())
 
     response = client.post(
@@ -89,8 +95,7 @@ def test_native_knowledge_search_is_available_only_under_internal_prefix() -> No
         json={"query": "native query", "user": {"id": "user-1"}},
     )
 
-    assert response.status_code == 200
-    assert "context" in response.json()
+    assert response.status_code == 404
 
 
 def test_adapter_composition_exposes_only_public_application_ports() -> None:
@@ -98,8 +103,16 @@ def test_adapter_composition_exposes_only_public_application_ports() -> None:
 
     assert isinstance(ports, OacAdapterApplicationPorts)
     assert isinstance(ports.routing, RoutingApplicationPort)
-    assert isinstance(ports.knowledge, KnowledgeApplicationPort)
+    assert not hasattr(ports, "knowledge")
+    assert not hasattr(ports, "knowledge_assets")
     assert not hasattr(ports, "run_repository")
+
+
+def test_host_runtime_has_no_irs_fallback_dependency_aliases() -> None:
+    dependencies = import_module("host_apps.oac.dependencies")
+
+    assert not hasattr(dependencies, "get_irs_fallback_gateway")
+    assert not hasattr(dependencies, "get_irs_legacy_client")
 
 
 def test_recording_application_port_doubles_match_public_protocols() -> None:
@@ -111,10 +124,7 @@ def test_recording_application_port_doubles_match_public_protocols() -> None:
             context=RouteContext(),
         )
     )
-    knowledge = RecordingKnowledgePort(response=KnowledgeSearchResponse())
-
     assert isinstance(routing, RoutingApplicationPort)
-    assert isinstance(knowledge, KnowledgeApplicationPort)
 
 
 def test_host_capabilities_are_versioned_and_redacted() -> None:
@@ -132,9 +142,9 @@ def test_host_capabilities_are_versioned_and_redacted() -> None:
         "authorization",
     }
     assert body["governance"]["write_fence"] == "enabled"
-    assert body["governance"]["circuit"] in {"closed", "open", "half_open"}
+    assert set(body["governance"]) == {"write_fence", "write_freeze"}
     assert set(body["versions"]) == {"adapter", "core", "schema", "policy"}
-    assert set(body["modes"]) == {"knowledge", "memory", "shadow", "fallback"}
+    assert set(body["modes"]) == {"memory", "shadow"}
     authorization = body["authorization"]
     assert authorization == {
         "current_signature_version": "v2",
@@ -168,7 +178,7 @@ def test_host_capabilities_are_versioned_and_redacted() -> None:
     assert "workspace.operations.access" not in serialized
 
 
-def test_registry_single_writer_gate_rejects_file_feishu_and_irs_restore_paths() -> None:
+def test_registry_single_writer_gate_rejects_file_and_feishu_restore_paths() -> None:
     host = OacHostSettings(_env_file=None, enforce_registry_single_writer=True)
     with pytest.raises(ValueError, match="only writable Registry source"):
         validate_registry_single_writer(
@@ -226,3 +236,11 @@ def test_host_profile_requires_three_distinct_current_credentials() -> None:
                 ),
             )
         )
+
+
+@dataclass
+class RecordingRoutingPort:
+    response: RouteResponse
+
+    async def route(self, request):
+        return self.response

@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
 from uuid import uuid4
 
 from app.repositories.interfaces import TurnRepository
@@ -90,19 +89,6 @@ class TurnService:
             tenant_id=tenant_id,
             user_id=user_id,
         )
-
-    async def submission_status(
-        self, *, request_id: str, tenant_id: str, user_id: str
-    ) -> Literal["not_accepted", "committed", "unknown"]:
-        try:
-            turn = await self.repository.find_by_request_id(request_id)
-        except Exception:
-            return "unknown"
-        if turn is None:
-            return "not_accepted"
-        if turn.tenant_id == tenant_id and turn.user_id == user_id:
-            return "committed"
-        return "unknown"
 
     async def complete_route_only(
         self,

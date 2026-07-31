@@ -7,10 +7,14 @@ from typing import Protocol
 
 from app.core.config import Settings
 from app.core.memory_runtime import MemoryRuntimePolicy
+from app.plugins.knowledge import KnowledgeProvider
 from app.schemas.agents import AgentDefinition, CandidateAgent
 from app.schemas.common import JsonDict
 from app.schemas.context import ContextCandidate
-from app.schemas.knowledge import KnowledgeSearchRequest
+from app.schemas.knowledge_provider import (
+    KnowledgeProviderRequest,
+    KnowledgeRetrievalBudget,
+)
 from app.schemas.memory import MemoryRecallRequest
 from app.schemas.routing import RouteRequest
 from app.services.task_continuation import requests_plan_continuation
@@ -587,18 +591,13 @@ class MemoryRetrievalProvider(BaseContextProvider):
 class KnowledgeRetrievalProvider(BaseContextProvider):
     cacheable = True
 
-    def __init__(self, settings: Settings, knowledge_service, *, stage: str) -> None:
+    def __init__(self, settings: Settings, knowledge_provider: KnowledgeProvider) -> None:
         self.settings = settings
-        self.knowledge_service = knowledge_service
-        self.stage = stage
-        self.name = f"{stage}_knowledge"
+        self.knowledge_provider = knowledge_provider
+        self.name = "agent_knowledge"
         self.timeout_seconds = settings.knowledge_prefetch_timeout_seconds
 
     def applies(self, context: ContextProviderContext) -> bool:
-        if self.knowledge_service is None:
-            return False
-        if self.stage == "route":
-            return self.settings.context_route_knowledge_enabled
         return bool(context.agent and context.agent.context.knowledge.mode == "prefetch")
 
     def cache_key(self, context: ContextProviderContext) -> str:
@@ -629,25 +628,28 @@ class KnowledgeRetrievalProvider(BaseContextProvider):
         source_tags = self._source_tags(context)
         max_items = (
             context.agent.context.knowledge.max_items
-            if context.agent and self.stage == "agent"
+            if context.agent
             else self.settings.knowledge_default_max_items
         )
-        response = await self.knowledge_service.search(
-            KnowledgeSearchRequest(
+        response = await self.knowledge_provider.retrieve(
+            KnowledgeProviderRequest(
                 query=context.request.input.text,
-                user=context.request.user,
-                caller_type="router" if self.stage == "route" else "agent",
-                caller_id=context.agent.agent_id if context.agent else None,
-                purpose="route_evidence" if self.stage == "route" else "agent_execution",
+                principal=context.request.user,
+                purpose=context.purpose,
+                consumer=context.consumer,
                 source_ids=source_ids,
                 source_tags=source_tags,
-                top_k=max_items,
+                budget=KnowledgeRetrievalBudget(
+                    max_items=max_items,
+                    timeout_seconds=self.timeout_seconds,
+                ),
+                trace_context={
+                    "request_id": context.request.request_id,
+                    "session_id": context.request.session_id,
+                },
             )
         )
-        runtime = response.context
-        status = _provider_status(runtime.status)
-        if not runtime.items and response.denied_source_ids:
-            status = "denied"
+        status = _provider_status(response.status)
         candidates = [
             ContextCandidate(
                 candidate_id=f"knowledge:{item.source_id}:{item.item_id}",
@@ -664,36 +666,35 @@ class KnowledgeRetrievalProvider(BaseContextProvider):
                 confidence=item.score,
                 priority=68,
                 relevance=item.score,
-                allowed_agent_ids=(
-                    [context.agent.agent_id] if context.agent and self.stage == "agent" else []
-                ),
+                allowed_agent_ids=[context.agent.agent_id] if context.agent else [],
                 metadata={
                     "item_id": item.item_id,
                     "source_id": item.source_id,
                     "score": item.score,
                     "citation": item.citation.model_dump(mode="json") if item.citation else None,
-                    "status": runtime.status,
+                    "status": response.status,
                 },
             )
-            for item in runtime.items
+            for item in response.items
         ]
         return ProviderCollection(
             candidates=candidates,
             status=status,
-            error_code=runtime.errors[0] if runtime.errors else None,
+            error_code=response.error_code,
             metadata={
-                "selected_source_ids": response.selected_source_ids,
-                "denied_source_ids": response.denied_source_ids,
+                **response.metadata,
+                "trace_id": response.trace_id,
+                "warnings": response.warnings,
             },
         )
 
     def _source_ids(self, context: ContextProviderContext) -> list[str]:
-        if self.stage == "agent" and context.agent:
+        if context.agent:
             return list(context.agent.context.knowledge.source_ids)
-        return _csv(self.settings.context_route_knowledge_source_ids)
+        return []
 
     def _source_tags(self, context: ContextProviderContext) -> list[str]:
-        if self.stage == "agent" and context.agent:
+        if context.agent:
             return list(context.agent.context.knowledge.source_tags)
         return []
 

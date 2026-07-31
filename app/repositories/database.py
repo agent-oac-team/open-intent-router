@@ -873,6 +873,7 @@ class DatabaseRouteLogRepository:
 
     async def add(self, log: RouteLog) -> RouteLog:
         async with self.session_factory() as session:
+            log = RouteLog.model_validate(log.model_dump(mode="python"))
             payload = log.model_dump()
             payload["candidate_agent_ids_text"] = dumps(payload.pop("candidate_agent_ids"))
             payload["evidence_text"] = dumps(payload.pop("evidence"))
@@ -1017,6 +1018,7 @@ def _agent_event_from_row(row: AgentEventModel) -> AgentEvent:
 
 
 def _run_values(run: AgentRun) -> dict:
+    run = AgentRun.model_validate(run.model_dump(mode="python"))
     return {
         "run_id": run.run_id,
         "request_id": run.request_id,

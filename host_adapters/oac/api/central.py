@@ -17,12 +17,6 @@ from app.services.execution_ticket_service import ExecutionTicketError, Executio
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.authz import OAC_BUNDLE_CATALOG
 from host_adapters.oac.cutover import CutoverGuard
-from host_adapters.oac.fallback.gateway import (
-    FallbackBlockedError,
-    IRSFallbackGateway,
-    IRSLegacyClient,
-)
-from host_adapters.oac.fallback.policy import CommitStatus, classify_operation
 from host_adapters.oac.identity import HostOperation, authorize_host_operation
 from host_adapters.oac.identity.models import (
     HostAuthenticationError,
@@ -53,8 +47,6 @@ from host_apps.oac.config import OacHostSettings, get_oac_host_settings
 from host_apps.oac.dependencies import (
     get_cutover_guard,
     get_execution_ticket_service,
-    get_irs_fallback_gateway,
-    get_irs_legacy_client,
     get_oac_adapter_application_ports,
     get_trusted_host_identity,
 )
@@ -121,8 +113,6 @@ async def central_route(
     ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
     tickets: ExecutionTicketService = Depends(get_execution_ticket_service),
     settings: OacHostSettings = Depends(get_oac_host_settings),
-    fallback_gateway: IRSFallbackGateway = Depends(get_irs_fallback_gateway),
-    irs: IRSLegacyClient = Depends(get_irs_legacy_client),
 ) -> CentralRouteResponse:
     _authorize(identity, "route_stateful")
     if not identity.claims_version:
@@ -273,40 +263,8 @@ async def central_route(
             execution_ticket=ticket,
         )
 
-    async def fallback() -> CentralRouteResponse:
-        payload = await irs.request_json(
-            method="POST",
-            path="/api/v1/central/route",
-            json_body=request.model_dump(mode="json", by_alias=True),
-        )
-        return CentralRouteResponse.model_validate(payload)
-
-    async def commit_probe() -> CommitStatus:
-        status = await ports.turns.submission_status(
-            request_id=request.request_id,
-            tenant_id=identity.tenant_id,
-            user_id=identity.user_id,
-        )
-        return CommitStatus(status)
-
     try:
-        return await fallback_gateway.execute(
-            operation=classify_operation("POST", "/api/v1/central/route"),
-            request_id=request.request_id,
-            primary=primary,
-            fallback=fallback,
-            commit_probe=commit_probe,
-            correlation={
-                "request_id": request.request_id,
-                "session_id": request.session_id,
-                "plan_id": request.plan_id,
-            },
-        )
-    except FallbackBlockedError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "fallback_blocked", "reason": exc.reason, "retryable": True},
-        ) from exc
+        return await primary()
     except Exception as exc:
         _raise_projected(exc)
 
@@ -722,19 +680,25 @@ async def confirm_plan(
 
 def _user(identity: TrustedHostIdentity) -> UserContext:
     try:
-        entitlements = (
-            list(OAC_BUNDLE_CATALOG.entitlements_for_bundle(identity.active_bundle_id))
+        bundle = (
+            OAC_BUNDLE_CATALOG.by_id[identity.active_bundle_id]
             if identity.active_bundle_id
-            else []
+            else None
         )
+        entitlements = list(bundle.grants) if bundle else []
     except KeyError as exc:
         raise HostAuthenticationError from exc
+    attributes = {"tenant_id": identity.tenant_id}
+    if bundle is not None:
+        # This attribute is created only after Host V2 signature and bundle
+        # verification. The Knowledge issuer must never copy caller body tags.
+        attributes["knowledge_access_tags"] = [bundle.legacy_tag]
     return UserContext(
         id=identity.user_id,
         roles=list(identity.roles),
         groups=list(identity.groups),
         entitlements=entitlements,
-        attributes={"tenant_id": identity.tenant_id},
+        attributes=attributes,
     )
 
 

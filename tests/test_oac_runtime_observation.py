@@ -135,8 +135,6 @@ def _client(
 ) -> TestClient:
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),
@@ -495,8 +493,6 @@ def test_runtime_observation_stream_starts_after_the_snapshot_watermark() -> Non
     )
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),
@@ -583,8 +579,6 @@ def test_runtime_observation_stream_keeps_events_written_after_the_client_snapsh
     )
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),
@@ -630,8 +624,6 @@ def test_runtime_observation_stream_reports_a_gap_discovered_after_connect() -> 
     )
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),

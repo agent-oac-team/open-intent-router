@@ -17,8 +17,6 @@ StorageBackend = Literal["memory", "database"]
 RouteMode = Literal["route_only", "route_and_invoke"]
 LLMProvider = Literal["mock", "openai_compatible"]
 MemoryStrategyProvider = Literal["memory", "mem0"]
-KnowledgeVectorBackend = Literal["memory", "milvus"]
-KnowledgeEmbeddingProvider = Literal["openai_compatible", "deterministic_hash"]
 Mem0VectorProvider = Literal["milvus"]
 Mem0HistoryBackend = Literal["postgresql", "sqlite", "none"]
 PlanExecutionPolicy = Literal[
@@ -89,10 +87,6 @@ class Settings(BaseSettings):
     context_allow_request_budget_override: bool = True
     context_allow_summary_placeholder: bool = True
     context_pipeline_mode: ContextPipelineMode = "legacy"
-    context_route_knowledge_enabled: bool = False
-    context_route_knowledge_direct_reply_enabled: bool = False
-    context_route_knowledge_min_score: float = 0.85
-    context_route_knowledge_source_ids: str = ""
     context_policy_version: str = "context-policy-v1"
     context_budget_version: str = "context-budget-v1"
     context_projection_version: str = "context-projection-v1"
@@ -132,51 +126,51 @@ class Settings(BaseSettings):
     memory_strategy_provider: MemoryStrategyProvider = "memory"
     memory_prefetch_timeout_seconds: float = 3.0
     memory_default_max_items: int = 5
+    memory_database_url: str | None = None
+    memory_milvus_collection: str | None = None
+    memory_milvus_uri: str | None = None
+    memory_milvus_token: str | None = Field(default=None)
+    memory_milvus_db_name: str | None = None
+    memory_embedding_base_url: str | None = None
+    memory_embedding_api_key: str | None = Field(default=None)
+    memory_embedding_model: str | None = None
+    memory_embedding_dims: int | None = None
     memory_task_ttl_days: int = 14
     memory_session_summary_ttl_days: int = 14
     memory_artifact_reference_ttl_days: int = 14
     memory_mem0_fail_closed: bool | None = None
     memory_mem0_vector_provider: Mem0VectorProvider = "milvus"
-    memory_mem0_milvus_collection: str = "oir_memory_vectors"
-    memory_mem0_milvus_uri: str = ".data/oir_memory_milvus.db"
-    memory_mem0_milvus_token: str | None = Field(default=None)
-    memory_mem0_milvus_db_name: str | None = None
     memory_mem0_history_backend: Mem0HistoryBackend = "postgresql"
     memory_mem0_history_database_url: str | None = None
     memory_mem0_history_db_path: str = "./data/mem0-history.db"
-    memory_mem0_embedding_base_url: str | None = None
-    memory_mem0_embedding_api_key: str | None = Field(default=None)
-    memory_mem0_embedding_model: str | None = None
-    memory_mem0_embedding_dims: int | None = None
     memory_mem0_llm_provider: str = "openai"
     memory_mem0_llm_model: str | None = None
     memory_mem0_llm_base_url: str | None = None
     memory_mem0_llm_api_key: str | None = Field(default=None)
     memory_mem0_embedder_provider: str = "openai"
-    memory_mem0_embedder_model: str | None = None
-    memory_milvus_collection: str = "oir_memory_vectors"
     mem0_history_db_path: str = "./data/mem0-history.db"
-    mem0_config_json: str = ""
 
     embedding_base_url: str | None = None
     embedding_api_key: str | None = Field(default=None)
     embedding_model: str | None = None
     embedding_dim: int | None = None
 
-    knowledge_enabled: bool = True
-    knowledge_vector_backend: KnowledgeVectorBackend = "memory"
-    knowledge_prefetch_timeout_seconds: float = 5.0
+    knowledge_prefetch_timeout_seconds: float = 12.0
     knowledge_default_max_items: int = 5
-    knowledge_milvus_collection: str = "oir_knowledge_vectors"
-    knowledge_milvus_uri: str | None = ".data/oir_knowledge_milvus.db"
-    knowledge_milvus_token: str | None = None
-    knowledge_milvus_db_name: str | None = None
-    knowledge_embedding_provider: KnowledgeEmbeddingProvider = "openai_compatible"
-    knowledge_embedding_base_url: str | None = None
-    knowledge_embedding_api_key: str | None = Field(default=None)
-    knowledge_embedding_model: str = "text-embedding-v4"
-    knowledge_embedding_dim: int = 1024
-    knowledge_default_source_ids: str = ""
+    knowledge_context_handle_ttl_seconds: float = Field(default=60.0, gt=0)
+    knowledge_provider_base_url: str | None = None
+    knowledge_provider_deadline_seconds: float = Field(default=12.0, gt=0)
+    knowledge_provider_jwt_issuer: str = Field(default="oir", min_length=1, max_length=128)
+    knowledge_provider_jwt_audience: str = Field(
+        default="knowledge_sys", min_length=1, max_length=128
+    )
+    knowledge_provider_jwt_key_id: str | None = Field(default=None, max_length=128)
+    knowledge_provider_jwt_private_key: str | None = Field(default=None, repr=False)
+    knowledge_provider_jwt_private_key_file: str | None = None
+    knowledge_provider_jwt_ttl_seconds: int = Field(default=60, ge=1, le=300)
+    knowledge_provider_circuit_window_seconds: float = Field(default=30.0, gt=0)
+    knowledge_provider_circuit_failure_threshold: int = Field(default=5, ge=1)
+    knowledge_provider_circuit_open_seconds: float = Field(default=30.0, gt=0)
 
     evidence_provider_enabled: bool = False
     evidence_fixed_questions_path: str = "./config/fixed_questions.example.yaml"
@@ -198,15 +192,53 @@ class Settings(BaseSettings):
                 "memory formation prompt budget is too small for the configured turn window; "
                 f"requires at least {minimum_prompt_chars} characters"
             )
-        if self.knowledge_milvus_collection == self.memory_milvus_collection:
-            raise ValueError("knowledge and memory Milvus collections must be distinct")
-        if self.knowledge_embedding_provider == "deterministic_hash" and self.app_env not in {
-            "local",
-            "test",
-        }:
-            raise ValueError("deterministic Knowledge embeddings are limited to local/test")
+        if self.knowledge_provider_base_url:
+            missing_provider_fields = []
+            if self.knowledge_provider_jwt_issuer != "oir":
+                missing_provider_fields.append("KNOWLEDGE_PROVIDER_JWT_ISSUER must be oir")
+            if self.knowledge_provider_jwt_audience != "knowledge_sys":
+                missing_provider_fields.append(
+                    "KNOWLEDGE_PROVIDER_JWT_AUDIENCE must be knowledge_sys"
+                )
+            if not self.knowledge_provider_jwt_key_id:
+                missing_provider_fields.append("KNOWLEDGE_PROVIDER_JWT_KEY_ID")
+            configured_key_sources = sum(
+                bool(value)
+                for value in (
+                    self.knowledge_provider_jwt_private_key,
+                    self.knowledge_provider_jwt_private_key_file,
+                )
+            )
+            if configured_key_sources != 1:
+                missing_provider_fields.append(
+                    "exactly one of KNOWLEDGE_PROVIDER_JWT_PRIVATE_KEY "
+                    "or KNOWLEDGE_PROVIDER_JWT_PRIVATE_KEY_FILE"
+                )
+            if missing_provider_fields:
+                raise ValueError(
+                    "Knowledge Provider configuration is incomplete: "
+                    + ", ".join(missing_provider_fields)
+                )
         if self.memory_import_legacy_history_enabled:
             raise ValueError("legacy history import is not supported")
+        if self.memory_mode != "off":
+            missing = []
+            if not self.memory_database_url:
+                missing.append("MEMORY_DATABASE_URL")
+            if self.memory_strategy_provider == "mem0":
+                required_mem0 = {
+                    "MEMORY_MILVUS_URI": self.memory_milvus_uri,
+                    "MEMORY_MILVUS_COLLECTION": self.memory_milvus_collection,
+                    "MEMORY_EMBEDDING_MODEL": self.memory_embedding_model,
+                    "MEMORY_EMBEDDING_DIMS": self.memory_embedding_dims,
+                }
+                missing.extend(name for name, value in required_mem0.items() if not value)
+            if missing:
+                names = ", ".join(missing)
+                raise ValueError(
+                    "Memory is enabled but required explicit settings are missing: "
+                    f"{names}. Configure the MEMORY_* namespace before startup."
+                )
         return self
 
     @property
@@ -268,6 +300,26 @@ class Settings(BaseSettings):
         if self.memory_mem0_fail_closed is not None:
             return self.memory_mem0_fail_closed
         return self.app_env != "local"
+
+    @property
+    def effective_memory_database_url(self) -> str | None:
+        return self.memory_database_url
+
+    @property
+    def effective_memory_milvus_collection(self) -> str | None:
+        return self.memory_milvus_collection
+
+    @property
+    def effective_memory_milvus_uri(self) -> str | None:
+        return self.memory_milvus_uri
+
+    @property
+    def effective_memory_milvus_token(self) -> str | None:
+        return self.memory_milvus_token
+
+    @property
+    def effective_memory_milvus_db_name(self) -> str | None:
+        return self.memory_milvus_db_name
 
 
 @lru_cache

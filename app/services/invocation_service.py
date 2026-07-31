@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -80,8 +81,33 @@ class InvocationService:
             context=request.context,
             memory_context=request.memory_context or MemoryContext(),
             knowledge_context=request.knowledge_context or KnowledgeContext(),
+            knowledge_context_handle=request.knowledge_context_handle,
+            knowledge_context_trace_id=request.knowledge_context_trace_id,
         )
         return await self._invoke_definition(definition, invocation)
+
+    async def issue_controlled_knowledge_context_handle(
+        self,
+        *,
+        agent_id: str,
+        user,
+        variables: Mapping[str, object],
+        trace_id: str,
+        caller_id: str | None = None,
+    ) -> str:
+        """Prepare a trusted one-time Knowledge Context for a later Invocation."""
+        definition = await self.registry.get_definition(agent_id)
+        if definition is None:
+            raise InvocationError(f"Agent not found: {agent_id}")
+        if self.agent_context_service is None:
+            raise InvocationError("Agent Context service is not configured")
+        return await self.agent_context_service.issue_controlled_knowledge_handle(
+            agent=definition,
+            user=user,
+            variables=variables,
+            trace_id=trace_id,
+            caller_id=caller_id,
+        )
 
     async def invoke_agent(
         self,
@@ -92,6 +118,8 @@ class InvocationService:
         input: dict,
         context: dict | None = None,
         request_id: str | None = None,
+        knowledge_context_handle: str | None = None,
+        knowledge_context_trace_id: str | None = None,
     ) -> AgentInvocationResult:
         definition = await self.registry.get_definition(agent_id)
         if definition is None:
@@ -104,6 +132,8 @@ class InvocationService:
             user=user,
             input=input,
             context=context or {},
+            knowledge_context_handle=knowledge_context_handle,
+            knowledge_context_trace_id=knowledge_context_trace_id,
         )
         return await self._invoke_definition(definition, invocation)
 
@@ -442,12 +472,16 @@ class InvocationService:
                 else None
             ),
             active_plan=active_plan,
+            knowledge_context_handle=invocation.knowledge_context_handle,
+            knowledge_context_trace_id=invocation.knowledge_context_trace_id,
         )
         return invocation.model_copy(
             update={
                 "input": input_values,
                 "memory_context": runtime.memory_context,
                 "knowledge_context": runtime.knowledge_context,
+                "knowledge_context_handle": None,
+                "knowledge_context_trace_id": None,
             }
         )
 

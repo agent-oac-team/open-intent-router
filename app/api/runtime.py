@@ -9,7 +9,7 @@ from app.dependencies import (
     get_registry_service,
 )
 from app.schemas.runtime import RuntimeConfigResponse
-from app.services.mem0_config import mem0_health_check
+from app.services.mem0_config import mem0_health_check, memory_infrastructure_metadata
 from app.services.memory_observability import MemoryObservabilityService
 from app.services.registry_service import AgentRegistryService
 
@@ -28,6 +28,7 @@ async def runtime_config(
     admin_auth_mode = _admin_auth_mode(settings)
     registry_mutation_mode = _registry_mutation_mode(settings, admin_auth_mode)
     mem0_metadata = mem0_health_check(settings)
+    memory_infrastructure = memory_infrastructure_metadata(settings)
     memory_health = await memory_observability.health()
     return RuntimeConfigResponse(
         app_env=settings.app_env,
@@ -81,6 +82,11 @@ async def runtime_config(
         memory_deletion_pending_count=memory_health.deletion_pending_count,
         memory_strategy_provider=settings.memory_strategy_provider,
         memory_prefetch_timeout_seconds=settings.memory_prefetch_timeout_seconds,
+        memory_database_url=(
+            redact_connection_location(str(memory_infrastructure["database_url"]))
+            if memory_infrastructure.get("database_url")
+            else None
+        ),
         memory_mem0_collection=mem0_metadata.get("collection"),
         memory_mem0_vector_provider=mem0_metadata.get("vector_provider"),
         memory_mem0_milvus_uri=(
@@ -93,23 +99,16 @@ async def runtime_config(
         memory_mem0_degraded=mem0_metadata.get("status") == "degraded",
         memory_mem0_last_error=None,
         memory_mem0_health_status=mem0_metadata.get("status"),
+        memory_embedding_model=memory_infrastructure.get("embedding_model"),
+        memory_embedding_dims=memory_infrastructure.get("embedding_dims"),
+        memory_infrastructure_sources=memory_infrastructure.get("configuration_sources", {}),
         memory_rehearsal_collection=(
             settings.memory_rehearsal_milvus_collection
             if memory_policy.execution_plane == "state_rehearsal"
             else None
         ),
-        knowledge_enabled=settings.knowledge_enabled,
-        knowledge_vector_backend=settings.knowledge_vector_backend,
-        knowledge_prefetch_timeout_seconds=settings.knowledge_prefetch_timeout_seconds,
-        knowledge_milvus_collection=settings.knowledge_milvus_collection,
-        knowledge_milvus_uri=(
-            redact_connection_location(settings.knowledge_milvus_uri)
-            if settings.knowledge_milvus_uri
-            else None
-        ),
         context_pipeline_mode=settings.context_pipeline_mode,
         context_route_memory_enabled=(memory_policy.effective_governed_context_memory_enabled),
-        context_route_knowledge_enabled=settings.context_route_knowledge_enabled,
         context_policy_version=settings.context_policy_version,
         context_budget_version=settings.context_budget_version,
         context_projection_version=settings.context_projection_version,

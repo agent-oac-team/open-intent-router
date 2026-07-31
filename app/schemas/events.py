@@ -1,8 +1,9 @@
 from datetime import datetime
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.schemas.common import AgentEventType, JsonDict, MessageSource, StrictBaseModel
+from app.schemas.knowledge_persistence import sanitize_persisted_knowledge
 
 
 class AgentEvent(StrictBaseModel):
@@ -24,6 +25,11 @@ class AgentEvent(StrictBaseModel):
     payload: JsonDict = Field(default_factory=dict)
     created_at: datetime | None = None
 
+    @field_validator("payload", mode="before")
+    @classmethod
+    def remove_ephemeral_knowledge_body(cls, value):
+        return sanitize_persisted_knowledge(value)
+
 
 class ConversationEvent(StrictBaseModel):
     event_id: str
@@ -35,6 +41,11 @@ class ConversationEvent(StrictBaseModel):
     agent_id: str | None = None
     payload: JsonDict = Field(default_factory=dict)
     created_at: datetime | None = None
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def remove_ephemeral_knowledge_body(cls, value):
+        return sanitize_persisted_knowledge(value)
 
 
 class AgentEventResponse(StrictBaseModel):

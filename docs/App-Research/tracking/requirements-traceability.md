@@ -21,6 +21,7 @@
 | 迟到回调隔离 | cutover guard、脱敏 repository、Central Handler test | 通过 |
 | IRS 写冻结 | IRS middleware 与 read/write tests | 通过 |
 | IRS 排空工具 | 本地实际 1 个遗留 Plan 终止后 0 active report | 通过（本地） |
+| Central Retirement Gate | 8 个能力域、6 个 OAC E2E、排空/Watermark、非敏感快照与恢复演练；`central-retirement-gate-test.json` | 通过（隔离测试） |
 | 测试环境独立数据域 | OAC Actions #381/#387；`oir_test` / `oir_rehearsal_test`、Knowledge/Memory 主与 rehearsal Milvus collections、PM2 `oir-oac-test` | 通过 |
 | 测试环境知识重建 | OAC Actions #387；6 个 Asset、269 canonical Chunk、269 Milvus records、17/17 Golden | 通过 |
 | 测试环境状态与故障演练 | OAC Actions #387；State Rehearsal、Fallback Drill、Write Fence、OAC user/admin 与 Coze transport smoke | 通过 |
@@ -45,4 +46,6 @@ SNI 可以正常完成 TLS，因此阻塞点已收敛为火山引擎对
 `test.superben.com.cn` 的域名合规策略。继续公网切流前必须完成该域名备案/放行，或换用
 已有备案并可配置 DNS/证书的测试域名；不得通过关闭 TLS 校验掩盖该门禁。
 
-全部项目通过 `scripts/evaluate_oac_cutover.py` 后，才能完成最终 Definition of Done 和 IRS 下线结论。
+`scripts/evaluate_oac_cutover.py` 当前只评估 IRS 中控退役门禁；通过后只允许后续工单删除
+IRS 中控模块。旧 Knowledge 入口观察、`knowledge_sys` 环境切换和最终 Definition of Done
+由各自后续门禁判断。

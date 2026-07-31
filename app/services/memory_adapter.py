@@ -16,7 +16,12 @@ from app.schemas.memory import (
     MemoryRecallRequest,
     MemoryWriteCandidate,
 )
-from app.services.mem0_config import build_mem0_config, mem0_health_check, mem0_static_metadata
+from app.services.mem0_config import (
+    build_mem0_config,
+    mem0_health_check,
+    mem0_static_metadata,
+    memory_infrastructure_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +214,7 @@ class Mem0MemoryAdapter:
         self._client = self._client_factory(build_mem0_config(self.settings))
         _ensure_mem0_milvus_collection_loaded(
             self._client,
-            self.settings.memory_mem0_milvus_collection,
+            self.settings.effective_memory_milvus_collection,
         )
         return self._client
 
@@ -257,7 +262,7 @@ class Mem0MemoryAdapter:
                 metadata = {
                     **item.metadata,
                     "memory_provider": "mem0",
-                    "mem0_collection": self.settings.memory_mem0_milvus_collection,
+                    "mem0_collection": self.settings.effective_memory_milvus_collection,
                 }
                 if external_id:
                     metadata["mem0_memory_id"] = external_id
@@ -320,7 +325,7 @@ class Mem0MemoryAdapter:
                 "memory_provider": "repository_fallback",
                 "mem0_status": "degraded",
                 "mem0_error": safe_error,
-                "mem0_collection": self.settings.memory_mem0_milvus_collection,
+                "mem0_collection": self.settings.effective_memory_milvus_collection,
             }
             stored = await self.repository.add(
                 item.model_copy(
@@ -369,7 +374,7 @@ class Mem0MemoryAdapter:
                 "memory_provider": "repository_fallback",
                 "mem0_status": "degraded",
                 "mem0_error": safe_error,
-                "mem0_collection": self.settings.memory_mem0_milvus_collection,
+                "mem0_collection": self.settings.effective_memory_milvus_collection,
             }
             stored = await self.repository.add(
                 item.model_copy(
@@ -679,17 +684,16 @@ class Mem0MemoryAdapter:
         payload: dict[str, Any] | None = None,
     ) -> None:
         try:
+            infrastructure = memory_infrastructure_metadata(self.settings)
             event_payload = {
                 "operation": operation,
                 "status": status,
                 "memory_provider": "mem0",
-                "collection": self.settings.memory_mem0_milvus_collection,
+                "collection": self.settings.effective_memory_milvus_collection,
                 "history_backend": self.settings.memory_mem0_history_backend,
                 "history_canonical": "oir_memory_events_ledger",
-                "embedding_model": self.settings.memory_mem0_embedding_model
-                or self.settings.knowledge_embedding_model,
-                "embedding_dims": self.settings.memory_mem0_embedding_dims
-                or self.settings.knowledge_embedding_dim,
+                "embedding_model": infrastructure["embedding_model"],
+                "embedding_dims": infrastructure["embedding_dims"],
                 "mem0_memory_id": mem0_memory_id,
                 "error": error,
                 **(payload or {}),
@@ -919,7 +923,7 @@ def _mem0_metadata_for_item(item: MemoryItem, settings: Settings) -> dict[str, A
         "formation_job_id": item.formation_job_id,
         "canonical_refs": list(item.canonical_refs[:50]),
         "memory_provider": "mem0",
-        "mem0_collection": settings.memory_mem0_milvus_collection,
+        "mem0_collection": settings.effective_memory_milvus_collection,
     }
     return {key: value for key, value in metadata.items() if value is not None}
 

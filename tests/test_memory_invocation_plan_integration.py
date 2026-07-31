@@ -16,7 +16,6 @@ from app.llm.conversation_formation import (
 )
 from app.repositories.context_stores import (
     DatabaseMemoryItemRepository,
-    KnowledgeRepository,
     MemoryItemRepository,
 )
 from app.repositories.database import (
@@ -63,7 +62,6 @@ from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.context_providers import ContextProviderContext, MemoryRetrievalProvider
 from app.services.context_service import ContextService
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
-from app.services.knowledge_service import KnowledgeService
 from app.services.memory_candidate_policy import MemoryCandidatePolicy
 from app.services.memory_formation import (
     FormationJobWorker,
@@ -1762,7 +1760,6 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
     context_service = AgentContextAssemblyService(
         settings=settings,
         memory_service=memory_service,
-        knowledge_service=KnowledgeService(settings=settings, repository=KnowledgeRepository()),
     )
     invoker = InvocationCapturingInvoker()
     invokers = AgentInvokerRegistry()

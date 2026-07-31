@@ -14,7 +14,7 @@ from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
 
 
-def test_mem0_config_defaults_explicit_fields_and_json_override() -> None:
+def test_mem0_config_uses_only_explicit_memory_fields() -> None:
     defaults = Settings(storage_backend="memory")
     default_config = build_mem0_config(defaults)
 
@@ -31,10 +31,10 @@ def test_mem0_config_defaults_explicit_fields_and_json_override() -> None:
         app_env="production",
         storage_backend="memory",
         memory_strategy_provider="mem0",
-        memory_mem0_milvus_uri="data/mem0.db",
+        memory_milvus_uri="data/mem0.db",
         memory_mem0_history_database_url="postgresql+asyncpg://oir:secret@localhost:5432/oir",
-        knowledge_embedding_base_url="https://dashscope.example/v1",
-        knowledge_embedding_api_key="dash-key",
+        memory_embedding_base_url="https://dashscope.example/v1",
+        memory_embedding_api_key="dash-key",
         memory_mem0_llm_model="qwen-plus",
         memory_mem0_llm_api_key="llm-key",
     )
@@ -51,15 +51,7 @@ def test_mem0_config_defaults_explicit_fields_and_json_override() -> None:
     assert metadata["history_backend"] == "postgresql"
     assert metadata["history_canonical"] == "oir_memory_events_ledger"
 
-    override = Settings(
-        storage_backend="memory",
-        mem0_config_json='{"vector_store":{"config":{"collection_name":"custom_memories"}}}',
-    )
-    override_config = build_mem0_config(override)
-    assert override_config["vector_store"]["config"]["collection_name"] == "custom_memories"
-    assert override_config["vector_store"]["config"]["url"] == ".data/oir_memory_milvus.db"
-
-    shorthand = Settings(
+    unrelated = Settings(
         storage_backend="memory",
         router_llm_provider="openai_compatible",
         router_llm_model="deepseek-chat",
@@ -70,23 +62,19 @@ def test_mem0_config_defaults_explicit_fields_and_json_override() -> None:
         embedding_model="text-embedding-v4",
         embedding_dim=1024,
     )
-    shorthand_config = build_mem0_config(shorthand)
-    assert (
-        shorthand_config["embedder"]["config"]["openai_base_url"] == "https://dashscope.example/v1"
-    )
-    assert shorthand_config["embedder"]["config"]["api_key"] == "dash-key"
-    assert shorthand_config["llm"]["config"]["model"] == "deepseek-chat"
-    assert shorthand_config["llm"]["config"]["openai_base_url"] == "https://api.deepseek.com"
-    assert shorthand_config["llm"]["config"]["api_key"] == "deepseek-key"
+    unrelated_config = build_mem0_config(unrelated)
+    assert "openai_base_url" not in unrelated_config["embedder"]["config"]
+    assert "api_key" not in unrelated_config["embedder"]["config"]
+    assert "llm" not in unrelated_config
 
 
 async def test_mem0_adapter_add_search_delete_and_history_traceability() -> None:
     settings = Settings(
         storage_backend="memory",
         memory_strategy_provider="mem0",
-        memory_mem0_milvus_uri="data/mem0.db",
-        knowledge_embedding_base_url="https://dashscope.example/v1",
-        knowledge_embedding_api_key="dash-key",
+        memory_milvus_uri="data/mem0.db",
+        memory_embedding_base_url="https://dashscope.example/v1",
+        memory_embedding_api_key="dash-key",
     )
     fake = FakeMem0Client()
     repository = MemoryItemRepository()
@@ -221,6 +209,36 @@ async def test_mem0_adapter_loads_milvus_collection_after_client_init() -> None:
     )
 
     assert fake.vector_store.client.loaded_collections == ["oir_memory_vectors"]
+
+
+async def test_mem0_adapter_uses_explicit_memory_collection_for_runtime_operations() -> None:
+    settings = Settings(
+        storage_backend="memory",
+        memory_strategy_provider="mem0",
+        memory_milvus_collection="explicit-memory-vectors",
+        memory_embedding_model="explicit-memory-embedding",
+        memory_embedding_dims=1536,
+    )
+    fake = FakeMem0Client()
+    fake.vector_store = FakeVectorStore(collection_name="explicit-memory-vectors")
+    repository = MemoryItemRepository()
+    adapter = Mem0MemoryAdapter(settings, repository, client_factory=lambda _config: fake)
+
+    stored = await adapter.add(
+        MemoryItem(
+            scope="stable_fact",
+            subject_id="u1",
+            user_id="u1",
+            tenant_id="t1",
+            content="explicit collection invariant",
+        )
+    )
+
+    assert stored.metadata["mem0_collection"] == "explicit-memory-vectors"
+    assert fake.vector_store.client.loaded_collections == ["explicit-memory-vectors"]
+    assert repository.events[0].payload["collection"] == "explicit-memory-vectors"
+    assert repository.events[0].payload["embedding_model"] == "explicit-memory-embedding"
+    assert repository.events[0].payload["embedding_dims"] == 1536
 
 
 async def test_mem0_adapter_patches_milvus_lite_star_output_fields() -> None:
@@ -581,9 +599,9 @@ def test_mem0_runtime_and_debug_metadata_do_not_expose_secrets() -> None:
         storage_backend="memory",
         registry_backend="database",
         memory_strategy_provider="mem0",
-        memory_mem0_milvus_token="milvus-secret",
+        memory_milvus_token="milvus-secret",
         memory_mem0_history_database_url="postgresql+asyncpg://oir:db-secret@localhost:5432/oir",
-        knowledge_embedding_api_key="dash-secret",
+        memory_embedding_api_key="dash-secret",
         memory_mem0_llm_api_key="llm-secret",
     )
     repository = MemoryItemRepository()

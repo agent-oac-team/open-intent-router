@@ -85,6 +85,7 @@ context:
     max_items: 5
   knowledge:
     mode: disabled
+    requirement: optional
     source_ids:
       - product_docs
     max_items: 5
@@ -94,9 +95,19 @@ context:
 
 - `disabled`：不召回。
 - `prefetch`：路由/调用目标 Agent 前自动召回，并传入 `memory_context` 或 `knowledge_context`。
-- `controlled_retrieval`：固定工作流节点按预设模板调用 `/knowledge/search` 或记忆召回，不允许模型自由决定。
+- `controlled_retrieval`：固定工作流节点按预设模板调用 Provider，不允许模型自由决定；
+  配置输入兼容短名 `controlled`，保存和输出时统一为 `controlled_retrieval`。
 
 `memory_context` 固定包含 `summary`、`items`、`status` 和截断信息；`knowledge_context` 额外包含 `citations` 和 `source_ids`。低代码 Bot 可以只读取 summary，复杂 Agent 可以读取 items 和 citations。
+
+Knowledge Requirement 支持 `optional|required`，默认 `optional`。`disabled + required`
+是非法配置；`prefetch + required` 只有在 Provider 返回至少一条治理后可用 Item 时才允许
+调用 Agent。Provider 缺失、拒绝或失败返回 `knowledge_unavailable`，空结果返回
+`knowledge_not_found`。optional 路径保留结构化状态并继续调用。
+
+`controlled_retrieval + required` 必须消费 OIR 签发的短时、单次 Knowledge Context
+Handle。Handle 绑定 tenant、principal、Agent、Source Scope 与 trace；调用方直接提交的
+`knowledge_context`、过期 Handle、跨主体 Handle 和已消费 Handle 均不能作为受信检索证明。
 
 知识默认不预取，只有 Agent 明确配置 `context.knowledge.mode=prefetch` 才会执行。固定问属于 M6 Evidence Provider 的“问题到意图”映射，不应写入 Agent context，也不作为固定答案能力。
 

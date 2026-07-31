@@ -104,9 +104,42 @@ M5/M6 起，路由器和 Invoker 会根据目标 Agent 的 `context` 配置组�
 
 当 `MEMORY_MODE=on` 且 `context.memory.mode=prefetch` 并显式声明非空 scopes 时，Agent execution Pack 才会按声明 scope 预召回记忆。全局 `on` 不向 Agent 继承 route defaults；当前输入只控制本轮执行，不会直接改写长期记忆。
 
-Agent 知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型任意决定检索。Router 阶段 Memory 只在 `MEMORY_MODE=on` 时启用并固定 scopes 为 `user_preference,stable_fact`；Knowledge 仍由显式 route policy 控制。
+Agent 知识预取默认关闭。只有 `context.knowledge.mode=prefetch` 时才会在调用前检索知识；
+`context.knowledge.mode=controlled_retrieval` 用于固定工作流节点按模板调用检索，不允许模型
+任意决定检索。Knowledge Requirement 默认为 `optional`；`required` 在 Provider 缺失或
+失败时以 `knowledge_unavailable`、在治理后空结果时以 `knowledge_not_found` 阻止 Agent
+调用。`controlled_retrieval + required` 的 direct invoke 需要同时提交
+`knowledge_context_handle` 与 `knowledge_context_trace_id`，调用方自报的
+`knowledge_context` 不能替代受信 Handle。Router 阶段 Memory 只在 `MEMORY_MODE=on` 时启用
+并固定 scopes 为 `user_preference,stable_fact`；Knowledge 仍由显式 route policy 控制。
+
+完整 Knowledge 正文只存在于当前进程内的 `AgentInvocation`，不会进入跨请求缓存。
+Route-only 的 `InvocationPreview` 不执行 Knowledge 检索，也不返回 Knowledge Context 正文；
+`route-and-invoke` 在真正进入 Invocation 时才检索并把正文交给目标 Agent。
+Run、Result 中显式命名的 Knowledge Context、Agent/Conversation Event 和 Route Log 在
+持久化模型入口统一投影为状态、`trace_id`、`item_id`、`source_id`、数量、截断标记和
+稳定错误码；Citation 的持久化最小形态只有 `source_id`。`summary`、`content`、title、
+URI 和任意 Provider metadata 不进入上述长期记录，也不会成为 Memory Formation 输入。
+当前同步执行链无需异步正文载荷；未来若引入异步执行，必须另行实现加密、短 TTL、终态
+删除的临时交付，而不能复用 Run/Event/Trace。
 
 同一个 Route/Invoke 流程使用 request-scoped assembly cache。Router 检索候选可被目标 Agent 复用，但 Agent 阶段必须重新应用 Agent visibility、声明 source/scope 和预算；不同请求、用户或租户之间不复用。
+
+OIR 可通过 `knowledge_sys` HTTP Adapter 实现该 Provider 端口。配置
+`KNOWLEDGE_PROVIDER_BASE_URL` 后，OIR 使用 `RS256` 短时 JWT 直连
+`/api/v1/knowledge/search`；Base URL 为空时不构造 Provider。JWT 默认
+`iss=oir`、`aud=knowledge_sys`、TTL 60 秒且最长不超过 300 秒，只包含
+`knowledge:read` Scope，并传播受信 Tenant、Principal 与 Trace。签发私钥使用
+`KNOWLEDGE_PROVIDER_JWT_PRIVATE_KEY` 或
+`KNOWLEDGE_PROVIDER_JWT_PRIVATE_KEY_FILE` 二选一；只读
+`GET /.well-known/jwks.json` 仅公开当前 `kid` 对应的 RSA `n/e`，不返回私钥参数。
+远端 Base URL 必须使用 HTTPS；与 OIR 同机的 PM2 部署允许
+`localhost`、`127.0.0.1` 或 `::1` 的 loopback HTTP。
+
+Adapter 总 Deadline 默认 12 秒且不自动重试。30 秒窗口内 5 次 timeout、
+unavailable 或 5xx 会打开 Circuit 30 秒，窗口结束后只允许一个 half-open 探测；
+empty、denied、JWT 4xx 和业务 4xx 不计入故障。Deadline、Circuit 窗口、阈值和打开
+时间均可由同名前缀的 `KNOWLEDGE_PROVIDER_*` 环境变量覆盖。
 
 ### `POST /api/v1/route-and-invoke`
 
@@ -151,7 +184,9 @@ MVP 支持的 Invoker：
 - `local_function`：调用受信任的本地注册函数。
 - `ui_handoff`：返回宿主应用所需的路由交接数据，不执行外部系统调用。
 
-如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，Invoker 会沿用调用方提供的上下文字段；否则会按 Agent Definition 自动组装。
+如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，Invoker 通常会沿用该
+上下文字段；但 `controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、
+Source Scope 和 trace 匹配的短时单次 Handle，不能由调用方正文绕过。
 
 ## Memory
 
@@ -161,6 +196,8 @@ Memory API 用于 M5 记忆召回、低风险写入候选处理、TTL 清理和�
 - `POST /api/v1/memories/write-candidates`：提交候选记忆，服务根据置信度、敏感标记、scope TTL 等策略返回 accepted/rejected 决策。
 - `POST /api/v1/memories/cleanup`：清理已过期记忆，并记录过期事件。
 - `GET /api/v1/memories/debug`：按 user、tenant、agent、scope 或 request ID 查看当前可见记忆项、写入/过期事件、mem0 provider 状态、外部 ID 映射和最近错误摘要。按 request 查询时额外返回 `request_trace`，包含 `overall_stage/terminal/retryable/reason_code` 及 Turn、Run/Result、Outbox、Formation、Memory/Revision、Index 的有界 ID 关联。正文和 Provider 凭证不会进入该高层 trace。
+- `GET /api/v1/runtime/config`：返回脱敏后的有效 Memory SQL/Milvus/embedding
+  配置及 `memory_infrastructure_sources`。接口不返回数据库密码、API key 或 Milvus token。
 - `GET /api/v1/user-memories`：OAC Host V2 认证后的个人产品读接口。主体只取签名 Principal；固定每页 20 条，支持 `page` 与可选 `memory_type=user_preference|stable_fact`，按更新时间倒序返回 active 用户偏好和稳定事实。响应只含正文、产品类型、可用状态、更新时间、分页信息，以及前端不展示的目标令牌和并发令牌；不返回内部 ID、置信度、Provider、索引操作、dead-letter 或 Revision 历史。
 - `DELETE /api/v1/user-memories/{target_token}`：OAC Host V2 当前 Principal 的单目标产品删除接口。请求只接受稳定 `idempotency_key` 和列表返回的 `concurrency_token`；服务端解析目标令牌后重新校验 tenant、user、subject、scope 与版本。跨主体和不存在目标统一返回 `404`，版本变化返回 `409`。受理响应只返回 `accepted` 与 `idempotent_replay`；目标在受理事务中立即 fail-closed，从个人列表和后续 Recall 排除，异步清理状态不进入产品响应。
 - `GET /api/v1/admin/memories/governance`：仅接受 `oac_admin` Host 凭证，按 `tenant_id` 查询删除异常工作队列；无 `memory_id` 时按 `page/page_size` 分页，并可用 `status=needs_attention|blocked|repairing` 在分页前筛选，指定 `memory_id` 时返回单条详情。每项同时返回 `repairable`，缺少权威删除操作等无法安全推导动作的条目只能查看。普通删除等待满 300 秒才进入，删除 dead-letter、确认的 Provider 残留和外部删除完成但 Canonical 未收口立即进入；Formation、普通索引不同步和 Recall 质量不进入。本接口是独立产品读模型，不复用 Memory Debug。
@@ -171,20 +208,17 @@ Memory API 用于 M5 记忆召回、低风险写入候选处理、TTL 清理和�
 `policy_rejected`、`memory_persisted_index_pending`、`index_retry/dead_letter`、`persisted` 和
 `trace_missing`。`persisted` 仅表示 canonical Item/Revision active 且 index operation ready。
 
-真实 mem0 记忆闭环使用 `MEMORY_STRATEGY_PROVIDER=mem0` 开启，本地 Milvus 统一使用 Milvus Lite，默认 memory collection 为 `oir_memory_vectors`。OIR 会把 mem0 add/search/delete history 和 `memory_id`/`mem0_memory_id` 映射写入 PostgreSQL-backed `memory_events`，不把 mem0 SDK 内部 SQLite history 当作长期事实来源。完整配置、失败策略、Mermaid 流程和 smoke 路径见 [mem0-memory-integration.md](../architecture/mem0-memory-integration.md)。
+真实 mem0 记忆闭环使用 `MEMORY_STRATEGY_PROVIDER=mem0` 开启，本地 Milvus 可使用 Milvus Lite。Memory SQL、Milvus 和 embedding 只读取显式 `MEMORY_DATABASE_URL`、`MEMORY_MILVUS_*`、`MEMORY_EMBEDDING_*` 配置；缺少必要配置时启动失败，不回退 Knowledge、通用 Embedding 或 Router LLM 配置。OIR 会把 mem0 add/search/delete history 和 `memory_id`/`mem0_memory_id` 映射写入 PostgreSQL-backed `memory_events`，不把 mem0 SDK 内部 SQLite history 当作长期事实来源。完整配置、失败策略、Mermaid 流程和 smoke 路径见 [mem0-memory-integration.md](../architecture/mem0-memory-integration.md)。
 
 记忆 scope 包括：`user_preference`、`stable_fact`、`task_memory`、`artifact_reference`、`session_summary`。其中 `task_memory`、`artifact_reference`、`session_summary` 默认 14 天过期；用户偏好和稳定事实默认长期保留。
 
-## Knowledge
+## Knowledge Provider
 
-Knowledge API 是 M6 的通用治理检索接口，不强绑定 Agent ID。调用方必须声明 `caller_type`、可选 `caller_id`、`purpose`、用户和租户上下文，KnowledgeService 会再次执行 source policy。
-
-- `POST /api/v1/knowledge/search`：通用知识检索。支持 `caller_type=router|agent|host|admin`，`purpose=route_evidence|agent_execution|debug|preview`，以及 `source_ids`、`source_tags`、`top_k`。
-- `GET /api/v1/knowledge/debug`：查看知识源、chunk 和检索日志，便于排查 denied source、timeout、provider error 和命中情况。
-
-Agent Definition 中的 `context.knowledge.source_ids` 只是请求来源，不是最终授权证明。若知识源因角色、用户组、租户或启用状态被拒绝，结果会在 `denied_source_ids` 和 `knowledge_context.metadata.denied_source_ids` 中记录。检索失败或超时默认降级为 `status=error|timeout`，不阻塞普通调用。
-
-知识向量过渡期保留 `oac_knowledge_chunks` 与 `oir_knowledge_vectors` 双 collection。Milvus collection 只是派生索引；embedding 模型、维度、chunk 策略或 schema 不兼容时必须基于 canonical chunks reindex，不能直接复制向量。检索和 debug/citation 应保留 collection provenance。
+OIR 不暴露 Knowledge Search、Read、Assets、Chunks、Admin、Index、ACL、Cache 或 Audit
+HTTP 入口，也不代理或回退这些请求。Agent Definition 中的
+`context.knowledge.source_ids` 只是传给 Provider 的逻辑来源范围，不是最终授权证明；
+物理资产解析、ACL 与审计由外部 Knowledge Provider 负责。OIR 仅在 Agent Invocation
+期间瞬时消费 Provider 返回的 `knowledge_context`。
 
 ## Agent 查询
 

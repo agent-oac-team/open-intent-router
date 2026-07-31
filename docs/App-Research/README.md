@@ -25,7 +25,7 @@ App-Research 保存需要背景、方案比较和取舍过程才能理解的材�
 | [对话记忆自动形成方案](designs/oir-conversation-memory-auto-write-strategy.md) | 已实现设计记录 | 当前上线操作看 [Formation Runbook](../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md) |
 | [OAC 无感迁移方案](designs/oac-irs-to-oir-seamless-migration-plan.md) | 历史早期方案 | 身份和回滚已被 V2 Runbook、当前 Adapter 文档和追踪矩阵取代 |
 | [OAC 迁移说明](designs/oac-migration.md) | 历史概念映射 | 当前 Registry / identity 语义看 App-Desc 中的 Registry 和 Host Adapter 文档 |
-| [OIR 语义检索接入与 IRS 过渡保障结论](designs/knowledge-semantic-search-and-irs-transition.md) | 2026-07-21 当前问题结论 | 记录 canonical Knowledge 未接入 Milvus 的缺口、目标改造和切流前 IRS 补数门禁 |
+| [knowledge_sys 与 OIR 职责分离](designs/knowledge-sys-externalization-decision.md) | 2026-07-30 已接受决策 | `knowledge_sys` 独立拥有知识能力；OIR 仅依赖通用 Provider interface |
 
 ## 协作与交付记录
 
@@ -47,7 +47,11 @@ OpenSpec 的当前状态判断属于可执行工作流，见 [OpenSpec 交接](.
 | [Context Pipeline 验收](validation/governed-context-pipeline-acceptance.md) | 变更验收记录 | legacy / observe / enforced 行为和回滚条件 |
 | [OAC Agent Entitlement 演练](validation/oac-agent-entitlement-rehearsal.md) | 2026-07-20 | Registry 迁移、V2 transport 和路由权限证据 |
 | [OAC-OIR 本地联调报告](validation/oac-oir-local-integration-report.md) | 2026-07-16 | Contract、Golden、故障和 Shadow 本地证据 |
+| [OIR 中控承接与 IRS 退役门禁](validation/central-retirement-gate-local-evidence.md) | 2026-07-31，本地隔离测试通过 | Central/Registry/运行态能力映射、排空、水位线、快照与恢复演练 |
+| [OIR Knowledge 副本清理本地证据](validation/oir-knowledge-replica-cleanup-local-evidence.md) | 2026-07-31，本地清理与加固验证通过 | 固定表/向量清理、无正文 Manifest、Memory 不变性与可恢复两阶段说明 |
+| [IRS 知识补数验收](validation/irs-knowledge-transition-import-report.md) | 2026-07-21 | IRS 测试环境增量补数、数据对账和旧链路验证；不作为 OIR 后续知识研发任务 |
 | [Memory Runtime Mode 本地验收](validation/simplify-memory-runtime-mode-local-acceptance.md) | 2026-07-21，部分通过 | 三态启动、Registry、自动化门禁与未完成浏览器/测试环境证据 |
+| [Memory 显式配置与不变性本地基线](validation/oir-memory-configuration-invariance-local-baseline.md) | 2026-07-31，本地隔离通过 | 独立 `MEMORY_*` 配置、无正文 CRUD/Recall 基线与环境验证缺口 |
 
 测试报告只证明当时的代码、环境和样本。当前测试是否通过必须重新执行对应命令；本地 smoke 也不能替代测试环境 replay、cutover 或生产门禁。
 
@@ -63,7 +67,15 @@ OpenSpec 的当前状态判断属于可执行工作流，见 [OpenSpec 交接](.
 - [Imported Knowledge PostgreSQL 验证](evidence/migration/imported-knowledge-postgresql-validation.json)
 - [Imported Knowledge 验证](evidence/migration/imported-knowledge-validation.json)
 - [IRS 本地 Runtime 排空证据](evidence/migration/irs-local-runtime-drain.json)
+- [Central Retirement Gate 测试证据](evidence/migration/central-retirement-gate-test.json)
+- [Central Retirement 非敏感快照](evidence/migration/central-retirement-snapshot-test.json)
+- [OIR Memory 不变性本地证据](evidence/migration/oir-memory-invariance-local.json)
 - [OAC Shadow Replay Runner smoke](evidence/migration/oac-shadow-replay-runner-smoke.json)
+- [OIR Memory 无正文不变性本地基线](evidence/migration/oir-memory-invariance-local.json)
+- [OIR Knowledge 清理 Dry Run](evidence/migration/oir-knowledge-cleanup-dry-run.json)
+- [OIR Knowledge 清理执行报告](evidence/migration/oir-knowledge-cleanup-executed.json)
+- [测试库 Knowledge 清理 Dry Run](evidence/migration/test-oir-knowledge-cleanup-dry-run.json)
+- [测试库 Knowledge 清理执行报告](evidence/migration/test-oir-knowledge-cleanup-executed.json)
 
 上述 JSON 由脚本生成或环境采集，不手工编辑。证据中的历史路径是生成当时的快照，不作为当前文档导航。
 

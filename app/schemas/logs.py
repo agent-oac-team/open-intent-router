@@ -1,8 +1,9 @@
 from datetime import datetime
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.schemas.common import JsonDict, StrictBaseModel
+from app.schemas.knowledge_persistence import sanitize_persisted_knowledge
 
 
 class AgentRun(StrictBaseModel):
@@ -36,6 +37,11 @@ class AgentRun(StrictBaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
+    @field_validator("input", "output", "error", mode="before")
+    @classmethod
+    def remove_ephemeral_knowledge_body(cls, value):
+        return sanitize_persisted_knowledge(value)
+
 
 class AgentResult(StrictBaseModel):
     result_id: str
@@ -57,6 +63,11 @@ class AgentResult(StrictBaseModel):
     error: JsonDict | None = None
     created_at: datetime | None = None
 
+    @field_validator("output", "error", mode="before")
+    @classmethod
+    def remove_ephemeral_knowledge_body(cls, value):
+        return sanitize_persisted_knowledge(value)
+
 
 class RouteLog(StrictBaseModel):
     request_id: str
@@ -71,3 +82,8 @@ class RouteLog(StrictBaseModel):
     error: JsonDict | None = None
     latency_ms: int | None = None
     created_at: datetime | None = None
+
+    @field_validator("evidence", "raw_output", "parsed_output", "error", mode="before")
+    @classmethod
+    def remove_ephemeral_knowledge_body(cls, value):
+        return sanitize_persisted_knowledge(value)

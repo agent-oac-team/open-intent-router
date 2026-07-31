@@ -10,8 +10,6 @@ from host_adapters.oac.fallback.policy import classify_operation, write_fence_bl
 from host_apps.oac.capabilities import OacHostCapabilityProvider
 from host_apps.oac.config import build_oac_host_profile, memory_execution_plane_for_shadow
 from host_apps.oac.dependencies import (
-    get_adapter_governance_metrics,
-    get_irs_fallback_gateway,
     get_oac_adapter_application_ports,
 )
 
@@ -44,9 +42,6 @@ def create_app() -> FastAPI:
         except KeyError:
             return await call_next(request)
         if write_fence_blocked(profile.host, operation):
-            metrics = get_adapter_governance_metrics()
-            metrics.counters[f"{operation.name}:write_fence_blocked"] += 1
-            metrics.counters[f"class:{operation.operation_class.value}:write_fence_blocked"] += 1
             return JSONResponse(
                 status_code=503,
                 content={
@@ -62,7 +57,6 @@ def create_app() -> FastAPI:
         core=profile.core,
         host=profile.host,
         ports=ports,
-        fallback_gateway=get_irs_fallback_gateway(),
         memory_policy=get_memory_runtime_policy(),
     )
     host_app.include_router(build_capability_router(capability_provider.snapshot))

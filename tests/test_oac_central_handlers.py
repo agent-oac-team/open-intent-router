@@ -25,15 +25,11 @@ from app.services.execution_trace_service import ExecutionTraceService
 from host_adapters.oac.api.central import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, MemoryCutoverAuditRepository
-from host_adapters.oac.fallback.circuit import CircuitBreaker
-from host_adapters.oac.fallback.gateway import IRSFallbackGateway
 from host_adapters.oac.identity.models import TrustedHostIdentity
 from host_apps.oac.config import OacHostSettings, get_oac_host_settings
 from host_apps.oac.dependencies import (
     get_cutover_guard,
     get_execution_ticket_service,
-    get_irs_fallback_gateway,
-    get_irs_legacy_client,
     get_oac_adapter_application_ports,
     get_trusted_host_identity,
 )
@@ -151,9 +147,6 @@ class TurnPort:
 
     async def attach_activity(self, **kwargs):
         return self.turn
-
-    async def submission_status(self, **kwargs):
-        return "not_accepted"
 
 
 class DelegatedPort:
@@ -308,8 +301,6 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
     events = EventPort()
     ports = OacAdapterApplicationPorts(
         routing=RoutingPort(action),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=events,
         plans=PlanPort(),
@@ -346,19 +337,13 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
     return TestClient(app), delegated, events
 
 
-def test_route_projects_primary_error_when_fallback_is_off() -> None:
+def test_route_projects_primary_error_without_external_fallback() -> None:
     client, _, _ = _client()
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
         ports,
         routing=LLMFailingRoutingPort(),
     )
-    client.app.dependency_overrides[get_irs_fallback_gateway] = lambda: IRSFallbackGateway(
-        mode="off",
-        policy_version="test",
-        circuit=CircuitBreaker(failure_threshold=1, recovery_seconds=60),
-    )
-
     response = client.post(
         "/api/v1/central/route",
         json={
@@ -863,30 +848,16 @@ def test_active_plan_does_not_disclose_another_users_plan() -> None:
     assert active.json() == {"plan": None}
 
 
-@pytest.mark.parametrize(
-    ("commit_status", "expected_status", "fallback_calls"),
-    [("not_accepted", 200, 1), ("unknown", 503, 0), ("committed", 503, 0)],
-)
-def test_route_fallback_requires_not_accepted_proof(
-    commit_status, expected_status, fallback_calls
-) -> None:
+def test_route_failure_is_fail_closed_without_irs_runtime_dependency() -> None:
     client, _, _ = _client(action="reply")
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
-    ports.turns.submission_status = _submission_status(commit_status)
     ports = replace(ports, routing=FailingRoutingPort())
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
-    legacy = StubIRSRouteClient()
-    client.app.dependency_overrides[get_irs_fallback_gateway] = lambda: IRSFallbackGateway(
-        mode="safe_route",
-        policy_version="test-policy",
-        circuit=CircuitBreaker(failure_threshold=1, recovery_seconds=30),
-    )
-    client.app.dependency_overrides[get_irs_legacy_client] = lambda: legacy
 
     response = client.post(
         "/api/v1/central/route",
         json={
-            "request_id": "request-fallback",
+            "request_id": "request-fail-closed",
             "session_id": "session-1",
             "user_id": "trusted-user",
             "user_tags": ["运营版"],
@@ -895,49 +866,17 @@ def test_route_fallback_requires_not_accepted_proof(
         },
     )
 
-    assert response.status_code == expected_status
-    assert len(legacy.calls) == fallback_calls
-    if commit_status == "unknown":
-        assert response.json()["detail"]["reason"] == "ambiguous_commit"
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "internal_error",
+        "message": "Internal server error",
+        "details": {},
+    }
 
 
 class FailingRoutingPort:
     async def route(self, _request):
         raise TimeoutError("route timeout")
-
-
-def _submission_status(status):
-    async def resolve(**kwargs):
-        del kwargs
-        return status
-
-    return resolve
-
-
-class StubIRSRouteClient:
-    def __init__(self) -> None:
-        self.calls = []
-
-    async def request_json(self, *, method, path, json_body=None, query=None):
-        del query
-        self.calls.append((method, path))
-        return {
-            "request_id": json_body["request_id"],
-            "session_id": json_body["session_id"],
-            "route": {
-                "status": "ok",
-                "action": "reply",
-                "agent_id": None,
-                "message": "legacy",
-            },
-            "context": {
-                "source": json_body["source"],
-                "current_agent_id": None,
-                "relation": "new_task",
-                "artifact_refs": [],
-            },
-            "plan": None,
-        }
 
     other_client, _, _ = _client(user_id="other-user")
     rejected = other_client.post(
@@ -1071,6 +1010,10 @@ def test_v2_route_projects_bundle_entitlement_and_rejects_body_mismatch() -> Non
     routing = client.app.dependency_overrides[get_oac_adapter_application_ports]().routing
     assert routing.last_request.user.roles == ["operator"]
     assert routing.last_request.user.entitlements == ["workspace.operations.access"]
+    assert routing.last_request.user.attributes == {
+        "tenant_id": "oac",
+        "knowledge_access_tags": ["运营版"],
+    }
 
     mismatch = client.post(
         "/api/v1/central/route",

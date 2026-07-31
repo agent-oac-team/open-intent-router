@@ -90,8 +90,6 @@ def _client(*, credential_class="oac_admin", force_conflict=False) -> TestClient
     registry.force_conflict = force_conflict
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=registry,
         events=SimpleNamespace(),
         plans=SimpleNamespace(),

@@ -13,10 +13,8 @@ class CapabilityVersions(BaseModel):
 
 
 class CapabilityModes(BaseModel):
-    knowledge: str
     memory: str
     shadow: str
-    fallback: str
 
 
 class DependencyHealth(BaseModel):
@@ -27,9 +25,6 @@ class DependencyHealth(BaseModel):
 class GovernanceStatus(BaseModel):
     write_fence: Literal["enabled", "disabled"]
     write_freeze: bool
-    circuit: Literal["closed", "open", "half_open"]
-    circuit_failure_count: int
-    fallback_event_count: int
 
 
 class AuthorizationCapability(BaseModel):

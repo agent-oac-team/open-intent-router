@@ -10,12 +10,6 @@ class OperationClass(StrEnum):
     RUNTIME_WRITE = "runtime_write"
 
 
-class CommitStatus(StrEnum):
-    NOT_ACCEPTED = "not_accepted"
-    COMMITTED = "committed"
-    UNKNOWN = "unknown"
-
-
 @dataclass(frozen=True)
 class AdapterOperation:
     name: str
@@ -68,60 +62,6 @@ ADAPTER_OPERATIONS = (
         "registry.delete",
         "DELETE",
         r"/api/v1/admin/agent-registry/[^/]+",
-        OperationClass.CONTROL_WRITE,
-    ),
-    _operation("knowledge.search", "POST", r"/api/v1/knowledge/search", OperationClass.READ_ONLY),
-    _operation(
-        "knowledge.grouped_search",
-        "POST",
-        r"/api/v1/knowledge/grouped-search",
-        OperationClass.READ_ONLY,
-    ),
-    _operation("knowledge.read", "POST", r"/api/v1/knowledge/read", OperationClass.READ_ONLY),
-    _operation("knowledge.assets", "GET", r"/api/v1/knowledge/assets", OperationClass.READ_ONLY),
-    _operation(
-        "knowledge.asset", "GET", r"/api/v1/knowledge/assets/[^/]+", OperationClass.READ_ONLY
-    ),
-    _operation(
-        "knowledge.asset_chunks",
-        "GET",
-        r"/api/v1/knowledge/assets/[^/]+/chunks",
-        OperationClass.READ_ONLY,
-    ),
-    _operation(
-        "knowledge.chunk", "GET", r"/api/v1/knowledge/chunks/[^/]+", OperationClass.READ_ONLY
-    ),
-    _operation(
-        "knowledge_admin.upload",
-        "POST",
-        r"/api/v1/admin/knowledge/files",
-        OperationClass.CONTROL_WRITE,
-    ),
-    _operation(
-        "knowledge_admin.list", "GET", r"/api/v1/admin/knowledge/files", OperationClass.READ_ONLY
-    ),
-    _operation(
-        "knowledge_admin.detail",
-        "GET",
-        r"/api/v1/admin/knowledge/files/[^/]+",
-        OperationClass.READ_ONLY,
-    ),
-    _operation(
-        "knowledge_admin.chunks",
-        "GET",
-        r"/api/v1/admin/knowledge/files/[^/]+/chunks",
-        OperationClass.READ_ONLY,
-    ),
-    _operation(
-        "knowledge_admin.delete",
-        "DELETE",
-        r"/api/v1/admin/knowledge/files/[^/]+",
-        OperationClass.CONTROL_WRITE,
-    ),
-    _operation(
-        "knowledge_admin.retry",
-        "POST",
-        r"/api/v1/admin/knowledge/files/[^/]+/retry",
         OperationClass.CONTROL_WRITE,
     ),
 )

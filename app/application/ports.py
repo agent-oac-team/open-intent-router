@@ -19,20 +19,6 @@ from app.schemas.execution_traces import (
     ExecutionTraceSnapshot,
     ExecutionTraceWriteResult,
 )
-from app.schemas.knowledge import KnowledgeSearchRequest, KnowledgeSearchResponse
-from app.schemas.knowledge_assets import (
-    CanonicalKnowledgeSearchRequest,
-    CanonicalKnowledgeSearchResponse,
-    ExactReadRequest,
-    ExactReadResponse,
-    GroupedKnowledgeSearchRequest,
-    GroupedKnowledgeSearchResponse,
-    KnowledgeAsset,
-    KnowledgeAssetChunk,
-    KnowledgeAssetGroup,
-    KnowledgeImportJob,
-    KnowledgeSourceRef,
-)
 from app.schemas.memory import (
     MemoryGovernanceRepairResponse,
     MemoryGovernanceResponse,
@@ -102,11 +88,6 @@ class DelegatedRunApplicationPort(Protocol):
 
 
 @runtime_checkable
-class KnowledgeApplicationPort(Protocol):
-    async def search(self, request: KnowledgeSearchRequest) -> KnowledgeSearchResponse: ...
-
-
-@runtime_checkable
 class MemoryGovernanceApplicationPort(Protocol):
     async def query(
         self,
@@ -127,45 +108,6 @@ class MemoryGovernanceApplicationPort(Protocol):
         expected_anomaly: str,
         idempotency_key: str,
     ) -> MemoryGovernanceRepairResponse: ...
-
-
-@runtime_checkable
-class KnowledgeAssetApplicationPort(Protocol):
-    async def search(
-        self, request: CanonicalKnowledgeSearchRequest
-    ) -> CanonicalKnowledgeSearchResponse: ...
-
-    async def grouped_search(
-        self, request: GroupedKnowledgeSearchRequest
-    ) -> GroupedKnowledgeSearchResponse: ...
-
-    async def exact_read(self, request: ExactReadRequest) -> ExactReadResponse: ...
-
-    async def save_group(self, group: KnowledgeAssetGroup) -> KnowledgeAssetGroup: ...
-
-    async def get_asset(self, asset_id: str) -> KnowledgeAsset | None: ...
-
-    async def list_assets(self, *, tenant_id: str) -> list[KnowledgeAsset]: ...
-
-    async def get_chunks(
-        self,
-        *,
-        tenant_id: str,
-        asset_ids: list[str] | None = None,
-        chunk_ids: list[str] | None = None,
-    ) -> list[KnowledgeAssetChunk]: ...
-
-    async def latest_job(self, asset_id: str) -> KnowledgeImportJob | None: ...
-
-    async def ingest_bytes(self, **kwargs) -> tuple[KnowledgeAsset, KnowledgeImportJob]: ...
-
-    async def retry_job(
-        self, job_id: str, *, extracted_chunks: list[tuple[str, KnowledgeSourceRef]]
-    ) -> tuple[KnowledgeAsset, KnowledgeImportJob]: ...
-
-    async def soft_delete(
-        self, asset_id: str, *, tenant_id: str, owner_id: str
-    ) -> KnowledgeAsset: ...
 
 
 @runtime_checkable

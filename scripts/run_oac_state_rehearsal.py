@@ -48,6 +48,7 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
         {
             "APP_ENV": "test",
             "DATABASE_URL": rehearsal_database_url,
+            "MEMORY_DATABASE_URL": rehearsal_database_url,
             "STORAGE_BACKEND": "database",
             "REGISTRY_BACKEND": "database",
             "MEMORY_MODE": "on",

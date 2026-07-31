@@ -6,6 +6,11 @@
 > 适用范围：本地环境、测试环境；当前不包含生产发布<br>
 > 目标系统：OIR、OAC–OIR Host Adapter、OAC、Coze Workflow、IRS
 >
+> **Superseded 历史需求基线（2026-07-31，issue #22）：** 本文中的 IRS
+> runtime fallback、OIR Knowledge 和迁移期开关只用于追溯，不再描述当前架构。
+> OIR 中控失败直接 fail closed；OAC wire-compatible API/Schema 与冻结契约
+> fixture 继续保留。
+>
 > 身份协议补充（2026-07-20）：OAC Go 到 OIR Host Adapter 已统一为
 > current-only `OIR-HOST-V2`。旧同步 Token 不能作为 downstream 授权证据；
 > 具体门禁与回滚流程以 [OAC Host Signature V2 运行手册](../../App-Adr/develop/skills/runbooks/oac-host-signature-v2-runbook.md) 为准。

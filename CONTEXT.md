@@ -27,8 +27,22 @@ _避免_：OIR Core、业务 Service、通用 Agent Adapter
 _避免_：OIR、Host Adapter、IRS
 
 **IRS**：
-OAC 曾依赖、现由 OIR 逐步替代的旧中控系统。
-_避免_：OIR Legacy 模式、OIR Core、Host Adapter
+曾同时承载中控与知识能力的旧系统；迁移完成后仅用于指代待退役的历史中控能力。
+_避免_：knowledge_sys、OIR Legacy 模式、OIR Core
+
+**Central Retirement Gate（中控退役门禁）**：
+删除 IRS 中控实现前，对 OIR 能力承接、活动运行态排空、Cutover Watermark 与回滚能力
+的证明；不要求旧中控入口经历零流量观察期或穷举未知直连调用方。
+_避免_：Knowledge 入口兼容期、IRS 永久兼容、流量发现门禁
+
+**knowledge_sys**：
+独立拥有组织知识及其访问、检索和引用生命周期的产品。
+_避免_：IRS、OIR Knowledge、Evidence Provider
+
+**Storage Identifier（存储标识）**：
+服务持久化层沿用的既有数据库、角色或 Collection 技术名称，不等同于产品正式名称；
+产品改名不要求同步迁移这些标识。
+_避免_：Product Name、Repository Name、Deployment Name
 
 **Native Contract（原生契约）**：
 由 OIR 自身领域语言定义、供新接入方直接使用的通用契约。
@@ -230,9 +244,94 @@ _避免_：Agent Knowledge、Memory Item、固定答案
 在路由判断前提供 Evidence、意图提示或受控固定命中的能力边界。
 _避免_：Agent Registry、Knowledge Retriever、Agent Invoker
 
+**Knowledge Provider（知识提供者）**：
+为特定用途和消费者检索外部 Knowledge 的能力边界，不参与 Route Decision；具体实现
+由部署与租户策略解析，Agent 只声明知识需求。
+_避免_：Evidence Provider、knowledge_sys、Agent Invoker
+
+**Knowledge Retrieval（知识检索）**：
+Knowledge Provider 面向 Context 组装提供的单一只读操作，输入查询、受信主体、逻辑
+范围与预算，输出有引用的知识项和结构化状态。
+_避免_：Route Evidence、Knowledge Admin、IRS API 镜像
+
+**Source Key（来源键）**：
+Agent 用于声明知识范围的长期稳定逻辑标识，由知识所有者解析，不是数据库、Asset、
+Collection 或文件路径标识。
+_避免_：asset_id、collection_name、存储主键
+
+**Knowledge Cache（知识缓存）**：
+由知识所有者管理、按主体权限与索引版本隔离的跨请求检索结果缓存；OIR 只允许单次请求
+内去重，不拥有该缓存。
+_避免_：OIR Context Cache、Memory Cache、Provider Circuit State
+
+**Provider Resolution（提供者解析）**：
+根据部署和租户策略为一次调用选择 Knowledge Provider 实现的过程，不进入 Agent
+Definition；多个后端由同一接口后的组合实现负责。
+_避免_：Agent provider_id、Provider URL、知识供应商选择
+
+**Knowledge API（知识接口）**：
+由 knowledge_sys 独占并面向 OAC、工作流及其他下游提供的 HTTP 契约。
+_避免_：OIR Knowledge Endpoint、Central API、Knowledge Provider interface
+
+**OAC Knowledge Proxy（OAC 知识代理）**：
+OAC Backend 在验证登录用户或 Coze 服务身份后签发短时 Knowledge JWT，并调用
+knowledge_sys 的宿主边界；它不经过 OIR，也不拥有知识数据。
+_避免_：OIR Host Adapter、Knowledge Provider、浏览器直连
+
+**Knowledge Principal（知识访问主体）**：
+由受信服务签发、经 knowledge_sys 验证，并用于知识 ACL 与审计的用户或服务身份及
+权限声明。
+_避免_：请求体中的 user_id、未签名 user_tags、OIR Host Identity
+
+**Knowledge Context（知识上下文）**：
+外部 Knowledge 经身份、用途和预算治理后，面向特定消费者生成的瞬时只读上下文投影；
+正文不进入 OIR 长期记录。
+_避免_：Knowledge Asset、Knowledge Provider、OIR 知识库
+
+**Knowledge Context Handle（知识上下文句柄）**：
+OIR 为受控检索签发、短时有效并绑定租户、主体、Agent、Source Scope 与 Trace 的内部
+引用，用于证明 Invocation 已完成受信检索。
+_避免_：调用方构造的 knowledge_context、长期缓存键、Provider Token
+
+**Citation（知识引用）**：
+知识项的来源声明，最小只要求逻辑 `source_id`；审计定位使用结果级 `trace_id` 与条目级
+`item_id`。
+_避免_：必需 locator、必需 source_version、必需 content_hash
+
+**Knowledge Retrieval Trace（知识检索轨迹）**：
+由知识所有者保存的检索审计记录；在保留期内通过 `trace_id + item_id` 定位当次返回
+记录，并在读取时重新鉴权。
+_避免_：OIR Context Trace、Knowledge Context、永久快照
+
+**Knowledge Reference Record（知识引用记录）**：
+OIR 为审计持久化的 Citation、Provider Trace、Item ID、数量和状态，不包含知识正文。
+_避免_：Knowledge Context、Knowledge Snapshot、检索缓存
+
+**Knowledge Data Manifest（知识数据清单）**：
+删除 OIR 知识副本前保存的只读对账证据，只包含 Schema、数量与聚合 Hash，不包含知识
+正文或可恢复副本。
+_避免_：数据迁移、Knowledge Backup、Canonical Data
+
+**Knowledge Requirement（知识要求）**：
+Agent 对 Knowledge Context 的运行时依赖级别，只能是 `optional` 或 `required`；
+默认 `optional`。`required` 要求 Provider 成功返回至少一条治理后可用的 Knowledge，
+但不改变 Route Decision。
+_避免_：Retrieval Mode、Knowledge Provider、路由前置条件
+
 **Memory（记忆）**：
-从受信交互事实中形成、可在未来请求中复用的用户或任务相关长期信息。
+从受信交互事实中形成、可在未来请求中复用的用户或任务相关长期信息；外部 Knowledge
+Context 本身不能作为 Memory Formation 证据。
 _避免_：聊天记录、Knowledge、Context Pack
+
+**Memory Store（记忆存储）**：
+由 OIR 私有管理的 Memory 持久化边界，可以使用向量数据库；即使与其他服务共用
+物理数据库集群，也必须使用独立命名空间和权限，且不得跨服务读写。
+_避免_：Knowledge Store、knowledge_sys、共享知识库
+
+**Memory Configuration（记忆配置）**：
+只使用显式 `MEMORY_*` 命名空间描述 Memory Store、Embedding 与索引；不得回退到
+Knowledge 配置或静默创建新 Collection。
+_避免_：KNOWLEDGE_* fallback、knowledge transition config、隐式默认存储
 
 **Recall（记忆召回）**：
 为当前用途选择相关 Memory 的过程，不创建或修改 Memory。

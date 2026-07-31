@@ -8,8 +8,6 @@ from app.dependencies import (
     get_delegated_run_service,
     get_event_service,
     get_execution_trace_service,
-    get_knowledge_asset_service,
-    get_knowledge_service,
     get_memory_governance_service,
     get_memory_management_service,
     get_plan_service,
@@ -29,12 +27,6 @@ from app.repositories.registry_audit import (
 from app.services.execution_ticket_service import ExecutionTicketService
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, FileCutoverAuditRepository
-from host_adapters.oac.fallback.circuit import CircuitBreaker
-from host_adapters.oac.fallback.gateway import (
-    AdapterGovernanceMetrics,
-    IRSFallbackGateway,
-    IRSLegacyClient,
-)
 from host_adapters.oac.identity import HostIdentityVerifier
 from host_adapters.oac.identity.models import (
     HostAuthenticationError,
@@ -49,8 +41,6 @@ from host_apps.oac.config import get_oac_host_settings
 def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
     return OacAdapterApplicationPorts(
         routing=get_router_service(),
-        knowledge=get_knowledge_service(),
-        knowledge_assets=get_knowledge_asset_service(),
         registry=get_registry_service(),
         events=get_event_service(),
         plans=get_plan_service(),
@@ -148,35 +138,6 @@ def get_registry_audit_store() -> RegistryAuditStore:
     if core.storage_backend == "database":
         return DatabaseRegistryAuditStore(create_session_factory(core))
     return MemoryRegistryAuditStore()
-
-
-@lru_cache
-def get_adapter_governance_metrics() -> AdapterGovernanceMetrics:
-    return AdapterGovernanceMetrics()
-
-
-@lru_cache
-def get_irs_fallback_gateway() -> IRSFallbackGateway:
-    settings = get_oac_host_settings()
-    return IRSFallbackGateway(
-        mode=settings.fallback_mode,
-        policy_version=settings.policy_version,
-        circuit=CircuitBreaker(
-            failure_threshold=settings.circuit_failure_threshold,
-            recovery_seconds=settings.circuit_recovery_seconds,
-        ),
-        metrics=get_adapter_governance_metrics(),
-    )
-
-
-@lru_cache
-def get_irs_legacy_client() -> IRSLegacyClient:
-    settings = get_oac_host_settings()
-    token = settings.irs_fallback_service_token
-    return IRSLegacyClient(
-        base_url=settings.irs_fallback_base_url,
-        service_token=token.get_secret_value() if token else None,
-    )
 
 
 @lru_cache

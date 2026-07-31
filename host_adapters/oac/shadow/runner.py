@@ -58,24 +58,6 @@ def route_diff(irs: dict, oir: dict, *, approved: set[str] | None = None) -> lis
     return _build_diffs("route", fields, blocking_fields={"action", "agent_id"}, approved=approved)
 
 
-def knowledge_diff(
-    irs: dict, oir: dict, *, approved: set[str] | None = None
-) -> list[StructuralDiff]:
-    irs_evidence = _evidence_ids(irs)
-    oir_evidence = _evidence_ids(oir)
-    fields = {
-        "matched": (irs.get("matched"), oir.get("matched")),
-        "evidence_order": (irs_evidence, oir_evidence),
-        "warning_codes": (_warning_codes(irs), _warning_codes(oir)),
-        "permission": (_permission_shape(irs), _permission_shape(oir)),
-    }
-    permission_broadened = (
-        not irs_evidence and bool(oir_evidence) and ("permission_filtered" in _warning_codes(irs))
-    )
-    blocking_fields = {"permission"} if permission_broadened else set()
-    return _build_diffs("knowledge", fields, blocking_fields=blocking_fields, approved=approved)
-
-
 class ShadowReplayRunner:
     def __init__(
         self,
@@ -118,11 +100,9 @@ class ShadowReplayRunner:
             oir_result = await oir_executor(sample)
             latency_ms = (time.perf_counter() - started) * 1000
             irs_result = sample["irs_result"]
-            diffs = (
-                route_diff(irs_result, oir_result, approved=self.approved_fingerprints)
-                if sample["kind"] == "route"
-                else knowledge_diff(irs_result, oir_result, approved=self.approved_fingerprints)
-            )
+            if sample["kind"] != "route":
+                raise ValueError("OAC shadow replay supports Central Route samples only")
+            diffs = route_diff(irs_result, oir_result, approved=self.approved_fingerprints)
             blocking += sum(item.blocking and not item.approved for item in diffs)
             if self.metrics is not None:
                 self.metrics.counters[f"shadow:{operation.name}:processed"] += 1
@@ -220,24 +200,3 @@ def _plan_shape(value: Any) -> dict | None:
 
 def _message_type(value: Any) -> str:
     return "empty" if not isinstance(value, str) or not value.strip() else "text"
-
-
-def _evidence_ids(value: dict) -> list[str]:
-    evidence = value.get("evidence", [])
-    return [
-        str(item.get("chunk_id") or item.get("evidence_id"))
-        for item in evidence
-        if isinstance(item, dict) and (item.get("chunk_id") or item.get("evidence_id"))
-    ]
-
-
-def _warning_codes(value: dict) -> list[str]:
-    return sorted(
-        str(item.get("code"))
-        for item in value.get("warnings", [])
-        if isinstance(item, dict) and item.get("code")
-    )
-
-
-def _permission_shape(value: dict) -> str:
-    return "filtered" if "permission_filtered" in _warning_codes(value) else "visible"

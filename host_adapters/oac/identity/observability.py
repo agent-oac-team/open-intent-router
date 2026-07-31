@@ -4,9 +4,7 @@ from threading import Lock
 
 from host_adapters.oac.identity.profiles import CREDENTIAL_PROFILES
 
-_OPERATIONS = frozenset(
-    {"registry", "knowledge_admin", "knowledge_read", "route", "runtime", "unknown"}
-)
+_OPERATIONS = frozenset({"registry", "route", "runtime", "unknown"})
 _OUTCOMES = frozenset({"verified", "authentication_failed", "authorization_failed"})
 
 
@@ -55,10 +53,6 @@ HOST_SIGNATURE_METRICS = HostSignatureMetrics()
 def classify_host_request(method: str, path: str) -> str:
     if path.startswith("/api/v1/admin/agent-registry"):
         return "registry"
-    if path.startswith("/api/v1/admin/knowledge"):
-        return "knowledge_admin"
-    if path.startswith("/api/v1/knowledge"):
-        return "knowledge_read"
     if path == "/api/v1/central/route":
         return "route"
     if path.startswith("/api/v1/central"):

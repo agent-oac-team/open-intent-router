@@ -12,14 +12,10 @@ from app.db.session import (
     create_engine,
     create_session_factory,
 )
-from app.repositories.context_stores import (
-    DatabaseKnowledgeRepository,
-    DatabaseMemoryItemRepository,
-)
+from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.json_utils import dumps
 from app.repositories.memory_formation import DatabaseMemoryFormationTurnJobRepository
 from app.repositories.memory_traces import DatabaseMemoryFormationTraceRepository
-from app.schemas.knowledge import KnowledgeChunk, KnowledgeRetrievalLog, KnowledgeSource
 from app.schemas.memory import (
     MemoryDecisionStatus,
     MemoryEvent,
@@ -93,23 +89,6 @@ def test_postgresql_schema_contains_registry_revision_and_audit_contract() -> No
     assert "operator_id VARCHAR(128) NOT NULL" in schema_sql
     assert "before_text TEXT" in schema_sql
     assert "after_text TEXT" in schema_sql
-
-
-def test_postgresql_schema_contains_canonical_knowledge_asset_contract() -> None:
-    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
-
-    for table in (
-        "knowledge_asset_groups",
-        "knowledge_assets",
-        "knowledge_asset_chunks",
-        "knowledge_import_jobs",
-        "knowledge_migration_manifests",
-        "knowledge_operation_traces",
-    ):
-        assert f"CREATE TABLE IF NOT EXISTS {table}" in schema_sql
-    assert "ON DELETE RESTRICT" in schema_sql
-    assert "uq_knowledge_manifest_pipeline" in schema_sql
-    assert "idx_knowledge_assets_tenant_status" in schema_sql
 
 
 def test_legacy_runtime_datetime_columns_use_postgresql_type() -> None:
@@ -375,7 +354,6 @@ async def test_database_context_repositories_round_trip(tmp_path) -> None:
     await create_all_tables(settings)
     session_factory = create_session_factory(settings)
     memory_repository = DatabaseMemoryItemRepository(session_factory)
-    knowledge_repository = DatabaseKnowledgeRepository(session_factory)
 
     memory = await memory_repository.add(
         MemoryItem(
@@ -410,53 +388,6 @@ async def test_database_context_repositories_round_trip(tmp_path) -> None:
     assert active[0].content == "prefers concise answers"
     assert active[0].metadata["source_trace"] == "test"
     assert events[0].event_type == "memory_written"
-
-    source = await knowledge_repository.upsert_source(
-        KnowledgeSource(
-            source_id="docs",
-            name="Docs",
-            allow_tenants=["t1"],
-            tags=["product"],
-            metadata={"owner": "qa"},
-        )
-    )
-    chunk = await knowledge_repository.add_chunk(
-        KnowledgeChunk(
-            source_id=source.source_id,
-            content="risk rating guide",
-            title="Risk Guide",
-            uri="https://example.test/risk",
-            tags=["product"],
-            metadata={"version": "1"},
-        )
-    )
-    await knowledge_repository.add_log(
-        KnowledgeRetrievalLog(
-            query="risk",
-            caller_type="agent",
-            caller_id="agent_a",
-            purpose="agent_execution",
-            user_id="u1",
-            tenant_id="t1",
-            selected_source_ids=["docs"],
-            denied_source_ids=["secret"],
-            hit_count=1,
-            status="ok",
-            errors=[],
-            metadata={"hit_count": 1},
-        )
-    )
-    sources = await knowledge_repository.get_sources(["docs"])
-    chunks = await knowledge_repository.list_chunks(source_ids=["docs"])
-    hits = await knowledge_repository.search_chunks(
-        query="risk guide", source_ids=["docs"], limit=5
-    )
-    logs = await knowledge_repository.list_logs(caller_id="agent_a", tenant_id="t1")
-
-    assert sources[0].metadata["owner"] == "qa"
-    assert chunks[0].chunk_id == chunk.chunk_id
-    assert hits[0][0].content == "risk rating guide"
-    assert logs[0].denied_source_ids == ["secret"]
 
 
 async def test_memory_formation_schema_and_uniqueness(tmp_path) -> None:

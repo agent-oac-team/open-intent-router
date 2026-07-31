@@ -1,1 +1,1 @@
-"""Operation policy, circuit, fallback, and write-fence integration."""
+"""Operation classification and write-fence policy."""

@@ -1,55 +1,62 @@
 ## MODIFIED Requirements
 
+### Requirement: 记忆向量和知识向量使用独立 collection
+系统 SHALL 将 OIR Memory Store 与待删除的 OIR Knowledge 副本保持独立命名空间、配置和
+权限；清理 Knowledge Collection MUST NOT 读取、写入、重建或删除 Memory Collection。
+
+#### Scenario: OIR Memory 使用显式 collection
+- **WHEN** OIR 写入或搜索 Memory
+- **THEN** 操作只使用显式 `MEMORY_*` 配置指向的既有 Memory Collection，不回退 Knowledge 配置
+
+#### Scenario: 执行 Knowledge 清理
+- **WHEN** 清理工具删除 OIR 专属 Knowledge Collection
+- **THEN** Memory Collection、向量数量、Embedding 配置和 Recall 行为保持不变
+
 ### Requirement: Milvus collection 是派生索引
-系统 SHALL 将 Milvus 知识 collection 视为可基于 OIR PostgreSQL canonical Asset/Chunk 与 Migration Manifest 重建的派生索引，而不是 canonical knowledge storage。
+系统 SHALL 将 Knowledge Milvus Collection 的事实归属交给 `knowledge_sys`，并从 OIR
+删除本地 Knowledge 派生索引；OIR Core MUST NOT 通过物理 Collection 直接检索 Knowledge。
 
-#### Scenario: 必须有关联的 canonical knowledge metadata
-- **WHEN** 从 `oac_knowledge_chunks` 或 `oir_knowledge_vectors` 返回知识向量结果
-- **THEN** 系统必须能在向量之外关联到 canonical asset/chunk metadata、source information 和 citation data
+#### Scenario: OIR 需要 Agent Knowledge
+- **WHEN** Agent Context 需要检索外部 Knowledge
+- **THEN** OIR 调用 Provider-neutral Knowledge Provider，不读取 `oac_knowledge_chunks` 或 `oir_knowledge_vectors`
 
-#### Scenario: 向量假设不兼容时必须 reindex
-- **WHEN** 旧知识索引和新知识索引的 embedding model、embedding dimension、chunking strategy、vector schema 或 filter semantics 不一致
-- **THEN** 迁移路径 MUST 要求基于 OIR canonical chunks 重新索引，而不是复制既有向量并假装二者等价
+#### Scenario: knowledge_sys 重建索引
+- **WHEN** Knowledge 所有者需要重建向量
+- **THEN** 该生命周期完全由 `knowledge_sys` 基于其 Canonical Data 执行，不要求 OIR 参与
 
-#### Scenario: Exact Read 在 Milvus 不可用时执行
-- **WHEN** 调用方按已知 Asset/Chunk/source_ref 读取授权 canonical 内容且 Milvus 不可用
-- **THEN** 系统从 PostgreSQL 返回结果，不要求向量索引可用
+### Requirement: 双 collection 过渡保留 provenance
+系统 SHALL 在 OIR Knowledge 副本删除前以无正文 Manifest 记录待清理 Schema、数量与
+聚合 Hash；该记录 MUST NOT 成为可恢复的 Knowledge 备份或长期正文副本。
+
+#### Scenario: 执行清理 Dry Run
+- **WHEN** Dry Run 盘点 OIR Knowledge 表、Collection、本地文件和持久化 JSON
+- **THEN** 输出仅包含类型、Schema 版本、数量、聚合 Hash 和计划动作，不包含正文
+
+#### Scenario: 遇到未知 JSON 结构
+- **WHEN** 清理器发现无法证明为 Knowledge Context 正文的结构
+- **THEN** 清理立即停止且不执行模糊删除
 
 ### Requirement: 知识切换前必须规划迁移映射
-系统 SHALL 在用 OIR 知识向量替换 IRS 知识向量之前创建 Migration Manifest，以原始文件与 OIR canonical Source/Asset/Chunk/Vector 为主轴记录重建身份、版本、哈希、provenance、状态和验证结果。
+系统 SHALL 把 OIR Knowledge 副本处置定义为“不迁移、只清理”，并记录 OIR 269 Chunk 与
+`knowledge_sys` 270 Chunk 的已知差异；MUST NOT 创建从 OIR 到 `knowledge_sys` 的数据或
+向量迁移映射。
 
-#### Scenario: Manifest 记录原始文件到新索引的关系
-- **WHEN** 原始文件被解析和重新索引到 OIR storage
-- **THEN** Migration Manifest 记录 source file/hash/range、parser/chunking/embedding/vector schema 版本、new asset/chunk/index identifiers、collection 名称、migration status 和 validation status
+#### Scenario: 对账现有知识副本
+- **WHEN** 清理前比较 OIR 与 `knowledge_sys` 的 Knowledge 计数
+- **THEN** 269/270 差异被记录为解析差异，`knowledge_sys` 结果保持唯一 Canonical Data
 
-#### Scenario: IRS canonical 数据只用于对账
-- **WHEN** IRS PostgreSQL 或 HTTP Read/Assets 在迁移期可用
-- **THEN** 系统可用其对账数量、内容和契约结果，但 MUST NOT 用它替代原始文件重建或复制旧 Milvus 向量
+#### Scenario: 清理完成
+- **WHEN** Manifest、Dry Run、执行和 Memory 不变性报告均通过
+- **THEN** OIR 不再保存 Knowledge 表、专属 Collection、本地向量文件或持久化正文
 
-#### Scenario: Cutover 可以被审计
-- **WHEN** OIR 停止为某个 source 使用 `oac_knowledge_chunks`
-- **THEN** 维护者可以通过 Manifest 确认该 source 已重新索引并验证、已跳过、已延后或被有意退役
+### Requirement: 知识过渡不阻塞 mem0 记忆闭环
+系统 SHALL 将 Knowledge 外置与 OIR Memory 生命周期解耦；Memory 使用向量数据库不构成
+OIR 拥有 Knowledge 的理由。
 
-## ADDED Requirements
+#### Scenario: Knowledge Provider 未配置
+- **WHEN** OIR 启动且没有 Knowledge Provider
+- **THEN** Memory Recall、Formation、Create、Update 和 Delete 仍按显式 Memory 配置工作
 
-### Requirement: OIR 知识必须从已确认原始文件重建
-系统 SHALL 以 `/Users/lijingtong/project/data/内容生产` 的 6 份工作簿作为首批 OIR Knowledge 重建输入，并为每份文件生成完整 Manifest；`oac_knowledge_chunks` 中的旧向量 MUST NOT 被复制进 `oir_knowledge_vectors`。
-
-#### Scenario: 导入非空工作簿
-- **WHEN** 01、02、04、05 或 06 原始文件解析成功
-- **THEN** 系统保存 canonical Asset/Chunk/source_ref/hash 并使用当前已记录 Embedding 配置写入 `oir_knowledge_vectors`
-
-#### Scenario: 导入空客群工作簿
-- **WHEN** 03 文件仅包含表头
-- **THEN** Manifest 标记 empty/deferred，保留稳定 Asset 槽位，不写入伪 Chunk 或向量
-
-### Requirement: 知识迁移以业务语义与权限一致性验收
-系统 SHALL 通过 Golden Queries、Exact Read、业务字段对账和权限负向用例验证核心事实、适用条件、金额/期限/阈值和来源语义，而不要求新旧 Chunk 文本、ID 或向量物理同构。
-
-#### Scenario: 重新切块但业务语义一致
-- **WHEN** OIR Chunk 边界与 IRS 不同，但授权查询的核心事实、条件、数值和 source_ref 语义与原始文件一致
-- **THEN** 该差异可按非物理同构记录并通过语义验收
-
-#### Scenario: OIR 结果改变核心业务事实或权限
-- **WHEN** OIR 查询结果与原始文件在核心事实上矛盾或暴露未授权内容
-- **THEN** 知识切换门禁失败，且 Manifest validation status 不得标记为 validated
+#### Scenario: Memory 配置缺失
+- **WHEN** Memory 已启用但必要 `MEMORY_*` 配置缺失
+- **THEN** OIR 启动失败，不回退 Knowledge 配置或静默创建新 Collection

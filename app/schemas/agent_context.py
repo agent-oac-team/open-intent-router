@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 from app.schemas.common import JsonDict, StrictBaseModel
 
 ContextRetrievalMode = Literal["disabled", "prefetch", "controlled_retrieval"]
+KnowledgeRequirement = Literal["optional", "required"]
 MemoryScope = Literal[
     "user_preference",
     "stable_fact",
@@ -13,7 +14,14 @@ MemoryScope = Literal[
     "artifact_reference",
     "session_summary",
 ]
-ContextStatus = Literal["disabled", "ok", "empty", "timeout", "error", "denied"]
+ContextStatus = Literal[
+    "disabled",
+    "ok",
+    "empty",
+    "timeout",
+    "error",
+    "denied",
+]
 
 
 class ControlledRetrievalSpec(StrictBaseModel):
@@ -43,15 +51,25 @@ class AgentMemoryContextSpec(StrictBaseModel):
 
 class AgentKnowledgeContextSpec(StrictBaseModel):
     mode: ContextRetrievalMode = "disabled"
+    requirement: KnowledgeRequirement = "optional"
     source_ids: list[str] = Field(default_factory=list)
     source_tags: list[str] = Field(default_factory=list)
     max_items: int = Field(default=5, ge=0, le=50)
     controlled_retrieval: ControlledRetrievalSpec | None = None
     metadata: JsonDict = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_controlled_mode(cls, data):
+        if not isinstance(data, dict) or data.get("mode") != "controlled":
+            return data
+        return {**data, "mode": "controlled_retrieval"}
+
     @model_validator(mode="after")
     def validate_knowledge_context(self) -> "AgentKnowledgeContextSpec":
         if self.mode == "disabled":
+            if self.requirement == "required":
+                raise ValueError("disabled knowledge mode cannot be required")
             return self
         if self.mode == "controlled_retrieval" and self.controlled_retrieval is None:
             raise ValueError(

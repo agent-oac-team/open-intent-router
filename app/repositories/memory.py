@@ -184,7 +184,7 @@ class MemoryRunRepository:
         self.formation_published_order: dict[str, int] = {}
 
     async def add_run(self, run: AgentRun) -> AgentRun:
-        stored = run.model_copy(deep=True)
+        stored = AgentRun.model_validate(run.model_dump(mode="python"))
         self.runs[run.run_id] = stored
         return stored.model_copy(deep=True)
 
@@ -193,7 +193,7 @@ class MemoryRunRepository:
         if existing is None:
             raise ValueError("Agent run not found")
         _validate_run_identity(existing, run)
-        stored = run.model_copy(deep=True)
+        stored = AgentRun.model_validate(run.model_dump(mode="python"))
         self.runs[run.run_id] = stored
         return stored.model_copy(deep=True)
 
@@ -517,8 +517,9 @@ class MemoryRouteLogRepository:
         self.logs: list[RouteLog] = []
 
     async def add(self, log: RouteLog) -> RouteLog:
-        self.logs.append(log)
-        return log
+        stored = RouteLog.model_validate(log.model_dump(mode="python"))
+        self.logs.append(stored)
+        return stored
 
 
 def _run_source_order(run: AgentRun) -> int:

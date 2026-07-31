@@ -4,7 +4,9 @@
 
 ## 一句话定位
 
-OIR 是一个可插拔的意图路由、Agent 编排和受治理 Context / Memory / Knowledge 后端；OAC 通过同仓的 Host Adapter 使用 IRS 兼容契约，OIR Core 保持宿主无关。
+OIR 是一个可插拔的意图路由、Agent 编排和受治理 Context / Memory 中控；Agent Knowledge
+通过 Provider-neutral 接口外置，OAC 通过同仓的 Host Adapter 使用中控兼容契约，OIR
+Core 保持宿主和知识产品无关。
 
 ## 运行入口
 
@@ -38,7 +40,7 @@ Host Adapter 可以包含 OAC、IRS、Coze、Legacy 字段和兼容行为；Core
 | `app/repositories` | memory / database / file 存储与事务实现 | canonical、幂等、所有权、并发和序列化一致性 |
 | `app/db`、`sql` | SQLAlchemy 模型和 PostgreSQL 初始化 / 迁移快照 | 数据表与约束是事实源；SQLite / PostgreSQL 行为对齐 |
 | `app/llm`、`app/invokers`、`app/plugins` | LLM、Agent 调用与 Evidence 扩展 | Provider 细节不泄漏到公共契约；超时与失败可控 |
-| `host_adapters/oac` | IRS 兼容 API、Mapper、V2 identity、Fallback、Shadow、Cutover | 只调用应用端口；current-only V2；写操作 fail closed |
+| `host_adapters/oac` | IRS wire-compatible API、Mapper、V2 identity、Shadow、Cutover | 只调用应用端口；无 IRS runtime 依赖；中控失败 fail closed |
 | `host_apps/oac` | OAC 进程组合、Host 配置和运行门禁 | Composition only；启动前校验数据域、key、write fence |
 | `web/src` | 本地开发测试台 | 非生产 UI；每轮数据与真实后端 trace 对齐 |
 | `tests` | Native、Adapter、契约、数据库和前端外的回归测试 | 负向安全矩阵、失败注入、隔离与 fixture 稳定性 |
@@ -104,7 +106,7 @@ OAC Go / Coze -> OIR-HOST-V2 -> OAC Adapter
 
 | 文档 | 主要用途 |
 | --- | --- |
-| [API 概览](contracts/api.md) | OIR Native API、路由、Plan、Memory、Knowledge 和 Session 契约 |
+| [API 概览](contracts/api.md) | OIR Native API、路由、Plan、Memory、外部 Knowledge Provider 消费和 Session 契约 |
 | [Agent 定义](contracts/agent-definition.md) | Agent Definition、访问控制、调用和 Context 配置 |
 | [Legacy / Native 兼容矩阵](contracts/legacy-native-compat-matrix.md) | 旧接口、操作类型、应用端口和回退规则 |
 
@@ -116,7 +118,6 @@ OAC Go / Coze -> OIR-HOST-V2 -> OAC Adapter
 | [Evidence Provider](architecture/evidence-provider.md) | 路由证据与 Agent Knowledge Context 的边界 |
 | [mem0 记忆闭环集成](architecture/mem0-memory-integration.md) | PostgreSQL / mem0 / Milvus 边界、配置和 smoke |
 | [OAC Host Adapter](architecture/oac-host-adapter.md) | Core / Adapter 边界、V2 身份、Ticket、Fallback 和 Capability |
-| [Registry 迁移与主写规则](architecture/registry-migration.md) | OAC Registry 映射、entitlement、审计和迁移命令 |
 
 ### 界面与展示
 

@@ -1,0 +1,217 @@
+{
+  "blocking_reasons": [],
+  "capability_mapping": {
+    "agent": {
+      "legacy_surface": [
+        "open_agent / continue_agent / exit_agent"
+      ],
+      "oir_owner": "Route Decision / Agent Session / UI Handoff",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_oac_central_handlers.py::test_central_route_e2e_covers_all_legacy_actions tests/test_oac_agent_entitlement_routing_e2e.py"
+      ]
+    },
+    "central": {
+      "legacy_surface": [
+        "POST /api/v1/central/route",
+        "POST /api/v1/central/events/navigation",
+        "POST /api/v1/central/events/agent",
+        "GET /api/v1/central/active-plan",
+        "POST /api/v1/central/plans/{plan_id}/confirm"
+      ],
+      "oir_owner": "Routing / Canonical Turn / application ports",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_oac_central_compat.py tests/test_oac_central_handlers.py"
+      ]
+    },
+    "event": {
+      "legacy_surface": [
+        "navigation event / agent event callback"
+      ],
+      "oir_owner": "Agent Event / Execution Trace",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_oac_central_handlers.py::test_navigation_and_plan_confirm_keep_legacy_status_and_shape tests/test_oac_central_handlers.py::test_route_issues_ticket_and_completed_event_consumes_it"
+      ]
+    },
+    "plan": {
+      "legacy_surface": [
+        "active plan / plan confirm"
+      ],
+      "oir_owner": "Plan / Plan Step",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_oac_central_handlers.py::test_navigation_and_plan_confirm_keep_legacy_status_and_shape tests/test_plan_confirm_concurrency.py tests/test_plan_repository_ownership.py"
+      ]
+    },
+    "registry": {
+      "legacy_surface": [
+        "Agent Registry list/create/update/enable/delete"
+      ],
+      "oir_owner": "Agent Registry",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_oac_registry_compat.py tests/test_registry_atomic_mutation.py tests/test_registry_revision_audit.py"
+      ]
+    },
+    "result": {
+      "legacy_surface": [
+        "agent result callback / history projection"
+      ],
+      "oir_owner": "Agent Result / Canonical Turn completion",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_delegated_run_completion.py tests/test_turn_transaction_coordinator.py tests/test_canonical_invocation_store.py"
+      ]
+    },
+    "run": {
+      "legacy_surface": [
+        "host-executed agent lifecycle"
+      ],
+      "oir_owner": "Delegated Run / Execution Ticket",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_delegated_run_contracts.py tests/test_delegated_run_start.py tests/test_delegated_run_progress.py tests/test_delegated_run_failure.py tests/test_delegated_run_maintenance.py"
+      ]
+    },
+    "session": {
+      "legacy_surface": [
+        "session context / history reads"
+      ],
+      "oir_owner": "Session / Message read models",
+      "verification": [
+        ".venv/bin/python -m pytest tests/test_api.py tests/test_oac_central_compat.py::test_route_request_mapper_uses_trusted_identity_and_keeps_history_as_context"
+      ]
+    }
+  },
+  "checks": {
+    "capability_contracts_complete": true,
+    "cutover_watermark_recorded": true,
+    "irs_runtime_drained_or_disposed": true,
+    "non_production_evidence": true,
+    "non_sensitive_snapshot_recorded": true,
+    "oac_e2e_complete": true,
+    "recovery_and_reconciliation_drill_passed": true
+  },
+  "contract": "oir-central-retirement-gate/v1",
+  "decision": "go",
+  "deletion_allowed": true,
+  "evidence_summary": {
+    "capability_contracts": {
+      "agent": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_central_route_e2e_covers_all_legacy_actions tests/test_oac_agent_entitlement_routing_e2e.py",
+        "passed": true
+      },
+      "central": {
+        "evidence_ref": "pytest tests/test_oac_central_compat.py tests/test_oac_central_handlers.py",
+        "passed": true
+      },
+      "event": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_navigation_and_plan_confirm_keep_legacy_status_and_shape tests/test_oac_central_handlers.py::test_route_issues_ticket_and_completed_event_consumes_it",
+        "passed": true
+      },
+      "plan": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_navigation_and_plan_confirm_keep_legacy_status_and_shape tests/test_plan_confirm_concurrency.py tests/test_plan_repository_ownership.py",
+        "passed": true
+      },
+      "registry": {
+        "evidence_ref": "pytest tests/test_oac_registry_compat.py tests/test_registry_atomic_mutation.py tests/test_registry_revision_audit.py",
+        "passed": true
+      },
+      "result": {
+        "evidence_ref": "pytest tests/test_delegated_run_completion.py tests/test_turn_transaction_coordinator.py tests/test_canonical_invocation_store.py",
+        "passed": true
+      },
+      "run": {
+        "evidence_ref": "pytest tests/test_delegated_run_contracts.py tests/test_delegated_run_start.py tests/test_delegated_run_progress.py tests/test_delegated_run_failure.py tests/test_delegated_run_maintenance.py",
+        "passed": true
+      },
+      "session": {
+        "evidence_ref": "pytest tests/test_api.py tests/test_oac_central_compat.py::test_route_request_mapper_uses_trusted_identity_and_keeps_history_as_context",
+        "passed": true
+      }
+    },
+    "cutover_watermark": "2026-07-16T11:33:35.148630+00:00",
+    "environment": "test",
+    "irs_runtime": {
+      "active_plan_count": 0,
+      "disposition_recorded": true,
+      "drained": true,
+      "evidence_ref": "docs/App-Research/evidence/migration/irs-local-runtime-drain.json",
+      "inflight_agent_count": 0,
+      "pending_callback_count": 0
+    },
+    "non_sensitive_snapshot": {
+      "captured_at": "2026-07-31T00:00:00+00:00",
+      "configuration": {
+        "central_fallback_enabled": false,
+        "registry_backend": "database"
+      },
+      "contains_sensitive_values": false,
+      "contract": "central-retirement-snapshot/v1",
+      "fact_sources": {
+        "agent": "oir",
+        "central": "oir",
+        "event": "oir",
+        "plan": "oir",
+        "registry": "oir",
+        "result": "oir",
+        "run": "oir",
+        "session": "oir"
+      },
+      "passed": true,
+      "versions": {
+        "central_contract": "oac-irs-baseline-v1",
+        "oir": "working-tree-2026-07-31"
+      },
+      "write_freeze_enabled": true
+    },
+    "oac_e2e": {
+      "agent_callback": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_route_issues_ticket_and_completed_event_consumes_it",
+        "passed": true
+      },
+      "agent_exit": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_central_route_e2e_covers_all_legacy_actions",
+        "passed": true
+      },
+      "agent_switch": {
+        "evidence_ref": "pytest tests/test_oac_agent_entitlement_routing_e2e.py",
+        "passed": true
+      },
+      "history_read": {
+        "evidence_ref": "pytest tests/test_api.py tests/test_oac_central_compat.py::test_route_request_mapper_uses_trusted_identity_and_keeps_history_as_context",
+        "passed": true
+      },
+      "plan_confirm": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_navigation_and_plan_confirm_keep_legacy_status_and_shape",
+        "passed": true
+      },
+      "route": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_central_route_e2e_covers_all_legacy_actions",
+        "passed": true
+      }
+    },
+    "recovery_drill": {
+      "ambiguous_writes_not_replayed": {
+        "evidence_ref": "pytest tests/test_oac_fallback_drill_script.py",
+        "passed": true
+      },
+      "data_reconciliation_passed": {
+        "evidence_ref": "pytest tests/test_oac_state_rehearsal_script.py",
+        "passed": true
+      },
+      "incomplete_runs_disposed": {
+        "evidence_ref": "pytest tests/test_delegated_run_maintenance.py",
+        "passed": true
+      },
+      "irs_not_post_retirement_rollback": {
+        "evidence_ref": "pytest tests/test_oac_central_handlers.py::test_route_projects_primary_error_when_fallback_is_off",
+        "passed": true
+      },
+      "oir_write_freeze_verified": {
+        "evidence_ref": "pytest tests/test_oac_governance.py",
+        "passed": true
+      }
+    }
+  },
+  "exclusions": {
+    "central_zero_traffic_observation_days": 0,
+    "unknown_consumer_enumeration_required": false
+  },
+  "passed": true
+}

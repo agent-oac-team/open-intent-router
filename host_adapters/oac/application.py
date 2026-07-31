@@ -4,8 +4,6 @@ from app.application import (
     DelegatedRunApplicationPort,
     EventApplicationPort,
     ExecutionTraceApplicationPort,
-    KnowledgeApplicationPort,
-    KnowledgeAssetApplicationPort,
     MemoryGovernanceApplicationPort,
     MemoryManagementApplicationPort,
     PlanApplicationPort,
@@ -18,8 +16,6 @@ from app.application import (
 @dataclass(frozen=True)
 class OacAdapterApplicationPorts:
     routing: RoutingApplicationPort
-    knowledge: KnowledgeApplicationPort
-    knowledge_assets: KnowledgeAssetApplicationPort
     registry: RegistryApplicationPort
     events: EventApplicationPort
     plans: PlanApplicationPort

@@ -2,7 +2,9 @@
 
 日期：2026-07-09
 
-> 状态：历史迁移方案记录。Host 身份协议的当前实现已经收敛为仅接受
+> 状态：**Superseded 历史迁移方案记录（2026-07-31，issue #22）**。本文的
+> IRS runtime fallback、进程地址和环境变量已经退役，只用于解释迁移过程；
+> OIR 中控失败直接 fail closed，不以 IRS 为回滚目标。Host 身份协议的当前实现已经收敛为仅接受
 > `OIR-HOST-V2`；Registry、Knowledge Admin 与 Coze 不再使用
 > `X-Admin-Sync-Token` 作为 OIR 授权证据。当前操作以
 > [OAC Host Signature V2 运行手册](../../App-Adr/develop/skills/runbooks/oac-host-signature-v2-runbook.md) 为准。

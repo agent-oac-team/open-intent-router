@@ -42,36 +42,35 @@ MEMORY_STRATEGY_PROVIDER=memory
 本地真实 mem0 闭环：
 
 ```env
-DATABASE_URL=postgresql+asyncpg://oir:replace-with-local-password@127.0.0.1:5432/oir
+MEMORY_DATABASE_URL=postgresql+asyncpg://oir:replace-with-local-password@127.0.0.1:5432/oir
 MEMORY_STRATEGY_PROVIDER=mem0
 MEMORY_MEM0_FAIL_CLOSED=false
 MEMORY_MEM0_VECTOR_PROVIDER=milvus
-MEMORY_MEM0_MILVUS_COLLECTION=oir_memory_vectors
-MEMORY_MEM0_MILVUS_URI=.data/oir_memory_milvus.db
+MEMORY_MILVUS_COLLECTION=oir_memory_vectors
+MEMORY_MILVUS_URI=.data/oir_memory_milvus.db
+MEMORY_MILVUS_TOKEN=
+MEMORY_MILVUS_DB_NAME=
 MEMORY_MEM0_HISTORY_BACKEND=postgresql
 MEMORY_MEM0_HISTORY_DATABASE_URL=postgresql+asyncpg://oir:replace-with-local-password@127.0.0.1:5432/oir
-KNOWLEDGE_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-KNOWLEDGE_EMBEDDING_API_KEY=replace-with-real-key
-KNOWLEDGE_EMBEDDING_MODEL=text-embedding-v4
-KNOWLEDGE_EMBEDDING_DIM=1024
+MEMORY_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MEMORY_EMBEDDING_API_KEY=replace-with-real-key
+MEMORY_EMBEDDING_MODEL=text-embedding-v4
+MEMORY_EMBEDDING_DIMS=1024
 ```
 
-也可以使用短字段配置 embedding；优先级为 `MEMORY_MEM0_*`、`EMBEDDING_*`、`KNOWLEDGE_EMBEDDING_*`：
+Memory 不再读取 `DATABASE_URL`、通用 `EMBEDDING_*`、`KNOWLEDGE_*` 或重复的
+`MEMORY_MEM0_MILVUS_*` / `MEMORY_MEM0_EMBEDDING_*`。`MEMORY_MODE=observe|on`
+时必须显式提供 `MEMORY_DATABASE_URL`；选择 mem0 策略时还必须提供
+`MEMORY_MILVUS_URI`、`MEMORY_MILVUS_COLLECTION`、`MEMORY_EMBEDDING_MODEL`
+和 `MEMORY_EMBEDDING_DIMS`。缺项会在 Settings/启动阶段列出并失败，不会创建默认
+Collection。
+
+mem0 只有在显式配置 `MEMORY_MEM0_LLM_*` 时才获得 LLM 配置，不复用 Router LLM：
 
 ```env
-EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-EMBEDDING_API_KEY=replace-with-real-key
-EMBEDDING_MODEL=text-embedding-v4
-EMBEDDING_DIM=1024
-```
-
-mem0 LLM 未显式配置 `MEMORY_MEM0_LLM_*` 时，会复用当前 router 的 OpenAI-compatible LLM 配置；本地已验证复用 DeepSeek：
-
-```env
-ROUTER_LLM_PROVIDER=openai_compatible
-ROUTER_LLM_MODEL=deepseek-chat
-ROUTER_LLM_BASE_URL=replace-with-current-deepseek-base-url
-ROUTER_LLM_API_KEY=replace-with-real-key
+MEMORY_MEM0_LLM_MODEL=qwen-plus
+MEMORY_MEM0_LLM_BASE_URL=https://provider.example/v1
+MEMORY_MEM0_LLM_API_KEY=replace-with-real-key
 ```
 
 PostgreSQL 初始化：
@@ -88,10 +87,8 @@ psql postgresql://<postgres-admin>@127.0.0.1:5432/postgres -f sql/postgresql_sch
 APP_ENV=production
 MEMORY_STRATEGY_PROVIDER=mem0
 MEMORY_MEM0_FAIL_CLOSED=true
-DATABASE_URL=postgresql+asyncpg://oir:replace-with-password@localhost:5432/oir
+MEMORY_DATABASE_URL=postgresql+asyncpg://oir:replace-with-password@localhost:5432/oir
 ```
-
-`MEM0_CONFIG_JSON` 是高级覆盖项，会覆盖显式字段生成的 mem0 config。不要在仓库中提交真实 key、token 或数据库密码。
 
 ## 失败策略
 
@@ -102,9 +99,26 @@ DATABASE_URL=postgresql+asyncpg://oir:replace-with-password@localhost:5432/oir
 
 ## 调试入口
 
-- `GET /api/v1/runtime/config`：查看 memory provider、mem0 collection、Milvus Lite URI、history backend、fail-closed 和静态健康状态。
+- `GET /api/v1/runtime/config`：查看 memory provider、有效 SQL/Milvus/embedding
+  配置（敏感值已脱敏）、显式配置来源、history backend、fail-closed 和静态健康状态。
 - `GET /api/v1/memories/debug`：查看当前记忆项、事件、mem0 degraded 状态、最近错误和 `memory_id` 到 `mem0_memory_id` 的映射。
 - 响应不会暴露 API key、Milvus token 或数据库密码，只显示 `*_configured` 类布尔状态或非敏感 collection/URI。
+
+可用公开 API 生成无正文、可比较的配置与行为快照：
+
+```bash
+.venv/bin/python scripts/capture_memory_invariance.py \
+  --base-url http://127.0.0.1:8000 \
+  --tenant-id <isolated-tenant> \
+  --user-id <isolated-user> \
+  --recall-query "<representative-query>" \
+  --exercise-crud \
+  --output <environment-specific-output.json>
+```
+
+工具默认只读；`--exercise-crud` 会创建、召回并删除一个唯一探针。报告只保留哈希、
+ID、计数、状态和安全配置，不保存 Memory 正文。测试/生产环境应分别采集变更前后报告，
+本地报告不能替代环境验收。
 
 自动形成的运行配置和上线步骤见 [`conversation-memory-formation-rollout.md`](../../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md)。`/runtime/config` 还会暴露非敏感的 formation mode/version、worker 开关、queue depth、oldest pending、dead-letter、index out-of-sync 和 deletion pending 状态；完整指标由管理员接口 `GET /api/v1/admin/memories/metrics` 提供。
 

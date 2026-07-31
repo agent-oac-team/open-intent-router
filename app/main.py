@@ -10,7 +10,7 @@ from app.api import (
     agents,
     events,
     health,
-    knowledge,
+    jwks,
     memory,
     plans,
     router,
@@ -27,6 +27,7 @@ from app.dependencies import (
     get_memory_data_settings,
     get_memory_runtime_policy,
 )
+from app.services.mem0_config import memory_infrastructure_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if memory_settings.database_url != settings.database_url:
             await create_all_tables(memory_settings)
     policy = get_memory_runtime_policy()
+    memory_infrastructure = memory_infrastructure_metadata(settings)
     logger.info(
         "memory_runtime mode=%s policy=%s source=%s execution=%s recall=%s formation=%s "
         "formation_worker=%s index_worker=%s ttl_sweeper=%s context_memory=%s",
@@ -53,6 +55,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         policy.effective_index_worker_enabled,
         policy.effective_ttl_sweeper_enabled,
         policy.effective_governed_context_memory_enabled,
+    )
+    logger.info(
+        "memory_infrastructure sources=%s collection=%s embedding_model=%s embedding_dims=%s",
+        memory_infrastructure["configuration_sources"],
+        memory_infrastructure["milvus_collection"],
+        memory_infrastructure["embedding_model"],
+        memory_infrastructure["embedding_dims"],
     )
     formation_runtime = build_memory_formation_runtime()
     maintenance_runtime = build_memory_maintenance_runtime()
@@ -79,6 +88,7 @@ def create_app(*, api_prefix: str = "") -> FastAPI:
         allow_headers=["*"],
     )
     register_error_handlers(app)
+    app.include_router(jwks.router, prefix=normalized_prefix)
     app.include_router(health.router, prefix=normalized_prefix)
     app.include_router(router.router, prefix=normalized_prefix)
     app.include_router(agents.router, prefix=normalized_prefix)
@@ -87,7 +97,6 @@ def create_app(*, api_prefix: str = "") -> FastAPI:
     app.include_router(events.router, prefix=normalized_prefix)
     app.include_router(plans.router, prefix=normalized_prefix)
     app.include_router(memory.router, prefix=normalized_prefix)
-    app.include_router(knowledge.router, prefix=normalized_prefix)
     app.include_router(sessions.router, prefix=normalized_prefix)
     app.include_router(runtime.router, prefix=normalized_prefix)
     return app

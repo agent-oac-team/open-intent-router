@@ -1,58 +1,84 @@
 ## MODIFIED Requirements
 
+### Requirement: 可显式配置 mem0 记忆策略
+系统 SHALL 只通过文档化的 `MEMORY_*` Settings 字段配置真实 mem0 记忆策略，
+MUST NOT 使用通用 JSON override、Router LLM、通用 Embedding 或 Knowledge 配置补齐
+Memory 基础设施。
+
+#### Scenario: 使用显式 Milvus 与 Embedding 配置
+- **WHEN** `MEMORY_STRATEGY_PROVIDER=mem0` 且 Memory 已启用
+- **THEN** 系统只用 `MEMORY_MILVUS_*` 与 `MEMORY_EMBEDDING_*` 构造 mem0 配置
+
+#### Scenario: mem0 使用 LLM
+- **WHEN** 部署方需要为 mem0 配置 LLM
+- **THEN** 系统只接受显式 `MEMORY_MEM0_LLM_*`，不复用 Router LLM
+
+#### Scenario: 提交旧高级 override
+- **WHEN** 部署仍提供已退役的 `MEM0_CONFIG_JSON`
+- **THEN** 系统不读取该值，也不能据此改变 Memory Store、Collection 或 Embedding
+
 ### Requirement: mem0 provides memory strategy behind an adapter
-The system SHALL use mem0 as the default memory strategy engine behind a memory adapter boundary, and automatic memory formation SHALL consume only completed, ownership-verified Canonical Conversation Turns rather than isolated messages, untrusted Host payloads, or partial Agent/Plan results.
+系统 SHALL 在 Memory Adapter 边界后使用 mem0 作为默认记忆策略引擎，自动 Memory
+Formation 只能消费已完成且所有权已验证的 Canonical Conversation Turn。外部 Knowledge
+Context、孤立消息、不受信 Host 载荷和部分 Agent/Plan 结果 MUST NOT 成为 Formation 证据。
 
-#### Scenario: Memory is formed from a completed Canonical Turn
-- **WHEN** a Canonical Turn containing trusted user input, final semantic response, ownership, and result references is completed and published through the transactional outbox
-- **THEN** the system sends the governed Turn Capsule to the mem0-backed adapter for extraction, semantic update, or merge behavior
+#### Scenario: 从已完成 Canonical Turn 形成 Memory
+- **WHEN** 已完成的 Canonical Turn 通过 Transactional Outbox 发布
+- **THEN** 系统只把经过治理且合格的 Turn Capsule 发送给 Memory Adapter
 
-#### Scenario: Partial or untrusted runtime data is supplied
-- **WHEN** a message, pending Run, isolated Agent Event, incomplete Plan result, or Adapter-assembled transcript is not backed by a completed ownership-verified Canonical Turn
-- **THEN** the system MUST NOT use that data as an automatic memory formation input
+#### Scenario: Turn 使用外部 Knowledge Context
+- **WHEN** Agent Result 或 Invocation 使用过外部 Knowledge 正文
+- **THEN** 正文从 Formation 证据中移除，不能复制进长期 Memory
 
-#### Scenario: Memory is searched through strategy layer
-- **WHEN** the system recalls memory for a route or invocation
-- **THEN** it calls the memory adapter with user, subject, scope, metadata filters, query, and limit information
+#### Scenario: 通过策略层检索 Memory
+- **WHEN** 系统为 Route 或 Invocation 召回 Memory
+- **THEN** 系统使用 user、subject、scope、metadata filters、query 和 limit 调用 Memory Adapter
 
-#### Scenario: Adapter result is governed by OIR
-- **WHEN** mem0 returns candidate memories
-- **THEN** open-intent-router still applies tenant enablement, Agent scope, permission, TTL, redaction, and budget rules before exposing them
+#### Scenario: Adapter 结果由 OIR 治理
+- **WHEN** mem0 返回 Memory 候选
+- **THEN** OIR 在暴露候选前应用租户开关、Agent Scope、权限、TTL、脱敏和预算规则
 
 ## ADDED Requirements
 
+### Requirement: Memory 只使用显式 MEMORY 配置
+系统 SHALL 使用完整 `MEMORY_*` 命名空间配置 Memory Store、Embedding 与 Collection，
+MUST NOT 回退 `KNOWLEDGE_*` 配置、Knowledge Transition 元数据或隐式默认 Collection。
+
+#### Scenario: Memory 配置完整
+- **WHEN** Memory 启用且所有必要显式配置存在
+- **THEN** OIR 使用既有 Memory Collection 和 Embedding 配置启动
+
+#### Scenario: Memory 配置缺失
+- **WHEN** Memory 启用但必要显式配置缺失
+- **THEN** OIR 启动失败，不静默换用 Knowledge 配置或创建新 Collection
+
+### Requirement: Memory 解耦必须证明数据不变
+系统 SHALL 在删除 Knowledge 配置回退前后对账 Memory Collection、Embedding 配置、数量、
+Recall、Create、Update 和 Delete，且 MUST NOT 重建、重新 Embedding 或迁移现有 Memory。
+
+#### Scenario: 基线验证失败
+- **WHEN** 显式 Memory 配置无法复现当前 Collection、数量或行为
+- **THEN** 迁移停止，不删除 Knowledge fallback
+
+#### Scenario: 解耦验证通过
+- **WHEN** 前后配置、数量和 CRUD/Recall 结果一致
+- **THEN** 系统可删除 fallback、transition metadata 和 Knowledge/Memory 交叉校验
+
 ### Requirement: Shadow Memory Formation 必须隔离于主召回数据域
-系统 SHALL 在 State Rehearsal 中将 Memory Event、Item、Revision、Provider History 和向量写入独立测试 database/schema 与 collection，Decision Shadow MUST NOT 创建可被主链路召回的 Memory。
+系统 SHALL 在 State Rehearsal 中将 Memory 写入独立测试 database/schema 与 Collection，
+Decision Shadow MUST NOT 创建可被主链路召回的 Memory。
 
 #### Scenario: Decision Shadow 产生可形成 Turn
 - **WHEN** OIR Shadow 结果包含潜在记忆候选
-- **THEN** 系统只记录无副作决策证据，不调用主 Memory Provider 或持久化主 Memory Item
-
-#### Scenario: State Rehearsal 完成 Memory 闭环
-- **WHEN** 隔离演练中的 Canonical Turn 完成
-- **THEN** Formation/Write/Recall 只在隔离数据域可见，主召回数据域不得命中该记忆
+- **THEN** 系统只记录无副作用决策证据，不写入主 Memory Store
 
 ### Requirement: Memory Formation 与 Recall 必须可独立 mode-off
-系统 SHALL 提供无需修改 canonical Turn/Run/Result 数据的 Formation、Recall 和 Worker 独立关闭开关，并在关闭时保留可观测状态。
+系统 SHALL 提供 Formation、Recall 和 Worker 独立关闭开关，并在关闭时保留可观测状态。
 
 #### Scenario: Formation mode-off
-- **WHEN** 运维关闭自动 Formation/Write
-- **THEN** 新 Canonical Turn 仍正常完成且 Outbox/跳过原因可审计，但不新增或修改 Memory
+- **WHEN** 运维关闭自动 Formation
+- **THEN** Canonical Turn 仍正常完成，但不新增或修改 Memory
 
 #### Scenario: Recall mode-off
-- **WHEN** 运维关闭 Memory Recall
-- **THEN** Route 与 Invocation 继续使用无 Memory 的受治理 Context，且不放宽 Agent/Knowledge 权限
-
-### Requirement: Canonical Turn Formation 的重复投递不得生成重复记忆副作用
-系统 SHALL 以 turn ID、formation policy version 与形成窗口管理自动 Formation 幂等，并将重复 Outbox 投递收敛为同一逻辑决策/记忆操作。
-
-#### Scenario: Formation Worker 重复消费同一 Turn
-- **WHEN** 同一 completed Turn 的 Outbox 事件因至少一次投递而重复消费
-- **THEN** 系统返回已处理的形成状态或幂等重算，不生成重复 Memory Revision/Provider Write
-
-### Requirement: 干净切换不从 IRS 历史消息形成记忆
-系统 SHALL NOT 导入 IRS/OAC 旧历史消息、Session、Plan、Result 或 Event 用于生成 OIR Memory；OIR Memory 仅从 cutover 后新建且已完成的 Canonical Turn 开始累积。
-
-#### Scenario: 切换后 Memory 数据域初始化
-- **WHEN** OIR 作为唯一事实源首次启动
-- **THEN** Memory 数据域不包含基于 IRS/OAC 旧历史消息生成的 Item，后续只消费新 OIR Turn
+- **WHEN** 运维关闭 Recall
+- **THEN** Route 与 Invocation 继续运行，且不回退到 Knowledge 检索

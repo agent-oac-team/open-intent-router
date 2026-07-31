@@ -1,6 +1,4 @@
 import importlib.util
-import json
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -17,24 +15,24 @@ def build_mem0_config(settings: Settings) -> dict[str, Any]:
         "vector_store": {
             "provider": settings.memory_mem0_vector_provider,
             "config": {
-                "collection_name": settings.memory_mem0_milvus_collection,
+                "collection_name": _effective_milvus_collection(settings),
                 "embedding_model_dims": embedding_dims,
-                "url": settings.memory_mem0_milvus_uri,
-                "token": settings.memory_mem0_milvus_token or "",
+                "url": _effective_milvus_uri(settings),
+                "token": _effective_milvus_token(settings) or "",
             },
         },
         "embedder": {
             "provider": settings.memory_mem0_embedder_provider,
             "config": {
-                "model": settings.memory_mem0_embedder_model or embedding_model,
+                "model": embedding_model,
                 "embedding_dims": embedding_dims,
             },
         },
         "history_db_path": settings.memory_mem0_history_db_path or settings.mem0_history_db_path,
     }
     vector_config = config["vector_store"]["config"]
-    if settings.memory_mem0_milvus_db_name:
-        vector_config["db_name"] = settings.memory_mem0_milvus_db_name
+    if milvus_db_name := _effective_milvus_db_name(settings):
+        vector_config["db_name"] = milvus_db_name
     embedder_config = config["embedder"]["config"]
     if embedding_api_key:
         embedder_config["api_key"] = embedding_api_key
@@ -43,21 +41,17 @@ def build_mem0_config(settings: Settings) -> dict[str, Any]:
     llm_config = _llm_config(settings)
     if llm_config:
         config["llm"] = llm_config
-    if settings.mem0_config_json.strip():
-        override = json.loads(settings.mem0_config_json)
-        if not isinstance(override, dict):
-            raise ValueError("MEM0_CONFIG_JSON must decode to a JSON object")
-        config = _deep_merge(config, override)
     return config
 
 
 def mem0_static_metadata(settings: Settings) -> dict[str, Any]:
+    infrastructure = memory_infrastructure_metadata(settings)
     return {
         "provider": settings.memory_strategy_provider,
         "fail_closed": settings.memory_mem0_fail_closed_effective,
         "vector_provider": settings.memory_mem0_vector_provider,
-        "collection": settings.memory_mem0_milvus_collection,
-        "milvus_uri": settings.memory_mem0_milvus_uri,
+        "collection": infrastructure["milvus_collection"],
+        "milvus_uri": infrastructure["milvus_uri"],
         "history_backend": settings.memory_mem0_history_backend,
         "history_canonical": _history_canonical(settings),
         "embedding_model": _effective_embedding_model(settings),
@@ -67,11 +61,7 @@ def mem0_static_metadata(settings: Settings) -> dict[str, Any]:
         "llm_provider": settings.memory_mem0_llm_provider,
         "llm_model": _effective_llm_model(settings),
         "llm_api_key_configured": bool(_effective_llm_api_key(settings)),
-        "knowledge_transition_collections": {
-            "memory": settings.memory_mem0_milvus_collection,
-            "irs_knowledge": "oac_knowledge_chunks",
-            "oir_knowledge": settings.knowledge_milvus_collection,
-        },
+        "configuration_sources": infrastructure["configuration_sources"],
     }
 
 
@@ -123,36 +113,102 @@ def mem0_health_check(settings: Settings) -> dict[str, Any]:
     return {**metadata, "status": status, "checks": checks}
 
 
-def _effective_embedding_model(settings: Settings) -> str:
-    return (
-        settings.memory_mem0_embedding_model
-        or settings.embedding_model
-        or settings.knowledge_embedding_model
-    )
+def _effective_embedding_model(settings: Settings) -> str | None:
+    return settings.memory_embedding_model
 
 
-def _effective_embedding_dims(settings: Settings) -> int:
-    return (
-        settings.memory_mem0_embedding_dims
-        or settings.embedding_dim
-        or settings.knowledge_embedding_dim
-    )
+def _effective_embedding_dims(settings: Settings) -> int | None:
+    return settings.memory_embedding_dims
 
 
 def _effective_embedding_base_url(settings: Settings) -> str | None:
-    return (
-        settings.memory_mem0_embedding_base_url
-        or settings.embedding_base_url
-        or settings.knowledge_embedding_base_url
-    )
+    return settings.memory_embedding_base_url
 
 
 def _effective_embedding_api_key(settings: Settings) -> str | None:
-    return (
-        settings.memory_mem0_embedding_api_key
-        or settings.embedding_api_key
-        or settings.knowledge_embedding_api_key
-    )
+    return settings.memory_embedding_api_key
+
+
+def memory_infrastructure_metadata(settings: Settings) -> dict[str, Any]:
+    sources = {
+        "database_url": _source(
+            settings,
+            "memory_database_url",
+            "MEMORY_DATABASE_URL",
+        ),
+        "milvus_uri": _source(
+            settings,
+            "memory_milvus_uri",
+            "MEMORY_MILVUS_URI",
+        ),
+        "milvus_token": _source(
+            settings,
+            "memory_milvus_token",
+            "MEMORY_MILVUS_TOKEN",
+        ),
+        "milvus_db_name": _source(
+            settings,
+            "memory_milvus_db_name",
+            "MEMORY_MILVUS_DB_NAME",
+        ),
+        "milvus_collection": _source(
+            settings,
+            "memory_milvus_collection",
+            "MEMORY_MILVUS_COLLECTION",
+        ),
+        "embedding_base_url": _source(
+            settings,
+            "memory_embedding_base_url",
+            "MEMORY_EMBEDDING_BASE_URL",
+        ),
+        "embedding_api_key": _source(
+            settings,
+            "memory_embedding_api_key",
+            "MEMORY_EMBEDDING_API_KEY",
+        ),
+        "embedding_model": _source(
+            settings,
+            "memory_embedding_model",
+            "MEMORY_EMBEDDING_MODEL",
+        ),
+        "embedding_dims": _source(
+            settings,
+            "memory_embedding_dims",
+            "MEMORY_EMBEDDING_DIMS",
+        ),
+    }
+    return {
+        "database_url": settings.effective_memory_database_url,
+        "milvus_uri": _effective_milvus_uri(settings),
+        "milvus_collection": _effective_milvus_collection(settings),
+        "embedding_model": _effective_embedding_model(settings),
+        "embedding_dims": _effective_embedding_dims(settings),
+        "configuration_sources": sources,
+    }
+
+
+def _effective_milvus_uri(settings: Settings) -> str | None:
+    return settings.effective_memory_milvus_uri
+
+
+def _effective_milvus_token(settings: Settings) -> str | None:
+    return settings.effective_memory_milvus_token
+
+
+def _effective_milvus_db_name(settings: Settings) -> str | None:
+    return settings.effective_memory_milvus_db_name
+
+
+def _effective_milvus_collection(settings: Settings) -> str | None:
+    return settings.effective_memory_milvus_collection
+
+
+def _source(
+    settings: Settings,
+    field: str,
+    name: str,
+) -> str:
+    return name if getattr(settings, field) is not None else "unconfigured"
 
 
 def _llm_config(settings: Settings) -> dict[str, Any] | None:
@@ -168,23 +224,15 @@ def _llm_config(settings: Settings) -> dict[str, Any] | None:
 
 
 def _effective_llm_model(settings: Settings) -> str | None:
-    return settings.memory_mem0_llm_model or (
-        settings.router_llm_model if settings.router_llm_provider == "openai_compatible" else None
-    )
+    return settings.memory_mem0_llm_model
 
 
 def _effective_llm_api_key(settings: Settings) -> str | None:
-    return settings.memory_mem0_llm_api_key or (
-        settings.router_llm_api_key if settings.router_llm_provider == "openai_compatible" else None
-    )
+    return settings.memory_mem0_llm_api_key
 
 
 def _effective_llm_base_url(settings: Settings) -> str | None:
-    return settings.memory_mem0_llm_base_url or (
-        settings.router_llm_base_url
-        if settings.router_llm_provider == "openai_compatible"
-        else None
-    )
+    return settings.memory_mem0_llm_base_url
 
 
 def _history_canonical(settings: Settings) -> str:
@@ -206,13 +254,3 @@ def _milvus_lite_path_status(uri: str) -> dict[str, str]:
     if parent.exists() and parent.is_dir():
         return {"status": "ok"}
     return {"status": "unavailable", "reason": "parent_directory_missing"}
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged = deepcopy(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged

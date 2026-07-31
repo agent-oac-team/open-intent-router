@@ -6,7 +6,9 @@ from math import ceil
 from uuid import uuid4
 
 from app.core.config import Settings
+from app.core.errors import InvocationError
 from app.core.memory_runtime import MemoryRuntimePolicy
+from app.plugins.knowledge import KnowledgeProvider
 from app.schemas.agent_context import (
     AgentRuntimeContext,
     KnowledgeContext,
@@ -17,7 +19,10 @@ from app.schemas.agent_context import (
 from app.schemas.agents import AgentDefinition
 from app.schemas.common import JsonDict, UserContext
 from app.schemas.context import ContextAssemblySession, ContextBudget, ContextCandidate
-from app.schemas.knowledge import KnowledgeSearchRequest
+from app.schemas.knowledge_provider import (
+    KnowledgeProviderRequest,
+    KnowledgeRetrievalBudget,
+)
 from app.schemas.memory import MemoryRecallRequest
 from app.schemas.routing import RouteRequest
 from app.services.context_pipeline_service import ContextPipelineService
@@ -27,8 +32,17 @@ from app.services.context_providers import (
     PlanProvider,
     StaticCandidatesProvider,
 )
-from app.services.knowledge_service import KnowledgeService
+from app.services.knowledge_context_handle import (
+    KnowledgeContextHandleError,
+    KnowledgeContextHandleService,
+)
 from app.services.memory_service import MemoryService
+
+
+class KnowledgeRequirementError(InvocationError):
+    def __init__(self, code: str, message: str, *, details: JsonDict | None = None) -> None:
+        super().__init__(message, details=details)
+        self.code = code
 
 
 class AgentContextAssemblyService:
@@ -36,13 +50,15 @@ class AgentContextAssemblyService:
         self,
         settings: Settings,
         memory_service: MemoryService,
-        knowledge_service: KnowledgeService,
+        knowledge_provider: KnowledgeProvider | None = None,
         runtime_policy: MemoryRuntimePolicy | None = None,
+        knowledge_context_handle_service: KnowledgeContextHandleService | None = None,
     ) -> None:
         self.settings = settings
         self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
-        self.knowledge_service = knowledge_service
+        self.knowledge_provider = knowledge_provider
+        self.knowledge_context_handle_service = knowledge_context_handle_service
         self.pipeline = ContextPipelineService(settings)
 
     async def assemble_for_route(
@@ -85,13 +101,33 @@ class AgentContextAssemblyService:
         turn_id: str | None = None,
         active_plan=None,
         assembly_session: ContextAssemblySession | None = None,
+        knowledge_context_handle: str | None = None,
+        knowledge_context_trace_id: str | None = None,
     ) -> AgentRuntimeContext:
+        defer_knowledge_to_invocation = caller_type == "router"
         existing_memory_context = self._filter_task_memory_context(
             self._memory_context_from_input(invocation_input),
             active_plan=active_plan,
             user=user,
         )
-        existing_knowledge_context = self._knowledge_context_from_input(invocation_input)
+        existing_knowledge_context = (
+            None
+            if defer_knowledge_to_invocation
+            else self._knowledge_context_from_input(invocation_input)
+        )
+        knowledge_config = agent.context.knowledge
+        controlled_required_invocation = (
+            knowledge_config.mode == "controlled_retrieval"
+            and knowledge_config.requirement == "required"
+            and caller_type != "router"
+        )
+        if controlled_required_invocation:
+            existing_knowledge_context = self._consume_knowledge_context_handle(
+                agent=agent,
+                user=user,
+                handle=knowledge_context_handle,
+                trace_id=knowledge_context_trace_id,
+            )
         route_request = request or RouteRequest.model_validate(
             {
                 "request_id": request_id or f"invoke_{uuid4().hex}",
@@ -127,21 +163,29 @@ class AgentContextAssemblyService:
                     runtime_policy=self.runtime_policy,
                 )
             )
-        if existing_knowledge_context is not None:
-            providers.append(
-                StaticCandidatesProvider(
-                    "existing_knowledge",
-                    _knowledge_candidates(
-                        existing_knowledge_context, route_request, agent.agent_id
-                    ),
-                    status=existing_knowledge_context.status,
-                    error_code=(existing_knowledge_context.errors or [None])[0],
+        if not defer_knowledge_to_invocation:
+            if existing_knowledge_context is not None:
+                providers.append(
+                    StaticCandidatesProvider(
+                        "existing_knowledge",
+                        _knowledge_candidates(
+                            existing_knowledge_context, route_request, agent.agent_id
+                        ),
+                        status=existing_knowledge_context.status,
+                        error_code=(existing_knowledge_context.errors or [None])[0],
+                    )
                 )
-            )
-        else:
-            providers.append(
-                KnowledgeRetrievalProvider(self.settings, self.knowledge_service, stage="agent")
-            )
+            elif self.knowledge_provider is not None:
+                providers.append(KnowledgeRetrievalProvider(self.settings, self.knowledge_provider))
+            elif knowledge_config.mode == "prefetch":
+                providers.append(
+                    StaticCandidatesProvider(
+                        "agent_knowledge",
+                        [],
+                        status="disabled",
+                        error_code="knowledge_unavailable",
+                    )
+                )
         base_input = {
             key: value
             for key, value in invocation_input.items()
@@ -186,6 +230,9 @@ class AgentContextAssemblyService:
             max_tokens=self.settings.context_agent_token_budget,
             chars_per_token=self.settings.context_chars_per_token,
         )
+        knowledge_context = self._normalize_knowledge_degradation(knowledge_context)
+        if not defer_knowledge_to_invocation:
+            self._enforce_knowledge_requirement(agent, knowledge_context)
         record_recall_usage = getattr(self.memory_service, "record_recall_usage", None)
         if run_id is not None and callable(record_recall_usage):
             await record_recall_usage(
@@ -225,7 +272,11 @@ class AgentContextAssemblyService:
                 "input_token_estimate": input_tokens,
             },
         )
-        _attach_context_fields(invocation_input, runtime)
+        _attach_context_fields(
+            invocation_input,
+            runtime,
+            include_knowledge=not defer_knowledge_to_invocation,
+        )
         return runtime
 
     async def controlled_knowledge_retrieval(
@@ -244,21 +295,135 @@ class AgentContextAssemblyService:
             variables,
             set(config.controlled_retrieval.allowed_variables),
         )
-        response = await self.knowledge_service.search(
-            KnowledgeSearchRequest(
-                query=query,
-                user=user,
-                caller_type="agent",
-                caller_id=caller_id or agent.agent_id,
-                purpose="agent_execution",
-                source_ids=config.source_ids,
-                source_tags=config.source_tags,
-                top_k=_configured_limit(
-                    config.max_items, self.settings.knowledge_default_max_items
+        if self.knowledge_provider is None:
+            return KnowledgeContext(status="error", errors=["knowledge_unavailable"])
+        try:
+            result = await asyncio.wait_for(
+                self.knowledge_provider.retrieve(
+                    KnowledgeProviderRequest(
+                        query=query,
+                        principal=user,
+                        purpose="agent_execution",
+                        consumer=f"agent:{caller_id or agent.agent_id}",
+                        source_ids=config.source_ids,
+                        source_tags=config.source_tags,
+                        budget=KnowledgeRetrievalBudget(
+                            max_items=_configured_limit(
+                                config.max_items, self.settings.knowledge_default_max_items
+                            ),
+                            timeout_seconds=self.settings.knowledge_prefetch_timeout_seconds,
+                        ),
+                    )
                 ),
+                timeout=self.settings.knowledge_prefetch_timeout_seconds,
             )
+        except Exception:
+            return KnowledgeContext(status="error", errors=["knowledge_unavailable"])
+        return self._normalize_knowledge_degradation(result.to_context())
+
+    async def issue_controlled_knowledge_handle(
+        self,
+        *,
+        agent: AgentDefinition,
+        user: UserContext,
+        variables: Mapping[str, object],
+        trace_id: str,
+        caller_id: str | None = None,
+    ) -> str:
+        if self.knowledge_context_handle_service is None:
+            raise KnowledgeRequirementError(
+                "knowledge_unavailable",
+                "Knowledge Context Handle service is not configured",
+            )
+        if not user.tenant_id:
+            raise KnowledgeRequirementError(
+                "knowledge_unavailable",
+                "Knowledge Context Handle requires a trusted tenant",
+            )
+        context = await self.controlled_knowledge_retrieval(
+            agent=agent,
+            user=user,
+            variables=variables,
+            caller_id=caller_id,
         )
-        return response.context
+        self._enforce_knowledge_requirement(agent, context)
+        return self.knowledge_context_handle_service.issue(
+            context,
+            tenant_id=user.tenant_id,
+            principal_id=user.id,
+            agent_id=agent.agent_id,
+            source_ids=agent.context.knowledge.source_ids,
+            source_tags=agent.context.knowledge.source_tags,
+            trace_id=trace_id,
+        )
+
+    def _consume_knowledge_context_handle(
+        self,
+        *,
+        agent: AgentDefinition,
+        user: UserContext,
+        handle: str | None,
+        trace_id: str | None,
+    ) -> KnowledgeContext:
+        if (
+            not handle
+            or not trace_id
+            or self.knowledge_context_handle_service is None
+            or not user.tenant_id
+        ):
+            raise KnowledgeRequirementError(
+                "knowledge_unavailable",
+                "Required controlled Knowledge Context needs a trusted handle",
+            )
+        try:
+            return self.knowledge_context_handle_service.consume(
+                handle,
+                tenant_id=user.tenant_id,
+                principal_id=user.id,
+                agent_id=agent.agent_id,
+                source_ids=agent.context.knowledge.source_ids,
+                source_tags=agent.context.knowledge.source_tags,
+                trace_id=trace_id,
+            )
+        except KnowledgeContextHandleError as exc:
+            raise KnowledgeRequirementError(
+                "knowledge_unavailable",
+                "Required controlled Knowledge Context Handle was rejected",
+                details={"reason": str(exc)},
+            ) from exc
+
+    def _normalize_knowledge_degradation(self, context: KnowledgeContext) -> KnowledgeContext:
+        if context.status not in {"timeout", "error", "denied"}:
+            return context
+        return context.model_copy(
+            update={
+                "errors": ["knowledge_unavailable"],
+                "metadata": {
+                    **context.metadata,
+                    "provider_errors": list(context.errors),
+                },
+            }
+        )
+
+    def _enforce_knowledge_requirement(
+        self,
+        agent: AgentDefinition,
+        context: KnowledgeContext,
+    ) -> None:
+        if agent.context.knowledge.requirement != "required":
+            return
+        if context.status == "ok" and context.items:
+            return
+        if context.status in {"ok", "empty"}:
+            raise KnowledgeRequirementError(
+                "knowledge_not_found",
+                "Required Knowledge Context has no usable items",
+            )
+        raise KnowledgeRequirementError(
+            "knowledge_unavailable",
+            "Required Knowledge Context is unavailable",
+            details={"status": context.status, "errors": context.errors},
+        )
 
     def _limit_memory_context(self, context: MemoryContext) -> MemoryContext:
         limit = self.settings.context_per_item_char_limit
@@ -329,21 +494,25 @@ class AgentContextAssemblyService:
         config = agent.context.knowledge
         if config.mode != "prefetch":
             return KnowledgeContext(status="disabled")
-        response = await self.knowledge_service.search(
-            KnowledgeSearchRequest(
+        if self.knowledge_provider is None:
+            return KnowledgeContext(status="disabled")
+        result = await self.knowledge_provider.retrieve(
+            KnowledgeProviderRequest(
                 query=query,
-                user=user,
-                caller_type=caller_type,  # type: ignore[arg-type]
-                caller_id=caller_id,
-                purpose=purpose,  # type: ignore[arg-type]
+                principal=user,
+                purpose=purpose,
+                consumer=f"agent:{caller_id or agent.agent_id}",
                 source_ids=config.source_ids,
                 source_tags=config.source_tags,
-                top_k=_configured_limit(
-                    config.max_items, self.settings.knowledge_default_max_items
+                budget=KnowledgeRetrievalBudget(
+                    max_items=_configured_limit(
+                        config.max_items, self.settings.knowledge_default_max_items
+                    ),
+                    timeout_seconds=self.settings.knowledge_prefetch_timeout_seconds,
                 ),
             )
         )
-        return response.context
+        return result.to_context()
 
     def _memory_context_from_input(self, invocation_input: JsonDict) -> MemoryContext | None:
         value = invocation_input.get("memory_context")
@@ -448,9 +617,17 @@ class AgentContextAssemblyService:
         )
 
 
-def _attach_context_fields(input_values: JsonDict, runtime: AgentRuntimeContext) -> None:
+def _attach_context_fields(
+    input_values: JsonDict,
+    runtime: AgentRuntimeContext,
+    *,
+    include_knowledge: bool = True,
+) -> None:
     input_values["memory_context"] = runtime.memory_context.model_dump(mode="json")
-    input_values["knowledge_context"] = runtime.knowledge_context.model_dump(mode="json")
+    if include_knowledge:
+        input_values["knowledge_context"] = runtime.knowledge_context.model_dump(mode="json")
+    else:
+        input_values.pop("knowledge_context", None)
 
 
 def _configured_limit(value: int | None, default: int) -> int:
@@ -635,7 +812,7 @@ def _knowledge_context_from_result(
         truncated=bool(existing and existing.truncated)
         or any(item.truncated for item in result.pack.items if item.source == "knowledge"),
         errors=(existing.errors if existing else _outcome_errors(outcome)),
-        metadata=existing.metadata if existing else {},
+        metadata=existing.metadata if existing else dict(outcome.metadata) if outcome else {},
     )
 
 

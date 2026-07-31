@@ -1,3 +1,5 @@
+from pydantic import Field
+
 from app.schemas.common import StrictBaseModel
 
 
@@ -49,6 +51,7 @@ class RuntimeConfigResponse(StrictBaseModel):
     memory_deletion_pending_count: int = 0
     memory_strategy_provider: str
     memory_prefetch_timeout_seconds: float
+    memory_database_url: str | None = None
     memory_mem0_collection: str | None = None
     memory_mem0_vector_provider: str | None = None
     memory_mem0_milvus_uri: str | None = None
@@ -57,15 +60,12 @@ class RuntimeConfigResponse(StrictBaseModel):
     memory_mem0_degraded: bool = False
     memory_mem0_last_error: str | None = None
     memory_mem0_health_status: str | None = None
+    memory_embedding_model: str | None = None
+    memory_embedding_dims: int | None = None
+    memory_infrastructure_sources: dict[str, str] = Field(default_factory=dict)
     memory_rehearsal_collection: str | None = None
-    knowledge_enabled: bool
-    knowledge_vector_backend: str
-    knowledge_prefetch_timeout_seconds: float
-    knowledge_milvus_collection: str | None = None
-    knowledge_milvus_uri: str | None = None
     context_pipeline_mode: str
     context_route_memory_enabled: bool
-    context_route_knowledge_enabled: bool
     context_policy_version: str
     context_budget_version: str
     context_projection_version: str

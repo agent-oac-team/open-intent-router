@@ -1,8 +1,8 @@
 # OAC 迁移说明
 
-> 状态：历史概念映射。当前 OAC / IRS 迁移以 [OAC Host Adapter](../../App-Desc/architecture/oac-host-adapter.md)、[Registry 迁移与主写规则](../../App-Desc/architecture/registry-migration.md)、[OIR 替换 IRS 需求追踪矩阵](../tracking/requirements-traceability.md) 和对应 Runbook 为准。
+> 状态：已取代的历史概念映射。Registry 导入与 entitlement 迁移已经完成，临时导入工具已删除；最终状态以 [OAC Host Adapter](../../App-Desc/architecture/oac-host-adapter.md)、[OIR 替换 IRS 需求追踪矩阵](../tracking/requirements-traceability.md) 和对应退役 Runbook 为准。
 
-`open-intent-router` 将 `/Users/lijingtong/project/intent_recon_sys` 作为参考实现和迁移来源，不把 OAC、银行私行业务、飞书或 Coze 作为核心依赖。
+迁移期间 `open-intent-router` 曾以旧中控实现作为冻结的契约基线；该实现现已退役，不再是源码依赖。OIR 仍不把 OAC、银行私行业务、飞书或 Coze 作为核心依赖。
 
 迁移目标是把原系统中的“意图识别、中控编排、子智能体注册与调用”沉淀为通用能力，同时把业务专属字段留在宿主应用或扩展配置中。
 

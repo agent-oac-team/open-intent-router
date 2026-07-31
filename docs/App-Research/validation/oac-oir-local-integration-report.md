@@ -2,9 +2,14 @@
 
 生成日期：2026-07-16
 
+> **Superseded 历史证据（2026-07-31，issue #22）：** 本报告中的 Knowledge
+> Host 接口、只读 IRS fallback、Circuit 和 rehearsal Knowledge collection
+> 只证明当时的迁移状态。相关 runtime 已退役；冻结的 wire contract fixture
+> 继续作为兼容基线。
+
 ## 结论
 
-本地自动化联调通过。OAC Host Adapter 的 Central、Registry、Knowledge、身份、Ticket、Turn/Run/Outbox、Memory 和治理路径未发现未批准差异。Coze 验收仅覆盖 IRS 兼容知识接口的请求、响应、权限与只读 Fallback，不包含 Workflow 对响应的后续处理。
+本地自动化联调在生成时通过；其结论受上述 Superseded 边界约束。
 
 ## 拓扑与数据隔离
 

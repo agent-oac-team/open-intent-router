@@ -302,7 +302,6 @@ def test_state_rehearsal_and_legacy_history_configuration_are_fail_closed() -> N
     )
     assert memory_settings.database_url.endswith("rehearsal.db")
     assert memory_settings.memory_milvus_collection == "oir_memory_vectors_rehearsal"
-    assert memory_settings.memory_mem0_milvus_collection == "oir_memory_vectors_rehearsal"
 
 
 def test_production_composition_does_not_publish_isolated_runtime_records() -> None:

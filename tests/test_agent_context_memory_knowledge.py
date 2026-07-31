@@ -5,20 +5,23 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.repositories.context_stores import KnowledgeRepository, MemoryItemRepository
+from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.memory import (
     MemoryAgentDefinitionRepository,
     MemoryResultRepository,
     MemoryRunRepository,
 )
+from app.schemas.agent_context import (
+    KnowledgeCitation,
+    KnowledgeContextItem,
+)
 from app.schemas.agents import AgentDefinition
 from app.schemas.common import UserContext
-from app.schemas.knowledge import KnowledgeChunk, KnowledgeSearchRequest, KnowledgeSource
+from app.schemas.knowledge_provider import KnowledgeProviderResult
 from app.schemas.memory import MemoryItem, MemoryRecallRequest, MemoryWriteCandidate
 from app.schemas.routing import RouteRequest
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
-from app.services.knowledge_service import KnowledgeService
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
@@ -157,7 +160,7 @@ async def test_memory_timeout_degrades_in_agent_context(summarizer_agent) -> Non
     service = AgentContextAssemblyService(
         settings=settings,
         memory_service=SlowMemoryService(settings=settings),
-        knowledge_service=KnowledgeService(settings=settings, repository=KnowledgeRepository()),
+        knowledge_provider=StaticKnowledgeProvider({}),
     )
     payload = summarizer_agent.model_dump(mode="json")
     payload["context"] = {"memory": {"mode": "prefetch", "scopes": ["user_preference"]}}
@@ -176,91 +179,11 @@ async def test_memory_timeout_degrades_in_agent_context(summarizer_agent) -> Non
     assert invocation_input["memory_context"]["status"] == "timeout"
 
 
-async def test_knowledge_search_policy_citations_empty_and_timeout() -> None:
-    settings = Settings(storage_backend="memory", knowledge_prefetch_timeout_seconds=0.01)
-    repository = KnowledgeRepository()
-    await repository.upsert_source(
-        KnowledgeSource(
-            source_id="public", name="Public", allow_roles=["operator"], allow_tenants=["t1"]
-        )
-    )
-    await repository.upsert_source(
-        KnowledgeSource(
-            source_id="secret", name="Secret", allow_roles=["admin"], allow_tenants=["t1"]
-        )
-    )
-    await repository.add_chunk(
-        KnowledgeChunk(
-            source_id="public",
-            content="risk rating describes product volatility",
-            title="Risk Guide",
-            uri="https://example.test/risk",
-        )
-    )
-    await repository.add_chunk(KnowledgeChunk(source_id="secret", content="risk secret"))
-    service = KnowledgeService(settings=Settings(storage_backend="memory"), repository=repository)
-    user = UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"})
-
-    response = await service.search(
-        KnowledgeSearchRequest(
-            query="risk rating",
-            user=user,
-            caller_type="agent",
-            caller_id="advisor",
-            purpose="agent_execution",
-            source_ids=["public", "secret", "missing"],
-        )
-    )
-
-    assert response.context.status == "ok"
-    assert response.selected_source_ids == ["public"]
-    assert set(response.denied_source_ids) == {"secret", "missing"}
-    assert response.context.citations[0].source_id == "public"
-    assert response.context.metadata["caller_id"] == "advisor"
-    assert repository.logs[-1].caller_type == "agent"
-
-    empty = await service.search(
-        KnowledgeSearchRequest(query="unmatched", user=user, source_ids=["public"])
-    )
-    assert empty.context.status == "empty"
-    assert empty.context.items == []
-
-    timeout = await KnowledgeService(
-        settings=settings,
-        repository=repository,
-        vector_store=SlowKnowledgeVectorStore(),
-    ).search(KnowledgeSearchRequest(query="risk", user=user, source_ids=["public"]))
-    assert timeout.context.status == "timeout"
-    assert timeout.errors == ["knowledge_search_timeout"]
-
-
-async def test_knowledge_search_returns_empty_when_all_requested_sources_denied() -> None:
-    repository = KnowledgeRepository()
-    await repository.upsert_source(
-        KnowledgeSource(source_id="secret", name="Secret", allow_roles=["admin"])
-    )
-    await repository.add_chunk(KnowledgeChunk(source_id="secret", content="risk secret"))
-    service = KnowledgeService(settings=Settings(storage_backend="memory"), repository=repository)
-
-    response = await service.search(
-        KnowledgeSearchRequest(
-            query="risk",
-            user=UserContext(id="u1", roles=["operator"]),
-            source_ids=["secret"],
-        )
-    )
-
-    assert response.context.status == "empty"
-    assert response.context.items == []
-    assert response.denied_source_ids == ["secret"]
-
-
-async def test_router_preview_and_invocation_attach_structured_contexts(summarizer_agent) -> None:
+async def test_router_preview_defers_knowledge_body_until_invocation(summarizer_agent) -> None:
     settings = Settings(storage_backend="memory", registry_backend="database")
     agent = await _context_agent(settings, summarizer_agent)
     registry = await _registry(settings, agent)
     memory_repository = MemoryItemRepository()
-    knowledge_repository = KnowledgeRepository()
     await memory_repository.add(
         MemoryItem(
             scope="user_preference",
@@ -270,16 +193,10 @@ async def test_router_preview_and_invocation_attach_structured_contexts(summariz
             content="prefers concise answers",
         )
     )
-    await knowledge_repository.upsert_source(
-        KnowledgeSource(source_id="docs", name="Docs", allow_tenants=["t1"])
-    )
-    await knowledge_repository.add_chunk(
-        KnowledgeChunk(source_id="docs", content="risk rating basics for customers")
-    )
     context_service = AgentContextAssemblyService(
         settings=settings,
         memory_service=MemoryService(settings=settings, repository=memory_repository),
-        knowledge_service=KnowledgeService(settings=settings, repository=knowledge_repository),
+        knowledge_provider=StaticKnowledgeProvider({"docs": "risk rating basics for customers"}),
     )
     route_service = RouterService(
         settings=settings,
@@ -300,9 +217,9 @@ async def test_router_preview_and_invocation_attach_structured_contexts(summariz
 
     assert route_response.invocation
     assert route_response.invocation.input["memory_context"]["summary"]
-    assert route_response.invocation.input["knowledge_context"]["summary"]
+    assert "knowledge_context" not in route_response.invocation.input
     assert route_response.context.metadata["agent_context"]["memory_item_count"] == 1
-    assert route_response.context.metadata["agent_context"]["knowledge_item_count"] == 1
+    assert route_response.context.metadata["agent_context"]["knowledge_item_count"] == 0
 
     run_repository = MemoryRunRepository()
     invocation_service = InvocationService(
@@ -323,23 +240,24 @@ async def test_router_preview_and_invocation_attach_structured_contexts(summariz
     run = await run_repository.get_run(result.run_id)
     assert run.input["memory_context"]["items"][0]["content"] == "prefers concise answers"
     assert run.input["knowledge_context"]["citations"][0]["source_id"] == "docs"
+    knowledge_item_ref = run.input["knowledge_context"]["items"][0]
+    assert knowledge_item_ref["item_id"]
+    assert knowledge_item_ref["source_id"] == "docs"
+    assert set(knowledge_item_ref) == {"item_id", "source_id"}
+    assert "summary" not in run.input["knowledge_context"]
 
 
 async def test_controlled_retrieval_template_allowed_variables_and_denied_sources(
     summarizer_agent,
 ) -> None:
     settings = Settings(storage_backend="memory")
-    repository = KnowledgeRepository()
-    await repository.upsert_source(KnowledgeSource(source_id="docs", name="Docs"))
-    await repository.upsert_source(
-        KnowledgeSource(source_id="secret", name="Secret", allow_roles=["admin"])
-    )
-    await repository.add_chunk(KnowledgeChunk(source_id="docs", content="risk rating public guide"))
-    await repository.add_chunk(KnowledgeChunk(source_id="secret", content="secret token"))
     service = AgentContextAssemblyService(
         settings=settings,
         memory_service=MemoryService(settings=settings, repository=MemoryItemRepository()),
-        knowledge_service=KnowledgeService(settings=settings, repository=repository),
+        knowledge_provider=StaticKnowledgeProvider(
+            {"docs": "risk rating public guide"},
+            denied_source_ids={"secret"},
+        ),
     )
     payload = summarizer_agent.model_dump(mode="json")
     payload["context"] = {
@@ -372,7 +290,6 @@ async def test_context_pack_budget_truncates_memory_and_knowledge_items(summariz
     settings = Settings(storage_backend="memory", context_per_item_char_limit=8)
     agent = await _context_agent(settings, summarizer_agent)
     memory_repository = MemoryItemRepository()
-    knowledge_repository = KnowledgeRepository()
     await memory_repository.add(
         MemoryItem(
             scope="user_preference",
@@ -381,14 +298,10 @@ async def test_context_pack_budget_truncates_memory_and_knowledge_items(summariz
             content="abcdefghijklmnopqrstuvwxyz",
         )
     )
-    await knowledge_repository.upsert_source(KnowledgeSource(source_id="docs", name="Docs"))
-    await knowledge_repository.add_chunk(
-        KnowledgeChunk(source_id="docs", content="abcdefghijklmnopqrstuvwxyz")
-    )
     service = AgentContextAssemblyService(
         settings=settings,
         memory_service=MemoryService(settings=settings, repository=memory_repository),
-        knowledge_service=KnowledgeService(settings=settings, repository=knowledge_repository),
+        knowledge_provider=StaticKnowledgeProvider({"docs": "abcdefghijklmnopqrstuvwxyz"}),
     )
     invocation_input = {"text": "abcdefghijklmnopqrstuvwxyz"}
 
@@ -461,7 +374,39 @@ class SlowMemoryService(MemoryService):
         return await super().recall(request)
 
 
-class SlowKnowledgeVectorStore:
-    async def search(self, *, query: str, source_ids: list[str], limit: int):
-        await asyncio.sleep(0.05)
-        return []
+class StaticKnowledgeProvider:
+    def __init__(
+        self,
+        content_by_source: dict[str, str],
+        *,
+        denied_source_ids: set[str] | None = None,
+    ) -> None:
+        self.content_by_source = content_by_source
+        self.denied_source_ids = denied_source_ids or set()
+
+    async def retrieve(self, request):
+        items = []
+        for source_id in request.source_ids:
+            content = self.content_by_source.get(source_id)
+            if content is None or source_id in self.denied_source_ids:
+                continue
+            item_id = f"{source_id}-item"
+            citation = KnowledgeCitation(source_id=source_id)
+            items.append(
+                KnowledgeContextItem(
+                    item_id=item_id,
+                    source_id=source_id,
+                    content=content,
+                    score=0.9,
+                    citation=citation,
+                )
+            )
+        denied = [
+            source_id for source_id in request.source_ids if source_id in self.denied_source_ids
+        ]
+        return KnowledgeProviderResult(
+            status="ok" if items else "empty",
+            items=items[: request.budget.max_items],
+            citations=[item.citation for item in items if item.citation is not None],
+            metadata={"denied_source_ids": denied},
+        )

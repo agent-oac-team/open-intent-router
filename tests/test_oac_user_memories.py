@@ -79,8 +79,6 @@ def test_authenticated_user_memory_api_returns_only_current_principal_product_fi
     asyncio.run(seed())
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),
@@ -164,8 +162,6 @@ def test_user_memory_api_rejects_non_user_host_credentials() -> None:
 
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),
@@ -217,8 +213,6 @@ def test_authenticated_user_delete_api_accepts_opaque_target_and_product_respons
     delete_port = DeletePort()
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),

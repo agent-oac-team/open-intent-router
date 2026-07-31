@@ -255,8 +255,6 @@ def test_oac_governance_query_forwards_status_filter_to_authoritative_service() 
     governance = GovernancePort()
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),
@@ -302,8 +300,6 @@ def test_oac_governance_query_rejects_non_admin_host_credentials(
 
     ports = OacAdapterApplicationPorts(
         routing=SimpleNamespace(),
-        knowledge=SimpleNamespace(),
-        knowledge_assets=SimpleNamespace(),
         registry=SimpleNamespace(),
         events=SimpleNamespace(),
         plans=SimpleNamespace(),

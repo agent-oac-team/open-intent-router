@@ -153,19 +153,18 @@ Memory 标签中的 Formation Decision 操作沿用后端既有策略：
 
 运行图中的“沉淀本次记忆”可以展开对话收集、后台队列、候选提取、语义/策略决策、人工处理、长期记忆更新和检索索引七个阶段。人工 pending 使用“待处理”，只有 accepted ADD/UPDATE/DELETE 才会把写入和索引阶段投影为本轮实际更新。
 
-runtime 配置会显示 `context_pipeline_mode`、route Memory/Knowledge 开关和 policy/budget/projection version。切回 `legacy` 只回滚 Router 输入路径，不会关闭 Agent access、Memory subject isolation、Knowledge source policy 或脱敏治理。
+runtime 配置会显示 `context_pipeline_mode`、route Memory 开关和
+policy/budget/projection version。切回 `legacy` 只回滚 Router 输入路径，不会关闭
+Agent access 或 Memory subject isolation。
 
-## 记忆与知识库调试管理
+## 记忆调试管理
 
-中间区域下方提供只读的“记忆与知识库调试管理”面板：
+中间区域下方提供只读的记忆调试面板：
 
 - Memory 视图调用 `GET /api/v1/memories/debug`，支持 `user_id`、`tenant_id`、`agent_id`、`scopes`、`limit` 过滤，展示 memory items、memory events 和非敏感 metadata。
-- Knowledge 视图调用 `GET /api/v1/knowledge/debug`，支持 `source_ids`、`caller_type`、`caller_id`、`purpose`、`tenant_id`、`limit` 过滤，展示 knowledge sources、chunks、retrieval logs 和非敏感 metadata。
-- 面板旁展示 runtime memory/knowledge backend 摘要，包括 mem0 collection、history backend、knowledge vector backend、Milvus Lite collection/URI 等非敏感字段。
-- 该面板不提供编辑、删除、上传、合并或 reindex 操作；这些写入和治理动作需要后续单独设计。
+- 面板旁展示 runtime Memory backend 摘要，包括 mem0 collection 和 history backend 等非敏感字段。
+- Knowledge 调试、资产与索引治理属于外部 `knowledge_sys`，不通过 OIR UI 或 API 承接。
 - UI 会对 debug metadata 中疑似 API key、password、token、secret、credential、database URL、connection string、DSN 的字段做脱敏展示。
-
-Knowledge 管理视图明确区分事实源边界：PostgreSQL `knowledge_sources`、`knowledge_chunks`、`knowledge_retrieval_logs` 是 canonical 数据；Milvus 只作为向量索引元数据展示，不作为正文事实源。
 
 推荐演示顺序：
 

@@ -1,14 +1,13 @@
 from app.core.config import Settings
 from app.schemas.agent_context import (
     KnowledgeCitation,
-    KnowledgeContext,
     KnowledgeContextItem,
     MemoryContext,
     MemoryContextItem,
 )
 from app.schemas.agents import AgentDefinition
 from app.schemas.context import ContextAssemblySession
-from app.schemas.knowledge import KnowledgeSearchResponse
+from app.schemas.knowledge_provider import KnowledgeProviderResult
 from app.schemas.memory import MemoryRecallResponse
 from app.schemas.routing import RouteRequest
 from app.services.agent_context_service import AgentContextAssemblyService
@@ -60,13 +59,16 @@ async def test_agent_projection_applies_declared_scope_source_status_and_total_b
     service = AgentContextAssemblyService(
         settings=settings,
         memory_service=memory,
-        knowledge_service=knowledge,
+        knowledge_provider=knowledge,
     )
     invocation_input = {"text": "risk rating", "other": "x" * 40}
 
-    runtime = await service.assemble_for_route(
+    request = _request()
+    runtime = await service.assemble(
         agent=_agent(summarizer_agent, source_ids=["docs"], scopes=["stable_fact"]),
-        request=_request(),
+        user=request.user,
+        session_id=request.session_id,
+        query=request.input.text,
         invocation_input=invocation_input,
     )
 
@@ -88,7 +90,7 @@ async def test_agent_projection_keeps_stable_degraded_context_fields(summarizer_
         service = AgentContextAssemblyService(
             settings=Settings(context_pipeline_mode="enforced"),
             memory_service=StubMemoryService(status=status),
-            knowledge_service=StubKnowledgeService(status=status),
+            knowledge_provider=StubKnowledgeService(status=status),
         )
         invocation_input = {"text": "risk rating"}
 
@@ -106,7 +108,7 @@ async def test_agent_projection_keeps_stable_degraded_context_fields(summarizer_
         assert invocation_input["knowledge_context"]["items"] == []
 
 
-async def test_agent_reuses_equivalent_route_retrieval_and_reapplies_agent_projection(
+async def test_route_preview_defers_knowledge_retrieval_to_agent_invocation(
     summarizer_agent,
 ) -> None:
     knowledge = StubKnowledgeService(status="ok")
@@ -122,7 +124,7 @@ async def test_agent_reuses_equivalent_route_retrieval_and_reapplies_agent_proje
         user_id=request.user.id,
         tenant_id=request.user.tenant_id,
     )
-    route_context_service = ContextService(settings, knowledge_service=knowledge)
+    route_context_service = ContextService(settings)
     await route_context_service.assemble_route_context(
         request,
         candidate_agent_ids=["summarizer"],
@@ -130,10 +132,11 @@ async def test_agent_reuses_equivalent_route_retrieval_and_reapplies_agent_proje
         request_id=request.request_id,
         assembly_session=assembly,
     )
+    assert knowledge.calls == 0
     agent_service = AgentContextAssemblyService(
         settings=settings,
         memory_service=StubMemoryService(status="empty"),
-        knowledge_service=knowledge,
+        knowledge_provider=knowledge,
     )
     invocation_input = {"text": "risk rating"}
 
@@ -144,8 +147,9 @@ async def test_agent_reuses_equivalent_route_retrieval_and_reapplies_agent_proje
         assembly_session=assembly,
     )
 
-    assert knowledge.calls == 1
-    assert runtime.knowledge_context.items[0].source_id == "docs"
+    assert knowledge.calls == 0
+    assert runtime.knowledge_context.status == "disabled"
+    assert "knowledge_context" not in invocation_input
     assert "context_pack" not in invocation_input
     assert "context_trace" not in invocation_input
 
@@ -160,7 +164,7 @@ async def test_agent_reuses_equivalent_route_retrieval_and_reapplies_agent_proje
             tenant_id=request.user.tenant_id,
         ),
     )
-    assert knowledge.calls == 2
+    assert knowledge.calls == 0
 
 
 class StubMemoryService:
@@ -196,7 +200,7 @@ class StubKnowledgeService:
         self.requests = []
         self.calls = 0
 
-    async def search(self, request):
+    async def retrieve(self, request):
         self.calls += 1
         self.requests.append(request)
         items = []
@@ -213,15 +217,11 @@ class StubKnowledgeService:
                 )
             ]
             citations = [citation]
-        return KnowledgeSearchResponse(
-            context=KnowledgeContext(
-                summary="knowledge summary" if items else "",
-                items=items,
-                citations=citations,
-                source_ids=["docs"] if items else [],
-                status=self.status,
-                errors=[f"knowledge_{self.status}"] if self.status in {"timeout", "error"} else [],
+        return KnowledgeProviderResult(
+            status=self.status,
+            items=items,
+            citations=citations,
+            error_code=(
+                f"knowledge_{self.status}" if self.status in {"timeout", "error"} else None
             ),
-            selected_source_ids=["docs"] if items else [],
-            errors=[f"knowledge_{self.status}"] if self.status in {"timeout", "error"} else [],
         )

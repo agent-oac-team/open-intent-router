@@ -29,7 +29,6 @@ from app.services.context_providers import (
     EvidenceContextProvider,
     FrontendContextProvider,
     HistoryProvider,
-    KnowledgeRetrievalProvider,
     MemoryRetrievalProvider,
     PlanProvider,
     ResultProvider,
@@ -42,13 +41,11 @@ class ContextService:
         settings: Settings,
         *,
         memory_service=None,
-        knowledge_service=None,
         runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.settings = settings
         self.runtime_policy = runtime_policy or settings.memory_runtime_policy
         self.memory_service = memory_service
-        self.knowledge_service = knowledge_service
         self.pipeline = ContextPipelineService(settings)
 
     async def assemble_route_context(
@@ -118,10 +115,6 @@ class ContextService:
                     stage="route",
                     runtime_policy=self.runtime_policy,
                 )
-            )
-        if self.knowledge_service is not None:
-            providers.append(
-                KnowledgeRetrievalProvider(self.settings, self.knowledge_service, stage="route")
             )
         result = await self.pipeline.assemble(
             request=request,
@@ -195,7 +188,6 @@ class ContextService:
         elif len(artifact_refs) == 1:
             metadata["resolved_artifact_id"] = artifact_refs[0].artifact_id
         selected_evidence = [item for item in result.pack.items if item.source == "evidence"]
-        selected_knowledge = [item for item in result.pack.items if item.source == "knowledge"]
         route_evidence = [
             {
                 "type": (
@@ -211,29 +203,6 @@ class ContextService:
             }
             for item in selected_evidence
         ]
-        route_evidence.extend(
-            {
-                "type": "knowledge",
-                "item_id": item.metadata.get("item_id"),
-                "source_id": item.metadata.get("source_id"),
-                "content": item.content,
-                "score": item.relevance,
-                "title": (item.structured_value.get("title") if item.structured_value else None),
-                "uri": item.structured_value.get("uri") if item.structured_value else None,
-            }
-            for item in selected_knowledge
-        )
-        if (
-            self.settings.context_route_knowledge_direct_reply_enabled
-            and selected_knowledge
-            and selected_knowledge[0].relevance >= self.settings.context_route_knowledge_min_score
-        ):
-            metadata["knowledge_direct_reply"] = {
-                "message": selected_knowledge[0].content,
-                "source_id": selected_knowledge[0].metadata.get("source_id"),
-                "item_id": selected_knowledge[0].metadata.get("item_id"),
-                "score": selected_knowledge[0].relevance,
-            }
         context = legacy_context.model_copy(
             update={
                 "artifact_refs": artifact_refs,

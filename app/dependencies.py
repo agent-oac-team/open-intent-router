@@ -1,19 +1,22 @@
 from functools import lru_cache
 from uuid import uuid4
 
-from app.core.config import get_settings
+from app.adapters.knowledge_sys import (
+    KnowledgeSysHttpProvider,
+    load_signing_private_key,
+)
+from app.core.config import Settings, get_settings
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.db.session import create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
 from app.plugins.evidence import build_evidence_provider
+from app.plugins.knowledge import KnowledgeProvider
 from app.repositories.canonical_invocations import (
     DatabaseCanonicalInvocationStore,
     MemoryCanonicalInvocationStore,
 )
 from app.repositories.context_stores import (
-    DatabaseKnowledgeRepository,
     DatabaseMemoryItemRepository,
-    KnowledgeRepository,
     MemoryItemRepository,
 )
 from app.repositories.database import (
@@ -42,10 +45,6 @@ from app.repositories.execution_traces import (
     MemoryExecutionTraceRepository,
 )
 from app.repositories.file_registry import FileRegistrySource
-from app.repositories.knowledge_assets import (
-    DatabaseCanonicalKnowledgeRepository,
-    MemoryCanonicalKnowledgeRepository,
-)
 from app.repositories.memory import (
     MemoryAgentDefinitionRepository,
     MemoryEventRepository,
@@ -79,8 +78,7 @@ from app.services.delegated_run_service import DelegatedRunService
 from app.services.event_service import EventService
 from app.services.execution_trace_service import ExecutionTraceService
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
-from app.services.knowledge_asset_service import KnowledgeAssetService
-from app.services.knowledge_service import KnowledgeService
+from app.services.knowledge_context_handle import KnowledgeContextHandleService
 from app.services.memory_candidate_hard_rules import MemoryCandidateHardRules
 from app.services.memory_candidate_policy import MemoryCandidatePolicy
 from app.services.memory_candidate_safety_filter import TemporaryLanguageSafetyFilter
@@ -158,19 +156,20 @@ def _memory_data_settings(
             raise ValueError("State Rehearsal requires an isolated Memory database URL")
         if resolved_database_url == settings.database_url:
             raise ValueError("State Rehearsal Memory database must differ from canonical database")
-        if not resolved_collection or resolved_collection in {
-            settings.memory_milvus_collection,
-            settings.knowledge_milvus_collection,
-        }:
+        if not resolved_collection or resolved_collection == settings.memory_milvus_collection:
             raise ValueError("State Rehearsal Memory collection must be isolated")
         return settings.model_copy(
             update={
                 "database_url": resolved_database_url,
                 "memory_milvus_collection": resolved_collection,
-                "memory_mem0_milvus_collection": resolved_collection,
                 "memory_mem0_history_database_url": resolved_database_url,
             }
         )
+    if (
+        settings.effective_memory_database_url
+        and settings.effective_memory_database_url != settings.database_url
+    ):
+        return settings.model_copy(update={"database_url": settings.effective_memory_database_url})
     return settings
 
 
@@ -221,14 +220,11 @@ def get_context_repository_bundle() -> dict:
     settings = get_settings()
     if settings.storage_backend == "database":
         memory_session_factory = create_session_factory(get_memory_data_settings())
-        knowledge_session_factory = create_session_factory(settings)
         return {
             "memory_items": DatabaseMemoryItemRepository(memory_session_factory),
-            "knowledge": DatabaseKnowledgeRepository(knowledge_session_factory),
         }
     return {
         "memory_items": MemoryItemRepository(),
-        "knowledge": KnowledgeRepository(),
     }
 
 
@@ -371,23 +367,36 @@ def build_memory_formation_runtime(
 
 
 @lru_cache
-def get_knowledge_service() -> KnowledgeService:
-    settings = get_settings()
-    repositories = get_context_repository_bundle()
-    return KnowledgeService(settings=settings, repository=repositories["knowledge"])
+def get_knowledge_context_handle_service() -> KnowledgeContextHandleService:
+    return KnowledgeContextHandleService(
+        ttl_seconds=get_settings().knowledge_context_handle_ttl_seconds
+    )
+
+
+def build_knowledge_provider(settings: Settings) -> KnowledgeProvider | None:
+    if not settings.knowledge_provider_base_url:
+        return None
+    private_key = load_signing_private_key(
+        pem=settings.knowledge_provider_jwt_private_key,
+        file_path=settings.knowledge_provider_jwt_private_key_file,
+    )
+    return KnowledgeSysHttpProvider(
+        base_url=settings.knowledge_provider_base_url,
+        signing_private_key=private_key,
+        signing_key_id=settings.knowledge_provider_jwt_key_id,
+        issuer=settings.knowledge_provider_jwt_issuer,
+        audience=settings.knowledge_provider_jwt_audience,
+        deadline_seconds=settings.knowledge_provider_deadline_seconds,
+        token_ttl_seconds=settings.knowledge_provider_jwt_ttl_seconds,
+        circuit_window_seconds=settings.knowledge_provider_circuit_window_seconds,
+        circuit_failure_threshold=settings.knowledge_provider_circuit_failure_threshold,
+        circuit_open_seconds=settings.knowledge_provider_circuit_open_seconds,
+    )
 
 
 @lru_cache
-def get_knowledge_asset_repository():
-    settings = get_settings()
-    if settings.storage_backend == "database":
-        return DatabaseCanonicalKnowledgeRepository(create_session_factory(settings))
-    return MemoryCanonicalKnowledgeRepository()
-
-
-@lru_cache
-def get_knowledge_asset_service() -> KnowledgeAssetService:
-    return KnowledgeAssetService(get_knowledge_asset_repository())
+def get_knowledge_provider() -> KnowledgeProvider | None:
+    return build_knowledge_provider(get_settings())
 
 
 def get_agent_context_service() -> AgentContextAssemblyService:
@@ -395,8 +404,9 @@ def get_agent_context_service() -> AgentContextAssemblyService:
     return AgentContextAssemblyService(
         settings=settings,
         memory_service=get_memory_service(),
-        knowledge_service=get_knowledge_service(),
+        knowledge_provider=get_knowledge_provider(),
         runtime_policy=get_memory_runtime_policy(),
+        knowledge_context_handle_service=get_knowledge_context_handle_service(),
     )
 
 
@@ -444,7 +454,6 @@ def get_router_service() -> RouterService:
         context_service=ContextService(
             settings,
             memory_service=get_memory_service(),
-            knowledge_service=get_knowledge_service(),
             runtime_policy=get_memory_runtime_policy(),
         ),
         chat_history_service=get_chat_history_service(),

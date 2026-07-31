@@ -1,0 +1,25 @@
+{
+  "captured_at": "2026-07-31T00:00:00+00:00",
+  "configuration": {
+    "central_fallback_enabled": false,
+    "registry_backend": "database"
+  },
+  "contains_sensitive_values": false,
+  "contract": "central-retirement-snapshot/v1",
+  "fact_sources": {
+    "agent": "oir",
+    "central": "oir",
+    "event": "oir",
+    "plan": "oir",
+    "registry": "oir",
+    "result": "oir",
+    "run": "oir",
+    "session": "oir"
+  },
+  "passed": true,
+  "versions": {
+    "central_contract": "oac-irs-baseline-v1",
+    "oir": "working-tree-2026-07-31"
+  },
+  "write_freeze_enabled": true
+}

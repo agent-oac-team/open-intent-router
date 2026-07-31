@@ -21,6 +21,8 @@ class AgentInvocation(StrictBaseModel):
     context: JsonDict = Field(default_factory=dict)
     memory_context: MemoryContext = Field(default_factory=MemoryContext)
     knowledge_context: KnowledgeContext = Field(default_factory=KnowledgeContext)
+    knowledge_context_handle: str | None = None
+    knowledge_context_trace_id: str | None = None
 
 
 class AgentInvocationResult(StrictBaseModel):
@@ -43,6 +45,8 @@ class InvokeRequest(StrictBaseModel):
     context: JsonDict = Field(default_factory=dict)
     memory_context: MemoryContext | None = None
     knowledge_context: KnowledgeContext | None = None
+    knowledge_context_handle: str | None = None
+    knowledge_context_trace_id: str | None = None
 
 
 class RouteAndInvokeResponse(StrictBaseModel):
