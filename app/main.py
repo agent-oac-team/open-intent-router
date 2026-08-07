@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import create_all_tables
 from app.dependencies import (
+    build_delegated_run_timeout_runtime,
     build_memory_formation_runtime,
     build_memory_maintenance_runtime,
     get_memory_data_settings,
@@ -65,11 +66,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     formation_runtime = build_memory_formation_runtime()
     maintenance_runtime = build_memory_maintenance_runtime()
+    timeout_runtime = build_delegated_run_timeout_runtime()
     await formation_runtime.start()
     await maintenance_runtime.start()
+    await timeout_runtime.start()
     try:
         yield
     finally:
+        await timeout_runtime.stop()
         await maintenance_runtime.stop()
         await formation_runtime.stop()
 

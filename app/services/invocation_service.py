@@ -7,7 +7,7 @@ from uuid import uuid4
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 
-from app.core.errors import InvocationError
+from app.core.errors import AgentUnavailableError, InvocationError
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.invokers.http import HttpAgentInvoker
 from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
@@ -15,6 +15,7 @@ from app.invokers.mock import MockAgentInvoker
 from app.invokers.registry import AgentInvokerRegistry
 from app.invokers.ui_handoff import UiHandoffInvoker
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
+from app.schemas.agents import AgentDefinition
 from app.schemas.common import ErrorDetail
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
 from app.schemas.logs import AgentResult, AgentRun
@@ -67,9 +68,13 @@ class InvocationService:
         self.memory_formation_policy_version = memory_formation_policy_version
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
-        definition = await self.registry.get_definition(request.agent_id)
+        definitions = await self.registry.available_definitions(request.user)
+        definition = next(
+            (item for item in definitions if item.agent_id == request.agent_id),
+            None,
+        )
         if definition is None:
-            raise InvocationError(f"Agent not found: {request.agent_id}")
+            raise AgentUnavailableError(f"Agent is not available: {request.agent_id}")
         run_id = f"run_{uuid4().hex}"
         invocation = AgentInvocation(
             run_id=run_id,
@@ -120,10 +125,13 @@ class InvocationService:
         request_id: str | None = None,
         knowledge_context_handle: str | None = None,
         knowledge_context_trace_id: str | None = None,
+        selected_definition: AgentDefinition | None = None,
     ) -> AgentInvocationResult:
-        definition = await self.registry.get_definition(agent_id)
+        definition = selected_definition or await self.registry.get_definition(agent_id)
         if definition is None:
             raise InvocationError(f"Agent not found: {agent_id}")
+        if definition.agent_id != agent_id:
+            raise InvocationError("Selected Agent definition does not match invocation target")
         invocation = AgentInvocation(
             run_id=f"run_{uuid4().hex}",
             request_id=request_id,
@@ -145,9 +153,11 @@ class InvocationService:
         preview = route_response.invocation
         if preview is None:
             return None
-        definition = await self.registry.get_definition(preview.agent_id)
+        if preview.agent_id not in route_response.context.candidate_agent_ids:
+            raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
+        definition = route_response.selected_definition(preview.agent_id)
         if definition is None:
-            raise InvocationError(f"Agent not found: {preview.agent_id}")
+            raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
         invocation = AgentInvocation(
             run_id=f"run_{uuid4().hex}",
             request_id=route_response.request_id,

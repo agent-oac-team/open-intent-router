@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from typing import Protocol, runtime_checkable
 
 from app.schemas.agents import AgentDefinition
+from app.schemas.common import UserContext
 from app.schemas.delegated_runs import (
     DelegatedRunCancelCommand,
     DelegatedRunCommandResult,
@@ -117,6 +118,8 @@ class RegistryApplicationPort(Protocol):
     async def list_definitions(self, *, enabled_only: bool = False) -> list[AgentDefinition]: ...
 
     async def get_definition(self, agent_id: str) -> AgentDefinition | None: ...
+
+    async def available_definitions(self, user: UserContext) -> list[AgentDefinition]: ...
 
     async def upsert_definition(
         self, definition: AgentDefinition, *, expected_revision: int | None = None

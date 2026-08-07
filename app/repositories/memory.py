@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from app.core.errors import RegistryVersionConflict
 from app.core.redaction import redact_value
+from app.repositories.interfaces import PlanCancelTransition
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
@@ -201,6 +202,29 @@ class MemoryRunRepository:
         run = self.runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
 
+    async def get_owned_run(self, run_id: str, *, tenant_id: str, user_id: str) -> AgentRun | None:
+        run = self.runs.get(run_id)
+        if run is None or run.tenant_id != tenant_id or run.user_id != user_id:
+            return None
+        return run.model_copy(deep=True)
+
+    async def get_active_delegated_run_for_plan(
+        self, plan_id: str, *, tenant_id: str, user_id: str
+    ) -> AgentRun | None:
+        run = next(
+            (
+                item
+                for item in self.runs.values()
+                if item.plan_id == plan_id
+                and item.tenant_id == tenant_id
+                and item.user_id == user_id
+                and item.delegated
+                and item.status in {"pending", "running", "blocked"}
+            ),
+            None,
+        )
+        return run.model_copy(deep=True) if run is not None else None
+
     async def list_formation_pending(self, *, limit: int = 100) -> list[AgentRun]:
         pending = [
             run
@@ -285,6 +309,11 @@ class MemoryPlanRepository:
         self.execution_attempts: dict[str, int] = {}
         self.formation_published_version: dict[str, int] = {}
         self._lock = asyncio.Lock()
+        self._delegated_run_lock = asyncio.Lock()
+
+    @property
+    def delegated_run_lock(self) -> asyncio.Lock:
+        return self._delegated_run_lock
 
     async def save(self, plan: Plan, *, formation_suppressed: bool = False) -> Plan:
         async with self._lock:
@@ -314,6 +343,57 @@ class MemoryPlanRepository:
         if plan is None or plan.tenant_id != tenant_id or plan.user_id != user_id:
             return None
         return plan.model_copy(deep=True)
+
+    async def cancel_unstarted(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        run_repository,
+        now: datetime,
+        formation_suppressed: bool = False,
+    ) -> PlanCancelTransition | None:
+        async with self._delegated_run_lock, self._lock:
+            plan = self.plans.get(plan_id)
+            if plan is None or plan.tenant_id != tenant_id or plan.user_id != user_id:
+                return None
+            if plan.status == "cancelled":
+                return PlanCancelTransition(plan.model_copy(deep=True), "already_cancelled")
+            if plan.status in {"completed", "failed"}:
+                return PlanCancelTransition(plan.model_copy(deep=True), "terminal_conflict")
+            active_run = (
+                await run_repository.get_active_delegated_run_for_plan(
+                    plan_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                )
+                if run_repository is not None
+                else None
+            )
+            if active_run is not None or any(step.status == "running" for step in plan.steps):
+                return PlanCancelTransition(plan.model_copy(deep=True), "control_unsupported")
+            updated = plan.model_copy(
+                update={
+                    "status": "cancelled",
+                    "steps": [
+                        step.model_copy(update={"status": "cancelled"})
+                        if step.status in {"pending", "blocked"}
+                        else step
+                        for step in plan.steps
+                    ],
+                    "current_step_id": None,
+                    "next_action": None,
+                    "state_version": plan.state_version + 1,
+                    "updated_at": now,
+                    "formation_event_type": "cancel",
+                }
+            )
+            self.plans[plan_id] = updated.model_copy(deep=True)
+            self.execution_claims.pop(plan_id, None)
+            if formation_suppressed:
+                self.formation_published_version[plan_id] = updated.state_version
+            return PlanCancelTransition(updated.model_copy(deep=True), "cancelled")
 
     async def save_if_version(
         self,

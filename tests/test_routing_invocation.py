@@ -694,6 +694,55 @@ async def test_mock_invocation_persists_run_and_result(
     ].run_id == result.run_id
 
 
+async def test_route_and_invoke_carries_selected_definition_without_registry_refetch(
+    settings, registry_service, repositories
+) -> None:
+    class CandidateSetOnlyRegistry:
+        def __init__(self, delegate) -> None:
+            self.delegate = delegate
+            self.selection_calls = 0
+            self.definition_reads = 0
+
+        async def available_definitions(self, user):
+            self.selection_calls += 1
+            return await self.delegate.available_definitions(user)
+
+        async def get_definition(self, agent_id):
+            self.definition_reads += 1
+            raise AssertionError(f"request-scoped Candidate Set re-read {agent_id}")
+
+    registry = CandidateSetOnlyRegistry(registry_service)
+    router = RouterService(
+        settings=settings,
+        registry=registry,
+        llm_client=FixedTargetLLM("summarizer"),
+    )
+    invocation = InvocationService(
+        registry=registry,
+        run_repository=repositories["runs"],
+        result_repository=repositories["results"],
+        invokers=build_default_invoker_registry(settings),
+    )
+    request = RouteRequest.model_validate(
+        {
+            "session_id": "candidate-set-session",
+            "user": {
+                "id": "u1",
+                "roles": ["operator"],
+                "attributes": {"tenant_id": "t1"},
+            },
+            "input": {"text": "summarize this text"},
+        }
+    )
+
+    route = await router.route(request)
+    result = await invocation.invoke_from_route(request, route)
+
+    assert result is not None and result.status == "completed"
+    assert registry.selection_calls == 1
+    assert registry.definition_reads == 0
+
+
 class SingleStepPlanLLM:
     async def route(self, payload: LLMRouteInput) -> RouteResponse:
         return RouteResponse(

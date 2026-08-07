@@ -114,6 +114,10 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 - 恢复：调用 `/api/v1/plans/{plan_id}/resume`，适合补充输入后继续。
 - 取消：调用 `/api/v1/plans/{plan_id}/actions`。
 
+若 Plan 已有活动 Delegated Run，而当前 Runtime 没有真实控制通道，取消按钮会收到
+`control_unsupported`；Plan 与 state version 保持不变。测试台不得把该响应显示成“取消中”或
+“已取消”。
+
 如果后端返回 `next_action=open_ui`，说明需要宿主应用打开页面；如果返回 `next_action=collect_input`，说明需要补充必要参数。
 
 ## 聊天窗口与状态面板
@@ -131,6 +135,15 @@ UI 中的 Mock/LLM 选择用于测试提示和状态对照，不会直接修改�
 - 右侧 Knowledge 标签展示当前选中轮次的 `knowledge_context`，包括状态、source IDs、item scores、title、URI、citations、denied source IDs、errors 和原始 JSON。
 - 右侧 Evidence 标签展示当前响应中的证据命中。
 - 右侧 Debug 标签保留完整 JSON、InvocationResult、UI Handoff 和 Agent Event JSON 提交。
+
+Debug 中的 Agent Event JSON 使用一个仅供测试台消费的 `execution_ticket` 字段。测试台会先移除该
+字段，再把值放入 `X-OIR-Execution-Ticket` Header；它不会作为 AgentEvent body 发送。Ticket 必须
+来自已经创建该 Delegated Run 的受信调用方，测试台和 Native API 都不会代签。不要把真实 Ticket
+保存到截图、日志或长期 fixture；空值提交会按生产契约收到 `401`。
+
+测试台在 local loopback 下使用无签名 `oir-principal-v1` Envelope。该便利只在
+`APP_ENV=local` 且请求确实来自 loopback 时有效，不是生产兼容开关。非 local 客户端必须由受信
+网关对 Envelope 签名。
 
 M3 起后端返回顶层 `assistant_message` 字段。聊天窗口优先消费 `assistant_message`，缺失时才兼容回退到 `decision.message`；`decision.reason` 仍保留在 Route / Debug 状态区，不再作为普通聊天气泡来源。`next_action.message` 属于 Plan / Host 协作状态，`AgentInvocationResult.message` 属于调用结果摘要，二者都由右侧状态面板展示。
 

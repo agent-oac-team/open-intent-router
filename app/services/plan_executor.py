@@ -1,4 +1,7 @@
-from app.core.errors import InvocationError
+from collections.abc import Mapping
+
+from app.core.errors import AgentUnavailableError, InvocationError
+from app.schemas.agents import AgentDefinition
 from app.schemas.common import JsonDict, UserContext
 from app.schemas.invocation import AgentInvocationResult
 from app.schemas.plans import NextAction, Plan, PlanExecutionResponse, PlanStep
@@ -7,7 +10,7 @@ from app.services.invocation_service import (
     build_invocation_input,
     missing_required_inputs,
 )
-from app.services.plan_service import PlanService
+from app.services.plan_service import PlanService, PlanStateConflict
 from app.services.registry_service import AgentRegistryService
 
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
@@ -30,6 +33,25 @@ class PlanExecutor:
         ):
             self.invocation_service.plan_service = plan_service
 
+    async def preflight(
+        self,
+        plan_id: str,
+        *,
+        user: UserContext,
+    ) -> dict[str, AgentDefinition]:
+        user = _trusted_plan_user(user)
+        plan = await self.plan_service.get_plan(
+            plan_id,
+            tenant_id=user.tenant_id or "",
+            user_id=user.id,
+        )
+        if plan is None:
+            raise ValueError("Plan not found")
+        definitions = await self.registry.available_definitions(user)
+        selected = {definition.agent_id: definition for definition in definitions}
+        _ensure_plan_agents_available(plan, selected)
+        return selected
+
     async def execute(
         self,
         plan_id: str,
@@ -38,15 +60,17 @@ class PlanExecutor:
         input_values: JsonDict | None = None,
         context: JsonDict | None = None,
         max_steps: int = 10,
+        selected_definitions: Mapping[str, AgentDefinition] | None = None,
     ) -> PlanExecutionResponse:
-        if not isinstance(user, UserContext):
-            user = UserContext.model_validate(user)
-        tenant_id = user.tenant_id
-        if not tenant_id:
-            raise ValueError("Trusted tenant identity is required to execute a Plan")
+        user = _trusted_plan_user(user)
+        tenant_id = user.tenant_id or ""
         plan = await self.plan_service.get_plan(plan_id, tenant_id=tenant_id, user_id=user.id)
         if plan is None:
             raise ValueError("Plan not found")
+        if selected_definitions is None:
+            selected_definitions = await self.preflight(plan_id, user=user)
+        selected_definitions = dict(selected_definitions)
+        _ensure_plan_agents_available(plan, selected_definitions)
         results: list[JsonDict] = []
         next_action = plan.next_action
         execution_context = dict(context or {})
@@ -62,14 +86,25 @@ class PlanExecutor:
             if reloaded is None:
                 raise ValueError("Plan not found")
             plan = reloaded
-            if plan.status in TERMINAL_STATUSES and not (
-                plan.status == "blocked" and (input_values or context)
-            ):
+            if plan.status == "completed":
+                if not _all_steps_completed(plan.steps):
+                    raise PlanStateConflict("Plan is marked completed before every Step completed")
                 return PlanExecutionResponse(
                     plan=plan, results=results, next_action=plan.next_action
                 )
-            step = _current_or_next_step(plan)
-            if step is None:
+            if plan.status in {"failed", "cancelled"}:
+                return PlanExecutionResponse(
+                    plan=plan, results=results, next_action=plan.next_action
+                )
+            if any(step.status == "failed" for step in plan.steps):
+                plan = await self.plan_service.save_plan(
+                    plan.model_copy(
+                        update={"status": "failed", "current_step_id": None, "next_action": None}
+                    ),
+                    publish=publish_plan,
+                )
+                return PlanExecutionResponse(plan=plan, results=results)
+            if _all_steps_completed(plan.steps):
                 plan = await self.plan_service.save_plan(
                     plan.model_copy(
                         update={"status": "completed", "current_step_id": None, "next_action": None}
@@ -78,19 +113,35 @@ class PlanExecutor:
                 )
                 return PlanExecutionResponse(plan=plan, results=results)
 
-            definition = await self.registry.get_definition(step.agent_id)
-            if definition is None:
-                next_action = NextAction(
-                    type="collect_input",
-                    message=f"Agent not found: {step.agent_id}",
-                    plan_id=plan.plan_id,
-                    step_id=step.step_id,
-                    agent_id=step.agent_id,
+            resuming = bool(input_values or context)
+            if plan.status == "blocked" and not resuming:
+                return PlanExecutionResponse(
+                    plan=plan, results=results, next_action=plan.next_action
                 )
-                plan = await self._save_step_status(
-                    plan, step, "blocked", next_action, publish=publish_plan
+            step = _select_executable_step(plan, resuming=resuming)
+            if step is None:
+                if any(item.status == "blocked" for item in plan.steps):
+                    return PlanExecutionResponse(
+                        plan=plan, results=results, next_action=plan.next_action
+                    )
+                raise PlanStateConflict("Plan has incomplete Steps but no ready Step")
+            if step.status == "pending" and (
+                plan.current_step_id != step.step_id
+                or plan.status != "running"
+                or plan.next_action is not None
+            ):
+                plan = await self.plan_service.save_plan(
+                    plan.model_copy(
+                        update={
+                            "current_step_id": step.step_id,
+                            "status": "running",
+                            "next_action": None,
+                        }
+                    ),
+                    publish=publish_plan,
                 )
-                return PlanExecutionResponse(plan=plan, results=results, next_action=next_action)
+
+            definition = selected_definitions[step.agent_id]
 
             if definition.type == "ui_handoff":
                 next_action = NextAction(
@@ -151,6 +202,7 @@ class PlanExecutor:
                         "step_id": step.step_id,
                         "previous_results": previous_results,
                     },
+                    selected_definition=definition,
                 )
             except InvocationError as exc:
                 if exc.message != "Plan step is already executing":
@@ -229,20 +281,64 @@ class PlanExecutor:
         )
 
 
-def _current_or_next_step(plan: Plan) -> PlanStep | None:
-    if plan.current_step_id:
-        for step in plan.steps:
-            if step.step_id == plan.current_step_id and step.status in {
-                "pending",
-                "running",
-                "blocked",
-            }:
-                return step if _dependencies_complete(step, plan.steps) else None
-    completed = {step.step_id for step in plan.steps if step.status == "completed"}
-    for step in plan.steps:
-        if step.status == "pending" and all(parent in completed for parent in step.depends_on):
-            return step
-    return None
+def _select_executable_step(plan: Plan, *, resuming: bool) -> PlanStep | None:
+    current = next(
+        (step for step in plan.steps if step.step_id == plan.current_step_id),
+        None,
+    )
+    if (
+        current is not None
+        and current.status == "running"
+        and _dependencies_complete(current, plan.steps)
+    ):
+        return current
+    if (
+        resuming
+        and current is not None
+        and current.status == "blocked"
+        and _dependencies_complete(current, plan.steps)
+    ):
+        return current
+    ready = _ready_steps(plan.steps)
+    return ready[0] if ready else None
+
+
+def _ready_steps(steps: list[PlanStep]) -> list[PlanStep]:
+    completed = {step.step_id for step in steps if step.status == "completed"}
+    return [
+        step
+        for step in steps
+        if step.status == "pending" and all(parent in completed for parent in step.depends_on)
+    ]
+
+
+def _all_steps_completed(steps: list[PlanStep]) -> bool:
+    return all(step.status == "completed" for step in steps)
+
+
+def _trusted_plan_user(user: UserContext) -> UserContext:
+    if not isinstance(user, UserContext):
+        user = UserContext.model_validate(user)
+    if not user.tenant_id:
+        raise ValueError("Trusted tenant identity is required to execute a Plan")
+    return user
+
+
+def _ensure_plan_agents_available(
+    plan: Plan,
+    selected_definitions: Mapping[str, AgentDefinition],
+) -> None:
+    unavailable = [
+        step.agent_id
+        for step in plan.steps
+        if step.status not in {"completed", "failed", "cancelled"}
+        and step.agent_id not in selected_definitions
+    ]
+    if unavailable:
+        raise AgentUnavailableError(
+            f"Agent is not available: {unavailable[0]}",
+            details={"agent_ids": list(dict.fromkeys(unavailable))},
+        )
 
 
 def _dependencies_complete(step: PlanStep, steps: list[PlanStep]) -> bool:

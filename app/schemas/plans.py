@@ -64,7 +64,21 @@ class Plan(StrictBaseModel):
         if self.current_step_id and self.current_step_id not in known:
             raise ValueError("current_step_id must reference a step_id in steps")
         if not self.current_step_id and self.status in {"pending", "running", "blocked"}:
-            self.current_step_id = self.steps[0].step_id
+            completed = {step.step_id for step in self.steps if step.status == "completed"}
+            ready = next(
+                (
+                    step
+                    for step in self.steps
+                    if step.status == "pending"
+                    and all(parent in completed for parent in step.depends_on)
+                ),
+                None,
+            )
+            active = next(
+                (step for step in self.steps if step.status in {"running", "blocked"}),
+                None,
+            )
+            self.current_step_id = (ready or active).step_id if ready or active else None
         if self.status in {"completed", "failed", "cancelled"}:
             self.current_step_id = None
         return self
@@ -81,7 +95,9 @@ class PlanActionResponse(StrictBaseModel):
     current_step_id: str | None = None
     next_action: NextAction | None = None
     state_version: int = Field(default=0, ge=0)
+    accepted: bool = True
     transitioned: bool = False
+    reason_code: str | None = Field(default=None, max_length=64)
 
 
 class PlanExecutionRequest(StrictBaseModel):

@@ -106,15 +106,6 @@ npm run dev
 - 数据库和本地文件注册表要保持共存：数据库为主，本地文件用于开发和兜底。
 - 保持 API 向后兼容；需要破坏性迁移时先通过 OpenSpec 说明。
 
-## OpenSpec 工作流
-
-- 需求或架构调整优先使用 `openspec/changes/<change-name>` 记录 proposal、design、spec 和 tasks。
-- 实现 OpenSpec 任务时，先读取对应 change 的全部上下文文件，再逐项实现。
-- 完成任务后及时勾选 `tasks.md`。
-- 修改 `openspec/changes/<change-name>/` 后，必须运行 `openspec validate <change-name> --strict`。
-- 归档前必须运行相关测试、静态检查和 `openspec validate <change-name> --strict`。
-- 所有文档使用中文。
-
 ## 测试要求
 
 - 后端逻辑变更至少运行 `.venv/bin/python -m pytest`。

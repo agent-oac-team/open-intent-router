@@ -15,16 +15,14 @@ from app.dependencies import (
     get_router_service,
     get_turn_service,
 )
-from app.repositories.execution_tickets import (
-    DatabaseExecutionTicketStore,
-    MemoryExecutionTicketStore,
+from app.dependencies import (
+    get_execution_ticket_service as get_execution_ticket_service,
 )
 from app.repositories.registry_audit import (
     DatabaseRegistryAuditStore,
     MemoryRegistryAuditStore,
     RegistryAuditStore,
 )
-from app.services.execution_ticket_service import ExecutionTicketService
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, FileCutoverAuditRepository
 from host_adapters.oac.identity import HostIdentityVerifier
@@ -115,21 +113,6 @@ async def get_trusted_host_identity(request: Request) -> TrustedHostIdentity:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="host_authentication_failed",
         ) from exc
-
-
-@lru_cache
-def get_execution_ticket_service() -> ExecutionTicketService:
-    core = get_settings()
-    host = get_oac_host_settings()
-    if core.storage_backend == "database":
-        store = DatabaseExecutionTicketStore(create_session_factory(core))
-    else:
-        store = MemoryExecutionTicketStore()
-    secret = host.execution_ticket_secret
-    return ExecutionTicketService(
-        store,
-        secret=secret.get_secret_value() if secret else None,
-    )
 
 
 @lru_cache

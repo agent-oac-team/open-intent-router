@@ -5,6 +5,26 @@
 
 本文档说明 `open-intent-router` MVP 阶段提供的主要接口边界。接口以 FastAPI 暴露，完整字段定义以代码中的 Pydantic Schema 和运行时 OpenAPI 文档为准。
 
+## Native 身份与所有权
+
+Native Route、Invoke、Plan、Run、Session 和个性化 Agent 查询使用单一 Principal Envelope：
+
+- `X-OIR-Principal-Envelope`：base64url 编码的规范 JSON，至少包含
+  `claims_version=oir-principal-v1`、`subject`、`tenant`、`roles`、`groups`、
+  `entitlements` 和 `attributes`。
+- `X-OIR-Principal-Signature`：使用 `NATIVE_PRINCIPAL_SECRET` 对 Envelope 原文计算的
+  HMAC-SHA256 十六进制签名。
+
+非 local 环境必须验签；`APP_ENV=local` 只允许 loopback 请求使用无签名 Envelope。迁移期仍接受
+`X-User-ID`、`X-Tenant-ID` 和 `X-Memory-Identity-Signature`，但它们只能形成空
+roles/groups/entitlements 的 owner-only Principal。请求体中的用户字段只做 subject/tenant
+一致性校验，不能提供或扩大权限。
+
+Run、Plan 和 Session 的 Native 读写都以 Principal 的 `(tenant, subject)` 查询；跨用户、跨租户
+和不存在目标统一返回 `404`，admin-like role 不隐式绕过 owner endpoint。公开且脱敏的
+`GET /api/v1/agents` 与 `GET /api/v1/agents/{agent_id}` 仍无需 Principal；
+`POST /api/v1/agents/available` 是个性化查询，必须认证。
+
 ## 健康检查
 
 - `GET /health`：服务进程健康检查。
@@ -47,6 +67,12 @@ Canonical Turn 当前是 OIR 内部应用契约，不新增公开 Turn HTTP 端�
 - `AgentInvocationResult.message`：Agent 调用摘要，只属于调用结果。
 
 路由前筛选顺序固定为：权限过滤 > 强确定性规则 > 语义/标签筛选 > LLM 判断。
+
+一次受信请求只形成一个 Candidate Set。Direct Invoke 先从该集合选择目标再产生 Context、Run、
+Result 或 Invoker 副作用；route-and-invoke 复用 Route 已生成的候选 ID，不重复执行访问策略。
+Plan 的 confirm、execute、confirm-and-execute 和 resume 是不同请求，因此各自重新形成一次
+Candidate Set，并在该请求的全部 Step 预检和执行中复用；任一非终态 Step 的 Agent 不可用时返回
+`404 agent_not_available`，Plan 保持不变。
 
 - 权限过滤是硬边界。候选 Agent 会先按 enabled、角色、用户组、租户和属性过滤；后续 Evidence、固定问、标签或 LLM 都不能扩大到用户不可访问的 Agent。
 - 固定问强命中是强路由。当 Evidence Provider 返回可用 Agent 的强 `route_override` 时，本轮直接返回路由结果，不再调用 LLM。
@@ -222,13 +248,15 @@ HTTP 入口，也不代理或回退这些请求。Agent Definition 中的
 
 ## Agent 查询
 
-公开查询接口：
+查询接口：
 
 - `GET /api/v1/agents`
 - `GET /api/v1/agents/{agent_id}`
 - `POST /api/v1/agents/available`
 
-公开接口会隐藏敏感配置，例如密钥、Header Token、私有调用参数等。宿主应用可通过 `available` 接口按用户角色、用户组、租户和属性过滤可用 Agent。
+三个响应都会隐藏密钥、Header Token 和私有调用参数等敏感配置。前两个是公开脱敏 Catalog；
+`available` 使用已验证 Principal 的角色、用户组、租户、entitlement 和属性过滤，忽略请求体中的
+权限声明。
 
 ## Agent 管理
 
@@ -256,18 +284,29 @@ HTTP 入口，也不代理或回退这些请求。Agent Definition 中的
 
 ## 事件
 
-事件接口用于接收 Agent 执行过程中的状态变化、进度、日志和结果片段。
+事件接口用于接收外部 Agent 对已存在 Delegated Run 的进度和终态事实。
 
 - `POST /api/v1/events/agent`
 - `POST /api/v1/runs/{run_id}/events`
 
-事件 ID 具备幂等语义。重复提交相同事件 ID 不应产生重复副作用。
+两条 Native Event 路径都必须携带 `X-OIR-Execution-Ticket`。服务验证 Ticket 的签名、存储
+hash、purpose=`agent_event` 和过期时间，并从 Ticket claims 派生 run、turn、owner、agent、
+plan 和 step；请求中的任一同名字段冲突都会在写入前拒绝。Native API 不提供 Ticket 签发端点，
+Ticket 由创建 Delegated Run 的受信内部调用方签发。
+
+进度 Event 在命令提交后 release Ticket，以便后续进度继续使用；`agent_result`、`agent_error` 和
+`agent_cancelled` 在 Run/Turn/可选 Plan Step/Event/Outbox 原子提交后 consume Ticket。相同 Event ID
+重放返回 `duplicate=true`，不复制 Result、Event 或 Outbox；拒绝路径不产生部分业务写入。内部
+Invoker 仍直接调用应用服务，不通过 HTTP 或重复验证 Ticket。
 
 ## Run 查询
 
 - `GET /api/v1/runs/{run_id}`
 
 Run 用于记录一次 Agent 调用的生命周期，包括调用输入、调用状态、结果摘要、错误信息和事件序列。
+Delegated Run 到达 `deadline_at` 后由 lifespan 管理的 sweeper 自动提交幂等 timeout 命令；扫描只看
+deadline，不因 heartbeat 陈旧而提前 timeout 或重试。终态竞争依赖 expected state version，迟到方
+不会覆盖已经提交的 completed、failed、cancelled 或 timed_out 状态。
 
 ## Plan
 
@@ -282,7 +321,10 @@ Run 用于记录一次 Agent 调用的生命周期，包括调用输入、调用
 当前支持的 Plan Action：
 
 - `confirm`：确认继续执行。
-- `cancel`：取消计划。
+- `cancel`：取消尚未开始且没有活动 Run 的计划工作。若存在活动 Delegated Run 且 Runtime 没有真实
+  下行控制通道，返回 HTTP `200`、`accepted=false`、`transitioned=false`、
+  `reason_code=control_unsupported` 和未变化的 Plan/state version；不会伪造 `cancel_pending` 或
+  `cancelled`。
 
 执行策略：
 
@@ -298,6 +340,12 @@ Run 用于记录一次 Agent 调用的生命周期，包括调用输入、调用
 - `collect_input`：需要补充参数。
 - `wait_for_agent_event`：等待外部 Agent 或宿主系统上报事件。
 - `none`：无后续动作。
+
+Plan DAG 以“`pending` 且所有依赖都为 `completed`”定义 ready Step。Executor 每次结果后重算完整
+ready-set，并按 Plan 原始 Step 数组顺序串行选择；`current_step_id` 不 ready 时不会阻塞其他 ready
+Step。只有全部 Step completed 才能完成 Plan；不可恢复失败立即 fail-fast，未开始 Step 保持
+pending，声明的 blocked 状态保持 blocked。若 Plan 未完成却不存在可解释的 ready/blocked 状态，
+服务返回状态不变量冲突，不伪造完成。
 
 ## Session
 

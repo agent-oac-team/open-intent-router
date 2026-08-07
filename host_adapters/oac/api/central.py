@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
+from app.core.errors import AgentUnavailableError
 from app.schemas.common import UserContext
 from app.schemas.delegated_runs import (
     DelegatedRunCompleteCommand,
@@ -658,6 +659,16 @@ async def confirm_plan(
         )
         if plan is None:
             raise KeyError(plan_id)
+        definitions = await ports.registry.available_definitions(_user(identity))
+        candidate_agent_ids = {definition.agent_id for definition in definitions}
+        unavailable = [
+            step.agent_id
+            for step in plan.steps
+            if step.status not in {"completed", "failed", "cancelled"}
+            and step.agent_id not in candidate_agent_ids
+        ]
+        if unavailable:
+            raise AgentUnavailableError(f"Agent is not available: {unavailable[0]}")
         response = await ports.plans.confirm(
             plan_id,
             tenant_id=identity.tenant_id,

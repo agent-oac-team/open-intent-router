@@ -29,16 +29,22 @@ from app.repositories.database import (
     DatabaseRunRepository,
 )
 from app.repositories.delegated_runs import (
+    DatabaseDelegatedRunCancelStore,
     DatabaseDelegatedRunCompletionStore,
     DatabaseDelegatedRunFailureStore,
     DatabaseDelegatedRunMaintenanceStore,
     DatabaseDelegatedRunProgressStore,
     DatabaseDelegatedRunStartStore,
+    MemoryDelegatedRunCancelStore,
     MemoryDelegatedRunCompletionStore,
     MemoryDelegatedRunFailureStore,
     MemoryDelegatedRunMaintenanceStore,
     MemoryDelegatedRunProgressStore,
     MemoryDelegatedRunStartStore,
+)
+from app.repositories.execution_tickets import (
+    DatabaseExecutionTicketStore,
+    MemoryExecutionTicketStore,
 )
 from app.repositories.execution_traces import (
     DatabaseExecutionTraceRepository,
@@ -72,10 +78,13 @@ from app.repositories.turn_route_completion import (
 )
 from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
 from app.services.agent_context_service import AgentContextAssemblyService
+from app.services.agent_event_service import NativeAgentEventService
 from app.services.chat_history_service import ChatHistoryService
 from app.services.context_service import ContextService
 from app.services.delegated_run_service import DelegatedRunService
+from app.services.delegated_run_timeout_runtime import DelegatedRunTimeoutRuntime
 from app.services.event_service import EventService
+from app.services.execution_ticket_service import ExecutionTicketService
 from app.services.execution_trace_service import ExecutionTraceService
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
 from app.services.knowledge_context_handle import KnowledgeContextHandleService
@@ -116,6 +125,7 @@ from app.services.turn_service import TurnService
 _memory_runtime_policy_override: MemoryRuntimePolicy | None = None
 _memory_runtime_database_url: str | None = None
 _memory_runtime_collection: str | None = None
+_execution_ticket_secret_override: str | None = None
 
 
 def configure_memory_runtime(
@@ -132,6 +142,12 @@ def configure_memory_runtime(
     _memory_runtime_collection = collection
     get_memory_runtime_policy.cache_clear()
     get_memory_data_settings.cache_clear()
+
+
+def configure_execution_ticket_runtime(*, secret: str | None) -> None:
+    global _execution_ticket_secret_override
+    _execution_ticket_secret_override = secret
+    get_execution_ticket_service.cache_clear()
 
 
 @lru_cache
@@ -510,6 +526,7 @@ def get_delegated_run_service() -> DelegatedRunService:
             progress_store=DatabaseDelegatedRunProgressStore(factory),
             completion_store=DatabaseDelegatedRunCompletionStore(factory),
             failure_store=DatabaseDelegatedRunFailureStore(factory),
+            cancel_store=DatabaseDelegatedRunCancelStore(factory),
             maintenance_store=DatabaseDelegatedRunMaintenanceStore(factory),
         )
     repositories = get_repository_bundle()
@@ -519,10 +536,12 @@ def get_delegated_run_service() -> DelegatedRunService:
         MemoryDelegatedRunStartStore(
             run_repository=repositories["runs"],
             turn_repository=turns,
+            plan_repository=repositories["plans"],
         ),
         progress_store=MemoryDelegatedRunProgressStore(
             run_repository=repositories["runs"],
             event_repository=repositories["events"],
+            plan_repository=repositories["plans"],
         ),
         completion_store=MemoryDelegatedRunCompletionStore(
             run_repository=repositories["runs"],
@@ -539,12 +558,51 @@ def get_delegated_run_service() -> DelegatedRunService:
             outbox_repository=outbox,
             plan_repository=repositories["plans"],
         ),
+        cancel_store=MemoryDelegatedRunCancelStore(
+            run_repository=repositories["runs"],
+            event_repository=repositories["events"],
+            turn_repository=turns,
+            outbox_repository=outbox,
+            plan_repository=repositories["plans"],
+        ),
         maintenance_store=MemoryDelegatedRunMaintenanceStore(
             run_repository=repositories["runs"],
             event_repository=repositories["events"],
             turn_repository=turns,
             outbox_repository=outbox,
+            plan_repository=repositories["plans"],
         ),
+    )
+
+
+@lru_cache
+def get_execution_ticket_service() -> ExecutionTicketService:
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        store = DatabaseExecutionTicketStore(create_session_factory(settings))
+    else:
+        store = MemoryExecutionTicketStore()
+    secret = _execution_ticket_secret_override or settings.execution_ticket_secret
+    return ExecutionTicketService(store, secret=secret)
+
+
+def get_native_agent_event_service() -> NativeAgentEventService:
+    settings = get_settings()
+    return NativeAgentEventService(
+        tickets=get_execution_ticket_service(),
+        delegated_runs=get_delegated_run_service(),
+        run_repository=get_run_repository(),
+        ticket_lease_seconds=settings.execution_ticket_lease_seconds,
+    )
+
+
+@lru_cache
+def build_delegated_run_timeout_runtime() -> DelegatedRunTimeoutRuntime:
+    settings = get_settings()
+    return DelegatedRunTimeoutRuntime(
+        get_delegated_run_service(),
+        interval_seconds=settings.delegated_run_timeout_interval_seconds,
+        batch_size=settings.delegated_run_timeout_batch_size,
     )
 
 
@@ -632,6 +690,7 @@ def get_plan_service() -> PlanService:
     repositories = get_repository_bundle()
     return PlanService(
         repositories["plans"],
+        run_repository=repositories["runs"],
         structured_formation=get_structured_formation_publisher(),
         runtime_policy=get_memory_runtime_policy(),
     )

@@ -3,11 +3,13 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from app.schemas.delegated_runs import (
+    DelegatedRunCancelCommand,
     DelegatedRunCommandResult,
     DelegatedRunCompleteCommand,
     DelegatedRunFailCommand,
     DelegatedRunOrphanQuery,
     DelegatedRunOrphanResponse,
+    DelegatedRunOverdueQuery,
     DelegatedRunProgressCommand,
     DelegatedRunReference,
     DelegatedRunStartCommand,
@@ -65,11 +67,26 @@ class DelegatedRunFailureStore:
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class DelegatedRunCancellationResult:
+    run: AgentRun
+    turn: CanonicalTurn
+    duplicate: bool
+
+
+class DelegatedRunCancelStore:
+    async def cancel(self, command: DelegatedRunCancelCommand) -> DelegatedRunCancellationResult:
+        raise NotImplementedError
+
+
 class DelegatedRunMaintenanceStore:
     async def list_orphans(self, query: DelegatedRunOrphanQuery) -> list[AgentRun]:
         raise NotImplementedError
 
     async def timeout(self, command: DelegatedRunTimeoutCommand) -> tuple[AgentRun, bool]:
+        raise NotImplementedError
+
+    async def list_overdue(self, query: DelegatedRunOverdueQuery) -> list[AgentRun]:
         raise NotImplementedError
 
 
@@ -80,12 +97,14 @@ class DelegatedRunService:
         progress_store: DelegatedRunProgressStore | None = None,
         completion_store: DelegatedRunCompletionStore | None = None,
         failure_store: DelegatedRunFailureStore | None = None,
+        cancel_store: DelegatedRunCancelStore | None = None,
         maintenance_store: DelegatedRunMaintenanceStore | None = None,
     ) -> None:
         self.start_store = start_store
         self.progress_store = progress_store
         self.completion_store = completion_store
         self.failure_store = failure_store
+        self.cancel_store = cancel_store
         self.maintenance_store = maintenance_store
 
     async def start(self, command: DelegatedRunStartCommand) -> DelegatedRunCommandResult:
@@ -144,10 +163,26 @@ class DelegatedRunService:
             turn_id=failed.turn.turn_id,
         )
 
+    async def cancel(self, command: DelegatedRunCancelCommand) -> DelegatedRunCommandResult:
+        if self.cancel_store is None:
+            raise RuntimeError("Delegated Run cancel store is not configured")
+        cancelled = await self.cancel_store.cancel(command)
+        return DelegatedRunCommandResult(
+            run=_run_reference(cancelled.run),
+            duplicate=cancelled.duplicate,
+            turn_id=cancelled.turn.turn_id,
+        )
+
     async def list_orphans(self, query: DelegatedRunOrphanQuery) -> DelegatedRunOrphanResponse:
         if self.maintenance_store is None:
             raise RuntimeError("Delegated Run maintenance store is not configured")
         runs = await self.maintenance_store.list_orphans(query)
+        return DelegatedRunOrphanResponse(runs=[_run_reference(run) for run in runs])
+
+    async def list_overdue(self, query: DelegatedRunOverdueQuery) -> DelegatedRunOrphanResponse:
+        if self.maintenance_store is None:
+            raise RuntimeError("Delegated Run maintenance store is not configured")
+        runs = await self.maintenance_store.list_overdue(query)
         return DelegatedRunOrphanResponse(runs=[_run_reference(run) for run in runs])
 
     async def timeout(self, command: DelegatedRunTimeoutCommand) -> DelegatedRunCommandResult:

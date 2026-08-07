@@ -125,6 +125,12 @@ Agent 查询：
 - `POST /api/v1/plans/{plan_id}/resume`
 - `GET /api/v1/sessions/{session_id}/messages`
 
+Native 个性化接口使用 `X-OIR-Principal-Envelope`；非 local 环境还必须携带受信网关生成的
+`X-OIR-Principal-Signature`。公开脱敏 Agent Catalog 仍可匿名读取。外部 Agent Event 不使用
+Principal，而必须携带绑定具体 Delegated Run 的 `X-OIR-Execution-Ticket`；项目不暴露 Native
+Ticket 签发 API。完整所有权、Candidate Set、Plan 取消和 deadline 语义见
+[API 概览](docs/App-Desc/contracts/api.md)。
+
 管理接口需要传入 `X-Admin-Token` 或 `Authorization: Bearer <token>`：
 
 - `GET /api/v1/admin/agents`

@@ -71,6 +71,7 @@ class RouterService:
         request = request.model_copy(update={"request_id": request_id})
         await self._start_turn(request)
         available_agents = await self._available_agent_definitions(request)
+        selected_definitions = {agent.agent_id: agent for agent in available_agents}
         available_agent_ids = [agent.agent_id for agent in available_agents]
         tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
         candidate_ids = available_agent_ids
@@ -100,7 +101,8 @@ class RouterService:
                 ),
             )
             response = self._finalize_assistant_message(response)
-            return await self._after_route(request, response)
+            response = await self._after_route(request, response)
+            return response.bind_selected_definitions(selected_definitions)
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
@@ -110,7 +112,7 @@ class RouterService:
             self._validate_plan_agents(active_plan, set(candidate_ids))
         evidence_result = await self._evidence(request, candidate_ids)
         if evidence_result.route_override_denied:
-            return await self._route_from_denied_evidence_override(
+            response = await self._route_from_denied_evidence_override(
                 request,
                 request_id,
                 candidate_ids,
@@ -124,8 +126,9 @@ class RouterService:
                 active_plan=active_plan,
                 candidate_agents=candidates,
             )
+            return response.bind_selected_definitions(selected_definitions)
         if evidence_result.route_override:
-            return await self._route_from_evidence_override(
+            response = await self._route_from_evidence_override(
                 request,
                 request_id,
                 candidate_ids,
@@ -138,7 +141,9 @@ class RouterService:
                 recent_events=recent_events,
                 active_plan=active_plan,
                 candidate_agents=candidates,
+                selected_definitions=selected_definitions,
             )
+            return response.bind_selected_definitions(selected_definitions)
         (
             base_context,
             projection,
@@ -163,9 +168,10 @@ class RouterService:
             active_plan=active_plan,
             base_context=base_context,
             assembly_session=assembly_session,
+            selected_definitions=selected_definitions,
         )
         if plan_route is not None:
-            return plan_route
+            return plan_route.bind_selected_definitions(selected_definitions)
         knowledge_reply = base_context.metadata.get("knowledge_direct_reply")
         if isinstance(knowledge_reply, dict) and knowledge_reply.get("message"):
             message = str(knowledge_reply["message"])
@@ -184,7 +190,7 @@ class RouterService:
             )
             response = self._finalize_assistant_message(response)
             response = await self._after_route(request, response)
-            return response
+            return response.bind_selected_definitions(selected_definitions)
 
         output = await self.llm_client.route(
             LLMRouteInput(
@@ -207,7 +213,7 @@ class RouterService:
         output = self._deny_unavailable_plan_agents(output)
         output = self._collapse_single_step_plan(output, request)
         output = self._normalize_agent_continuation(output, request)
-        output = await self._apply_plan_policy(output)
+        output = await self._apply_plan_policy(output, selected_definitions)
         output = output.model_copy(update={"request_id": request_id})
         output = await self._post_validate(output, request)
         output = self._clarify_on_low_confidence(output)
@@ -216,10 +222,11 @@ class RouterService:
             request,
             active_plan=active_plan,
             assembly_session=assembly_session,
+            selected_definitions=selected_definitions,
         )
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
-        return response
+        return response.bind_selected_definitions(selected_definitions)
 
     async def _route_controlled_plan_step(
         self,
@@ -228,6 +235,7 @@ class RouterService:
         active_plan,
         base_context,
         assembly_session=None,
+        selected_definitions: dict[str, AgentDefinition],
     ) -> RouteResponse | None:
         if request.source not in {"plan_control", "agent_event"} or active_plan is None:
             return None
@@ -265,9 +273,9 @@ class RouterService:
             raise RoutingError("Active Plan current step is missing")
         if step.agent_id not in base_context.candidate_agent_ids:
             raise RoutingError("Active Plan step is outside the candidate set")
-        agent = await self.registry.get_definition(step.agent_id)
+        agent = selected_definitions.get(step.agent_id)
         if agent is None:
-            raise RoutingError("Active Plan Agent no longer exists")
+            raise RoutingError("Active Plan Agent is outside the Candidate Set")
         response = RouteResponse(
             request_id=request.request_id or f"req_{uuid4().hex}",
             session_id=request.session_id,
@@ -300,6 +308,7 @@ class RouterService:
             request,
             active_plan=active_plan,
             assembly_session=assembly_session,
+            selected_definitions=selected_definitions,
         )
         response = self._finalize_assistant_message(response)
         return await self._after_route(request, response)
@@ -389,11 +398,7 @@ class RouterService:
         )
 
     async def _available_agent_definitions(self, request: RouteRequest) -> list[AgentDefinition]:
-        return [
-            agent
-            for agent in await self.registry.list_definitions(enabled_only=True)
-            if agent.is_available_to(request.user)
-        ]
+        return await self.registry.available_definitions(request.user)
 
     async def _post_validate(self, output: RouteResponse, request: RouteRequest) -> RouteResponse:
         candidate_ids = set(output.context.candidate_agent_ids)
@@ -564,13 +569,14 @@ class RouterService:
         *,
         active_plan=None,
         assembly_session=None,
+        selected_definitions: dict[str, AgentDefinition],
     ) -> RouteResponse:
         target = output.decision.target_agent_id
         if output.decision.action not in {"open_agent", "continue_agent"} or not target:
             return output
-        agent = await self.registry.get_definition(target)
+        agent = selected_definitions.get(target)
         if agent is None:
-            raise RoutingError("Selected Agent no longer exists")
+            raise RoutingError("Selected Agent is outside the Candidate Set")
         invocation_input = _build_invocation_input(agent, output, request)
         missing = _missing_required_inputs(agent, invocation_input)
         if missing:
@@ -769,6 +775,7 @@ class RouterService:
         recent_events: list[JsonDict] | None = None,
         active_plan=None,
         candidate_agents=None,
+        selected_definitions: dict[str, AgentDefinition],
     ) -> RouteResponse:
         override = evidence_result.route_override or {}
         target_agent_id = override.get("target_agent_id")
@@ -836,6 +843,7 @@ class RouterService:
             request,
             active_plan=active_plan,
             assembly_session=assembly_session,
+            selected_definitions=selected_definitions,
         )
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
@@ -1148,13 +1156,17 @@ class RouterService:
             }
         )
 
-    async def _apply_plan_policy(self, output: RouteResponse) -> RouteResponse:
+    async def _apply_plan_policy(
+        self,
+        output: RouteResponse,
+        selected_definitions: dict[str, AgentDefinition],
+    ) -> RouteResponse:
         if output.plan is None:
             return output
         policy = (
             output.execution_policy
             or output.plan.execution_policy
-            or await self._metadata_policy_for_plan(output.plan)
+            or self._metadata_policy_for_plan(output.plan, selected_definitions)
         )
         policy = policy or self.settings.default_plan_execution_policy
         if self.settings.app_env != "local" and policy == "auto_execute":
@@ -1190,9 +1202,13 @@ class RouterService:
             update={"execution_policy": policy, "next_action": next_action, "plan": plan}
         )
 
-    async def _metadata_policy_for_plan(self, plan) -> str | None:
+    def _metadata_policy_for_plan(
+        self,
+        plan,
+        selected_definitions: dict[str, AgentDefinition],
+    ) -> str | None:
         for step in plan.steps:
-            definition = await self.registry.get_definition(step.agent_id)
+            definition = selected_definitions.get(step.agent_id)
             if not definition:
                 continue
             execution = definition.metadata.get("execution")

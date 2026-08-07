@@ -105,17 +105,20 @@ class AgentRegistryService:
         )
 
     async def available_for_user(self, user: UserContext) -> AvailableAgentsResponse:
-        agents = [
-            agent
-            for agent in await self.list_definitions(enabled_only=True)
-            if agent.is_available_to(user)
-        ]
+        agents = await self.available_definitions(user)
         candidates = [agent.to_candidate() for agent in agents]
         return AvailableAgentsResponse(
             available_agents=[agent.agent_id for agent in agents],
             candidate_agents_for_llm=candidates,
             source=self.state.active_source,
         )
+
+    async def available_definitions(self, user: UserContext) -> list[AgentDefinition]:
+        return [
+            agent
+            for agent in await self.list_definitions(enabled_only=True)
+            if agent.is_available_to(user)
+        ]
 
     async def candidates_for_user(self, user: UserContext) -> list[CandidateAgent]:
         return (await self.available_for_user(user)).candidate_agents_for_llm

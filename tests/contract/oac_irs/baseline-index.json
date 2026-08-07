@@ -1,6 +1,6 @@
 {
   "contract": "oac-irs-migration-baseline/v1",
-  "generated_at": "2026-07-28T01:34:39.101370+00:00",
+  "generated_at": "2026-08-07T03:05:41.868715+00:00",
   "irs_source_revision": "348cf93fa3441108481631b7768d5ab7670c706e",
   "oac_source_revision": "cd97c1b with working-tree evidence at 2026-07-16",
   "counts": {
@@ -351,6 +351,11 @@
       "path": "migration-records/acceptance-thresholds.md",
       "sha256": "c1f2c5b7971c50d92a1c40ea9ee10ce9570b6d7ec1f4c40e12bb6ed8e30254df",
       "bytes": 2240
+    },
+    {
+      "path": "migration-records/central-retirement-test-evidence.json",
+      "sha256": "144b15f8a528981f6eac2bd055cc84b566fed3ff46b2c0b0d29c9f909fd0afc6",
+      "bytes": 4584
     },
     {
       "path": "migration-records/irs-local-performance.json",

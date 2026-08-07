@@ -19,6 +19,7 @@ from app.db.models import (
     RegistryRevisionModel,
     RouteLogModel,
 )
+from app.repositories.interfaces import PlanCancelTransition
 from app.repositories.json_utils import dumps, loads
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
@@ -305,6 +306,35 @@ class DatabaseRunRepository:
             row = await session.get(AgentRunModel, run_id)
             return _run_from_row(row) if row else None
 
+    async def get_owned_run(self, run_id: str, *, tenant_id: str, user_id: str) -> AgentRun | None:
+        async with self.session_factory() as session:
+            row = await session.scalar(
+                select(AgentRunModel).where(
+                    AgentRunModel.run_id == run_id,
+                    AgentRunModel.tenant_id == tenant_id,
+                    AgentRunModel.user_id == user_id,
+                )
+            )
+            return _run_from_row(row) if row else None
+
+    async def get_active_delegated_run_for_plan(
+        self, plan_id: str, *, tenant_id: str, user_id: str
+    ) -> AgentRun | None:
+        async with self.session_factory() as session:
+            row = await session.scalar(
+                select(AgentRunModel)
+                .where(
+                    AgentRunModel.plan_id == plan_id,
+                    AgentRunModel.tenant_id == tenant_id,
+                    AgentRunModel.user_id == user_id,
+                    AgentRunModel.delegated.is_(True),
+                    AgentRunModel.status.in_(["pending", "running", "blocked"]),
+                )
+                .order_by(AgentRunModel.created_at, AgentRunModel.run_id)
+                .limit(1)
+            )
+            return _run_from_row(row) if row else None
+
     async def list_formation_pending(self, *, limit: int = 100) -> list[AgentRun]:
         async with self.session_factory() as session:
             expected_order = case(
@@ -583,32 +613,86 @@ class DatabasePlanRepository:
                 .scalars()
                 .all()
             )
-            metadata = loads(row.original_query, {})
-            return Plan(
-                plan_id=row.plan_id,
-                user_id=row.user_id,
-                tenant_id=row.tenant_id,
-                session_id=row.session_id,
-                status=row.status,
-                current_step_id=row.current_step_id,
-                execution_policy=metadata.get("execution_policy"),
-                next_action=metadata.get("next_action"),
-                last_event_id=metadata.get("last_event_id"),
-                state_version=row.state_version,
-                updated_at=_as_utc(row.updated_at),
-                formation_event_type=metadata.get("formation_event_type", "update"),
-                steps=[
-                    PlanStep(
-                        step_id=step.step_id,
-                        agent_id=step.agent_id,
-                        status=step.status,
-                        description=step.description,
-                        depends_on=loads(step.depends_on_text, []),
-                        artifact_refs=loads(step.artifact_refs_text, []),
-                    )
-                    for step in steps
-                ],
+            return _plan_from_rows(row, steps)
+
+    async def cancel_unstarted(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        run_repository,
+        now: datetime,
+        formation_suppressed: bool = False,
+    ) -> PlanCancelTransition | None:
+        del run_repository
+        async with self.session_factory() as session, session.begin():
+            active_run = await _lock_active_delegated_run_for_plan(
+                session,
+                plan_id=plan_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
+            row = await _lock_plan_row(
+                session,
+                plan_id=plan_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
+            if row is None:
+                return None
+            steps = (
+                (
+                    await session.execute(
+                        select(PlanStepModel)
+                        .where(PlanStepModel.plan_id == plan_id)
+                        .order_by(PlanStepModel.id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            plan = _plan_from_rows(row, steps)
+            if plan.status == "cancelled":
+                return PlanCancelTransition(plan, "already_cancelled")
+            if plan.status in {"completed", "failed"}:
+                return PlanCancelTransition(plan, "terminal_conflict")
+            if active_run is None:
+                active_run = await session.scalar(
+                    _active_delegated_run_for_plan_query(
+                        plan_id=plan_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                    )
+                )
+            if active_run is not None or any(step.status == "running" for step in plan.steps):
+                return PlanCancelTransition(plan, "control_unsupported")
+
+            for step in steps:
+                if step.status in {"pending", "blocked"}:
+                    step.status = "cancelled"
+            row.status = "cancelled"
+            row.current_step_id = None
+            row.state_version += 1
+            row.updated_at = now
+            row.execution_claim_id = None
+            row.execution_claim_step_id = None
+            row.execution_claim_state_version = None
+            row.execution_claim_key = None
+            row.execution_claim_expires_at = None
+            if formation_suppressed:
+                row.formation_published_version = row.state_version
+            metadata = loads(row.original_query, {})
+            metadata.update(
+                {
+                    "next_action": None,
+                    "state_version": row.state_version,
+                    "formation_event_type": "cancel",
+                }
+            )
+            row.original_query = dumps(metadata)
+            return PlanCancelTransition(_plan_from_rows(row, steps), "cancelled")
 
     async def get_active_by_session(
         self, session_id: str, *, tenant_id: str, user_id: str
@@ -1014,6 +1098,100 @@ def _agent_event_from_row(row: AgentEventModel) -> AgentEvent:
         run_state_version=row.run_state_version,
         payload=loads(row.payload_text, {}),
         created_at=row.created_at,
+    )
+
+
+async def _lock_plan_row(
+    session: AsyncSession,
+    *,
+    plan_id: str,
+    tenant_id: str,
+    user_id: str,
+) -> PlanModel | None:
+    """Serialize Plan decisions on PostgreSQL and SQLite without a lock table."""
+    locked = await session.execute(
+        update(PlanModel)
+        .where(
+            PlanModel.plan_id == plan_id,
+            PlanModel.tenant_id == tenant_id,
+            PlanModel.user_id == user_id,
+        )
+        .values(updated_at=PlanModel.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+    if locked.rowcount != 1:
+        return None
+    return await session.scalar(
+        select(PlanModel).where(
+            PlanModel.plan_id == plan_id,
+            PlanModel.tenant_id == tenant_id,
+            PlanModel.user_id == user_id,
+        )
+    )
+
+
+async def _lock_active_delegated_run_for_plan(
+    session: AsyncSession,
+    *,
+    plan_id: str,
+    tenant_id: str,
+    user_id: str,
+) -> AgentRunModel | None:
+    return await session.scalar(
+        _active_delegated_run_for_plan_query(
+            plan_id=plan_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        ).with_for_update()
+    )
+
+
+def _active_delegated_run_for_plan_query(
+    *,
+    plan_id: str,
+    tenant_id: str,
+    user_id: str,
+):
+    return (
+        select(AgentRunModel)
+        .where(
+            AgentRunModel.plan_id == plan_id,
+            AgentRunModel.tenant_id == tenant_id,
+            AgentRunModel.user_id == user_id,
+            AgentRunModel.delegated.is_(True),
+            AgentRunModel.status.in_(["pending", "running", "blocked"]),
+        )
+        .order_by(AgentRunModel.created_at, AgentRunModel.run_id)
+        .limit(1)
+    )
+
+
+def _plan_from_rows(row: PlanModel, steps: list[PlanStepModel]) -> Plan:
+    metadata = loads(row.original_query, {})
+    return Plan(
+        plan_id=row.plan_id,
+        user_id=row.user_id,
+        tenant_id=row.tenant_id,
+        session_id=row.session_id,
+        status=row.status,
+        current_step_id=row.current_step_id,
+        execution_policy=metadata.get("execution_policy"),
+        next_action=metadata.get("next_action"),
+        last_event_id=metadata.get("last_event_id"),
+        state_version=row.state_version,
+        updated_at=_as_utc(row.updated_at),
+        formation_event_type=metadata.get("formation_event_type", "update"),
+        steps=[
+            PlanStep(
+                step_id=step.step_id,
+                agent_id=step.agent_id,
+                status=step.status,
+                description=step.description,
+                depends_on=loads(step.depends_on_text, []),
+                artifact_refs=loads(step.artifact_refs_text, []),
+            )
+            for step in steps
+        ],
     )
 
 

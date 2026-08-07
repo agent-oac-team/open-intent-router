@@ -63,7 +63,8 @@ _避免_：事实源、Canonical Data
 ### 身份与权限
 
 **Principal（主体）**：
-一次受信请求中被认证的用户或服务身份。
+一次受信请求中由同一身份权威认证的用户或服务身份，包含建立所有权与授权所需的受信声明；
+请求自报的身份或权限不构成 Principal。
 _避免_：未经验证的 body user、Session
 
 **Tenant（租户）**：
@@ -71,12 +72,22 @@ _避免_：未经验证的 body user、Session
 _避免_：Group、Role、Host App
 
 **User Context（用户上下文）**：
-OIR 用于路由和执行授权的规范化用户身份与权限投影。
+OIR 从 Principal 派生、用于路由和执行授权的规范化身份与权限投影；任何影响授权的字段
+都只能源自 Principal。
 _避免_：聊天上下文、前端任意 metadata
 
 **Entitlement（授权能力）**：
 Principal 被明确授予的一项稳定能力，用于判断其能否访问某个 Agent 或操作。
 _避免_：Role、Group、页面标签
+
+**Canonical Ownership（规范所有权）**：
+Canonical Data 对确定 Tenant 与 Principal 的归属关系，是 Native 资源读取和变更的默认
+访问边界；同租户身份或管理员身份本身不产生隐式旁路权限。
+_避免_：Execution Ownership、请求自报 owner、隐式租户共享
+
+**Native Principal Envelope（原生主体信封）**：
+Native Contract 用于传递完整、可验证且宿主无关的 Principal 声明的受信信封。
+_避免_：OIR-HOST-V2、请求体 user、身份供应商 Token
 
 ### 路由与编排
 
@@ -97,7 +108,8 @@ _避免_：Agent 实例、Agent Run、业务配置杂项
 _避免_：Agent 执行器、候选集、页面菜单
 
 **Candidate Set（候选集）**：
-对当前 Principal 可用、且允许进入本次路由判断的 Agent 子集。
+对当前 Principal 可用、且允许进入本次请求的路由或直接调用选择过程的 Agent 子集；
+后续决策和调用只能消费这次筛选的结果，且该结果不能跨受信请求复用。
 _避免_：完整 Registry、模型自行猜测的 Agent 列表
 
 **Route Decision（路由决策）**：
@@ -109,7 +121,7 @@ _避免_：Agent Result、Plan 执行结果
 _避免_：Route Decision、Agent Result、Canonical Turn
 
 **Invocation（调用）**：
-要求一个确定 Agent 执行一次能力的动作。
+要求一个已通过当前请求 Candidate Set 筛选的确定 Agent 执行一次能力的动作。
 _避免_：Route Decision、Plan、Agent Run
 
 **UI Handoff（界面交接）**：
@@ -133,11 +145,13 @@ _避免_：复用终态 Agent Run、运行中追加指令、UI Handoff
 _避免_：OIR Plan、任意多轮对话
 
 **Plan（计划）**：
-OIR 对多步骤任务的结构化主契约，包含步骤、依赖、状态和推进责任。
+OIR 对多步骤任务的结构化主契约，包含步骤、依赖、状态和推进责任；Plan 由依赖关系而非
+步骤排列顺序推进，只有全部 Plan Step 完成才表示 Plan 完成；多个 Plan Step 同时可执行
+时，排列顺序只用于确定性择优。
 _避免_：Workflow、Route Decision、`show_plan` 动作
 
 **Plan Step（计划步骤）**：
-Plan 中具有稳定身份、依赖关系和执行状态的一个工作单元。
+Plan 中具有稳定身份、依赖关系和执行状态的一个工作单元；只有其依赖均完成后才可执行。
 _避免_：Agent Run、聊天消息
 
 **Execution Policy（执行策略）**：
@@ -175,8 +189,33 @@ Agent Run 产生的结构化结果与终态说明。
 _避免_：Assistant Message、Artifact、Route Decision
 
 **Agent Event（Agent 事件）**：
-关于 Agent Run 进度、完成、失败、澄清或取消的受信状态事实。
+由拥有执行权的参与方提交并被 OIR 接受的 Agent Run 进度、完成、失败、澄清或取消状态事实。
 _避免_：用户消息、重复执行命令、Route Decision
+
+**Execution Control（执行控制）**：
+请求拥有执行权的参与方改变活动 Agent Run 后续行为的受治理意图；它表达期望变化，
+不证明变化已经发生。
+_避免_：Agent Event、Agent Result、终态事实
+
+**Cancel Pending（取消待确认）**：
+Agent Run 的取消请求已被执行参与方接受、但其尚未确认停止的非终态；仅由 OIR 接收
+用户请求不足以进入该状态。
+_避免_：Cancelled、取消失败、Timed Out
+
+**Control Unsupported（控制不支持）**：
+活动 Agent Run 没有可信通道或能力执行某项 Execution Control 的拒绝结果；它不改变
+运行事实，Agent Run 继续执行。
+_避免_：Cancel Pending、Cancelled、控制发送失败
+
+**Execution Deadline（执行截止时间）**：
+OIR 等待 Agent Run 权威终态的最晚时点；超过该时点仍无终态事实时，运行可确定性地
+收敛为 Timed Out。
+_避免_：Heartbeat、客户端超时、重试间隔
+
+**Heartbeat（心跳）**：
+执行参与方仍在活动的非终态信号；心跳陈旧可触发观察与排查，但不提前取代 Execution
+Deadline 或产生终态。
+_避免_：Execution Deadline、完成证明、自动重试指令
 
 **Execution Trace（执行轨迹）**：
 将同一 Canonical Turn 涉及的 Context、Route Decision、Agent Run、UI Handoff、Agent Result 和 Memory 等运行事实按关联关系组织成的有界观察投影；它不取代这些事实各自的权威状态。
@@ -207,7 +246,8 @@ _避免_：React 组件生命周期、SSE 订阅、当前可见页面
 _避免_：普通 UI Handoff、失去治理的外部调用
 
 **Execution Ticket（执行票据）**：
-授权外部参与方更新一个特定 Delegated Run 的短期、不透明、最小权限凭证。
+授权外部执行参与方在限定期限与用途内更新一个特定 Delegated Run 的短期、不透明、
+最小权限凭证，是外部 Agent Event 写入权威的证明。
 _避免_：用户身份 Token、通用 API Key、Run ID
 
 **Artifact（产物）**：

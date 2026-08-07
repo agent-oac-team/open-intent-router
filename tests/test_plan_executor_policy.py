@@ -1,6 +1,9 @@
+from app.api.router import route_and_execute
 from app.schemas.agents import AgentDefinition
+from app.schemas.common import UserContext
 from app.schemas.plans import Plan
-from app.schemas.routing import RouteDecision, RouteResponse
+from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
+from app.schemas.security import NativePrincipal
 from app.services.invocation_service import InvocationService, build_default_invoker_registry
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
@@ -69,6 +72,92 @@ async def test_plan_executor_confirmed_plan_invokes_steps_in_dependency_order(
         len(await repositories["results"].list_recent("s1", tenant_id="t1", user_id="u1", limit=10))
         == 2
     )
+
+
+async def test_route_and_execute_uses_route_selected_definitions_without_registry_refetch(
+    settings,
+    registry_service,
+    repositories,
+) -> None:
+    user = UserContext(
+        id="u1",
+        roles=["operator"],
+        attributes={"tenant_id": "t1"},
+    )
+    selected = await registry_service.available_definitions(user)
+    plan = Plan.model_validate(
+        {
+            "plan_id": "candidate-set-plan",
+            "user_id": "u1",
+            "tenant_id": "t1",
+            "session_id": "candidate-set-session",
+            "status": "running",
+            "steps": [
+                {
+                    "step_id": "candidate-set-step",
+                    "agent_id": "summarizer",
+                    "description": "summarize",
+                }
+            ],
+        }
+    )
+    await repositories["plans"].save(plan)
+    routed = RouteResponse(
+        request_id="candidate-set-request",
+        session_id=plan.session_id,
+        decision=RouteDecision(action="show_plan", message="execute"),
+        context=RouteContext(candidate_agent_ids=[item.agent_id for item in selected]),
+        execution_policy="auto_execute",
+        plan=plan,
+    ).bind_selected_definitions(selected)
+
+    class FixedRouter:
+        async def route(self, _request):
+            return routed
+
+    class NoRegistryReads:
+        async def available_definitions(self, _user):
+            raise AssertionError("Route-and-Execute repeated Candidate Set selection")
+
+        async def get_definition(self, agent_id):
+            raise AssertionError(f"Route-and-Execute re-read {agent_id}")
+
+    registry = NoRegistryReads()
+    invocation = InvocationService(
+        registry=registry,
+        run_repository=repositories["runs"],
+        result_repository=repositories["results"],
+        invokers=build_default_invoker_registry(settings),
+    )
+    executor = PlanExecutor(
+        plan_service=PlanService(repositories["plans"]),
+        registry=registry,
+        invocation_service=invocation,
+    )
+
+    response = await route_and_execute(
+        RouteRequest.model_validate(
+            {
+                "request_id": "candidate-set-request",
+                "session_id": plan.session_id,
+                "user": user.model_dump(mode="json"),
+                "input": {"text": "summarize this text"},
+            }
+        ),
+        principal=NativePrincipal(
+            claims_version="oir-principal-v1",
+            subject="u1",
+            tenant="t1",
+            roles=["operator"],
+        ),
+        router_service=FixedRouter(),
+        invocation_service=invocation,
+        plan_executor=executor,
+    )
+
+    assert response.route.plan is not None
+    assert response.route.plan.status == "completed"
+    assert [item["agent_id"] for item in response.results] == ["summarizer"]
 
 
 async def test_return_plan_only_policy_does_not_invoke_until_executor_called(

@@ -620,7 +620,11 @@ async def test_public_invoke_consumes_controlled_handle_before_invoker(
     )
     handle = await service.issue_controlled_knowledge_context_handle(
         agent_id=agent.agent_id,
-        user=UserContext(id="user-1", attributes={"tenant_id": "tenant-1"}),
+        user=UserContext(
+            id="user-1",
+            roles=["operator"],
+            attributes={"tenant_id": "tenant-1"},
+        ),
         variables={"input": {"text": "refund policy"}},
         trace_id="execution-trace",
     )
@@ -629,7 +633,11 @@ async def test_public_invoke_consumes_controlled_handle_before_invoker(
         InvokeRequest(
             session_id="session-1",
             agent_id=agent.agent_id,
-            user=UserContext(id="user-1", attributes={"tenant_id": "tenant-1"}),
+            user=UserContext(
+                id="user-1",
+                roles=["operator"],
+                attributes={"tenant_id": "tenant-1"},
+            ),
             input={"text": "refund policy"},
             knowledge_context_handle=handle,
             knowledge_context_trace_id="execution-trace",

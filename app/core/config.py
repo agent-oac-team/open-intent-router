@@ -71,7 +71,12 @@ class Settings(BaseSettings):
     allow_local_auto_execute_plans: bool = False
     admin_api_token: str | None = Field(default=None)
     admin_actor_id: str = Field(default="admin", min_length=1, max_length=128)
+    native_principal_secret: str | None = Field(default=None, repr=False)
     memory_identity_secret: str | None = Field(default=None)
+    execution_ticket_secret: str | None = Field(default=None, repr=False)
+    execution_ticket_lease_seconds: int = Field(default=30, ge=5, le=300)
+    delegated_run_timeout_interval_seconds: float = Field(default=1.0, gt=0)
+    delegated_run_timeout_batch_size: int = Field(default=100, ge=1, le=1000)
 
     router_max_host_history_messages: int = 20
     router_max_agent_history_messages: int = 12

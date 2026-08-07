@@ -1,8 +1,8 @@
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import AgentDefinition, CandidateAgent
 from app.schemas.common import (
     ArtifactRef,
     ContextRelation,
@@ -100,6 +100,8 @@ class InvocationPreview(StrictBaseModel):
 
 
 class RouteResponse(StrictBaseModel):
+    _selected_definitions: dict[str, AgentDefinition] = PrivateAttr(default_factory=dict)
+
     request_id: str
     session_id: str
     assistant_message: str | None = None
@@ -110,6 +112,20 @@ class RouteResponse(StrictBaseModel):
     plan: Plan | None = None
     invocation: InvocationPreview | None = None
     error: ErrorDetail | None = None
+
+    def bind_selected_definitions(
+        self, definitions: list[AgentDefinition] | dict[str, AgentDefinition]
+    ) -> "RouteResponse":
+        values = definitions.values() if isinstance(definitions, dict) else definitions
+        self._selected_definitions = {item.agent_id: item for item in values}
+        return self
+
+    @property
+    def selected_definitions(self) -> dict[str, AgentDefinition]:
+        return dict(self._selected_definitions)
+
+    def selected_definition(self, agent_id: str) -> AgentDefinition | None:
+        return self._selected_definitions.get(agent_id)
 
     @model_validator(mode="before")
     @classmethod

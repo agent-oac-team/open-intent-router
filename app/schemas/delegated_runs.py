@@ -1,9 +1,12 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.schemas.common import JsonDict, StrictBaseModel
+
+DELEGATED_RUN_MAINTENANCE_EVENT_PREFIX = "event_timeout_"
 
 
 class DelegatedRunStatus(StrEnum):
@@ -48,9 +51,17 @@ class DelegatedRunEventCommand(StrictBaseModel):
 
 
 class DelegatedRunProgressCommand(DelegatedRunEventCommand):
+    event_type: Literal["agent_started", "agent_progress", "agent_clarify"] = "agent_progress"
     sequence: int = Field(ge=1)
     status: str = Field(default="running", pattern=r"^(running|blocked)$")
     payload: JsonDict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_event_status(self) -> "DelegatedRunProgressCommand":
+        expected = "blocked" if self.event_type == "agent_clarify" else "running"
+        if self.status != expected:
+            raise ValueError(f"status={self.status} conflicts with event_type={self.event_type}")
+        return self
 
 
 class DelegatedRunCompleteCommand(DelegatedRunEventCommand):
@@ -97,6 +108,12 @@ class DelegatedRunCommandResult(StrictBaseModel):
 class DelegatedRunOrphanQuery(StrictBaseModel):
     now: datetime
     stale_before: datetime
+    tenant_id: str | None = Field(default=None, max_length=128)
+    limit: int = Field(default=100, ge=1, le=1000)
+
+
+class DelegatedRunOverdueQuery(StrictBaseModel):
+    now: datetime
     tenant_id: str | None = Field(default=None, max_length=128)
     limit: int = Field(default=100, ge=1, le=1000)
 

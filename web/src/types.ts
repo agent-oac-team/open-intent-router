@@ -148,6 +148,7 @@ export type UserContext = {
   id: string;
   roles: string[];
   groups: string[];
+  entitlements?: string[];
   attributes: JsonRecord;
 };
 

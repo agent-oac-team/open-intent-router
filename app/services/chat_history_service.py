@@ -36,6 +36,24 @@ class ChatHistoryService:
             )
         )
 
+    async def append_owned_message(
+        self,
+        *,
+        session_id: str,
+        payload: AppendChatMessageRequest,
+        tenant_id: str,
+        user_id: str,
+    ) -> ChatMessage:
+        if payload.user_id not in {None, user_id} or payload.tenant_id not in {
+            None,
+            tenant_id,
+        }:
+            raise ValueError("Session message owner does not match Principal")
+        return await self.append_message(
+            session_id=session_id,
+            payload=payload.model_copy(update={"tenant_id": tenant_id, "user_id": user_id}),
+        )
+
     async def record_user_input(
         self,
         *,

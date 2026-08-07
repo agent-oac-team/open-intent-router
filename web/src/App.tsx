@@ -3849,6 +3849,7 @@ function formToAgent(form: FormState): AgentDefinition {
 function defaultEventJson(): string {
   return JSON.stringify(
     {
+      execution_ticket: "",
       event_id: "event_demo_001",
       session_id: "demo_session",
       agent_id: "script_writer",

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.core.errors import LLMError
 from app.repositories.execution_tickets import MemoryExecutionTicketStore
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
+from app.schemas.agents import AgentDefinition, InvocationSpec
 from app.schemas.delegated_runs import (
     DelegatedRunCommandResult,
     DelegatedRunReference,
@@ -242,6 +243,24 @@ class EventPort:
         return AgentEventResponse(event_id=event.event_id)
 
 
+class RegistryPort:
+    def __init__(self) -> None:
+        self.definitions = [
+            AgentDefinition(
+                agent_id="agent-1",
+                name="Agent 1",
+                description="Test Agent",
+                type="provider_platform",
+                invocation=InvocationSpec(type="provider_platform"),
+            )
+        ]
+        self.available_users = []
+
+    async def available_definitions(self, user):
+        self.available_users.append(user)
+        return list(self.definitions)
+
+
 class PlanPort:
     def __init__(self) -> None:
         self.confirm_request_id = None
@@ -301,7 +320,7 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
     events = EventPort()
     ports = OacAdapterApplicationPorts(
         routing=RoutingPort(action),
-        registry=SimpleNamespace(),
+        registry=RegistryPort(),
         events=events,
         plans=PlanPort(),
         delegated_runs=delegated,
@@ -837,6 +856,26 @@ def test_navigation_and_plan_confirm_keep_legacy_status_and_shape() -> None:
     assert active.status_code == 200
     assert active.json()["plan"]["status"] == "running"
     assert active.json()["plan"]["state_version"] == confirm.json()["state_version"]
+
+
+def test_plan_confirm_rejects_an_unavailable_agent_before_state_change() -> None:
+    client, _, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    ports.registry.definitions = []
+
+    response = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-1", "expected_state_version": 0},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "agent_not_available"
+    assert ports.plans.confirm_request_id is None
+    assert ports.plans.plan.status == "pending"
+    assert ports.plans.plan.state_version == 0
+    assert len(ports.registry.available_users) == 1
+    assert ports.registry.available_users[0].id == "trusted-user"
+    assert ports.registry.available_users[0].tenant_id == "oac"
 
 
 def test_active_plan_does_not_disclose_another_users_plan() -> None:

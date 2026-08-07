@@ -14,6 +14,7 @@ from app.schemas.memory import MemoryItem
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
 from app.services.chat_history_service import ChatHistoryService
 from app.services.memory_service import MemoryService
+from tests.fakes.native_principal import native_principal_headers
 
 
 def test_health_endpoint() -> None:
@@ -32,6 +33,9 @@ def test_append_session_message_endpoint_stores_agent_reply() -> None:
 
     response = client.post(
         "/api/v1/sessions/s1/messages",
+        headers=native_principal_headers(
+            secret="", subject="local-user", tenant="local-tenant", signed=False
+        ),
         json={
             "source": "agent_chat",
             "role": "agent",
@@ -62,6 +66,9 @@ def test_append_session_message_endpoint_validates_agent_chat_agent_id() -> None
 
     response = client.post(
         "/api/v1/sessions/s1/messages",
+        headers=native_principal_headers(
+            secret="", subject="local-user", tenant="local-tenant", signed=False
+        ),
         json={"source": "agent_chat", "role": "agent", "content": "child reply"},
     )
 
@@ -94,9 +101,9 @@ def test_route_endpoint_preserves_response_contract_shape() -> None:
             "request_id": "req_contract",
             "session_id": "s1",
             "user": {
-                "id": "forged-user",
+                "id": "trusted-user",
                 "roles": ["operator"],
-                "attributes": {"tenant_id": "forged-tenant"},
+                "attributes": {"tenant_id": "trusted-tenant"},
             },
             "input": {"text": "summarize this text"},
         },
@@ -124,6 +131,7 @@ def test_route_endpoint_preserves_response_contract_shape() -> None:
     assert body["invocation"]["agent_id"] == "summarizer"
     assert service.last_payload.user.id == "trusted-user"
     assert service.last_payload.user.tenant_id == "trusted-tenant"
+    assert service.last_payload.user.roles == []
 
     unsigned = client.post(
         "/api/v1/route",

@@ -61,6 +61,11 @@ class InvocationError(AppError):
     code = "invocation_error"
 
 
+class AgentUnavailableError(AppError):
+    status_code = 404
+    code = "agent_not_available"
+
+
 class StorageError(AppError):
     status_code = 503
     code = "storage_error"

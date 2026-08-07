@@ -1,9 +1,7 @@
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
-from app.api.events import agent_event
 from app.core.config import Settings
 from app.db.session import create_all_tables, create_session_factory
 from app.plugins.evidence import (
@@ -27,6 +25,7 @@ from app.schemas.common import UserContext
 from app.schemas.events import AgentEvent
 from app.schemas.logs import AgentRun
 from app.schemas.plans import Plan
+from app.services.agent_event_service import AgentEventRejected, record_trusted_agent_event
 from app.services.event_service import EventService
 from app.services.memory_integration import StructuredFormationPublisher
 from app.services.plan_service import PlanService
@@ -137,7 +136,7 @@ async def test_duplicate_event_replays_plan_projection_after_first_publish_failu
         event_type="agent_result",
     )
 
-    first = await agent_event(
+    first = await record_trusted_agent_event(
         payload,
         event_service=EventService(events),
         plan_service=service,
@@ -147,7 +146,7 @@ async def test_duplicate_event_replays_plan_projection_after_first_publish_failu
     stored = await service.get_plan("p_retry", tenant_id="t1", user_id="u1")
     assert stored and stored.status == "completed" and stored.last_event_id == "event_retry"
 
-    retry = await agent_event(
+    retry = await record_trusted_agent_event(
         payload,
         event_service=EventService(events),
         plan_service=service,
@@ -195,17 +194,17 @@ async def test_invalid_agent_event_status_is_rejected_before_durable_record() ->
         status="completed",
     )
 
-    with pytest.raises(HTTPException) as error:
-        await agent_event(
+    with pytest.raises(AgentEventRejected) as error:
+        await record_trusted_agent_event(
             invalid,
             event_service=EventService(events),
             plan_service=service,
             run_repository=runs,
         )
-    assert error.value.status_code == 422
+    assert error.value.category == "invalid"
     assert await events.get_event("event_invalid_status", tenant_id="t1", user_id="u1") is None
 
-    valid = await agent_event(
+    valid = await record_trusted_agent_event(
         invalid.model_copy(update={"status": "running"}),
         event_service=EventService(events),
         plan_service=service,
@@ -340,14 +339,14 @@ async def test_plan_event_missing_owner_is_rejected_before_idempotency_record() 
         step_id="s1",
         event_type="agent_result",
     )
-    with pytest.raises(HTTPException) as error:
-        await agent_event(
+    with pytest.raises(AgentEventRejected) as error:
+        await record_trusted_agent_event(
             payload,
             event_service=EventService(events),
             plan_service=PlanService(MemoryPlanRepository()),
             run_repository=MemoryRunRepository(),
         )
-    assert error.value.status_code == 422
+    assert error.value.category == "invalid"
     assert await events.get_event(payload.event_id, tenant_id=None, user_id=None) is None
 
 
@@ -387,17 +386,17 @@ async def test_plan_event_uses_stored_run_owner_and_invalid_retry_does_not_poiso
         step_id="step_1",
         event_type="agent_result",
     )
-    with pytest.raises(HTTPException) as error:
-        await agent_event(
+    with pytest.raises(AgentEventRejected) as error:
+        await record_trusted_agent_event(
             invalid,
             event_service=EventService(events),
             plan_service=plan_service,
             run_repository=runs,
         )
-    assert error.value.status_code == 404
+    assert error.value.category == "not_found"
     assert await events.get_event(invalid.event_id, tenant_id=None, user_id=None) is None
 
-    response = await agent_event(
+    response = await record_trusted_agent_event(
         invalid.model_copy(update={"session_id": "s1"}),
         event_service=EventService(events),
         plan_service=plan_service,
@@ -440,7 +439,7 @@ async def test_private_run_agent_event_suppresses_plan_projection_atomically() -
             formation_suppressed=True,
         )
     )
-    response = await agent_event(
+    response = await record_trusted_agent_event(
         AgentEvent(
             event_id="private_agent_result",
             run_id="private_event_run",
@@ -497,14 +496,14 @@ async def test_plan_event_rejects_run_with_different_stored_owner() -> None:
         step_id="step_1",
         event_type="agent_result",
     )
-    with pytest.raises(HTTPException) as error:
-        await agent_event(
+    with pytest.raises(AgentEventRejected) as error:
+        await record_trusted_agent_event(
             payload,
             event_service=EventService(events),
             plan_service=plan_service,
             run_repository=runs,
         )
-    assert error.value.status_code == 404
+    assert error.value.category == "not_found"
     assert await events.get_event(payload.event_id, tenant_id=None, user_id=None) is None
 
 
@@ -548,7 +547,7 @@ async def test_database_plan_event_round_trips_trusted_run_owner(tmp_path) -> No
     assert stored_run.user_id == "u1"
     assert stored_run.tenant_id == "t1"
     assert stored_run.input == {"_oir_execution": {"user_id": "forged"}}
-    response = await agent_event(
+    response = await record_trusted_agent_event(
         AgentEvent(
             event_id="database-event",
             run_id="run_1",

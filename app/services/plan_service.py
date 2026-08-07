@@ -15,10 +15,12 @@ class PlanService:
         self,
         repository,
         *,
+        run_repository=None,
         structured_formation=None,
         runtime_policy: MemoryRuntimePolicy | None = None,
     ) -> None:
         self.repository = repository
+        self.run_repository = run_repository
         self.structured_formation = structured_formation
         self.runtime_policy = runtime_policy or build_memory_runtime_policy(
             "on" if structured_formation is not None else "off",
@@ -297,38 +299,51 @@ class PlanService:
         user_id: str,
         publish: bool = True,
     ) -> PlanActionResponse:
-        plan = await self.get_plan(plan_id, tenant_id=tenant_id, user_id=user_id)
-        if plan is None:
+        now = datetime.now(UTC)
+        transition = await self.repository.cancel_unstarted(
+            plan_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            run_repository=self.run_repository,
+            now=now,
+            formation_suppressed=(not publish or not self.automatic_formation_enabled),
+        )
+        if transition is None:
             raise ValueError("Plan not found")
-        if plan.status == "cancelled":
+        plan = transition.plan
+        if transition.outcome == "already_cancelled":
             return PlanActionResponse(
                 plan_id=plan_id,
                 status="cancelled",
                 current_step_id=None,
                 state_version=plan.state_version,
             )
-        if plan.status in {"completed", "failed"}:
+        if transition.outcome == "terminal_conflict":
             raise ValueError(f"Plan cannot be cancelled from status={plan.status}")
-        updated_steps = [
-            step.model_copy(update={"status": "cancelled"})
-            if step.status in {"pending", "running", "blocked"}
-            else step
-            for step in plan.steps
-        ]
-        updated = plan.model_copy(
-            update={
-                "status": "cancelled",
-                "steps": updated_steps,
-                "current_step_id": None,
-                "next_action": None,
-            }
-        )
-        stored = await self.save_plan(updated, event_type="cancel", publish=publish)
+        if transition.outcome == "control_unsupported":
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status=plan.status,
+                current_step_id=plan.current_step_id,
+                next_action=plan.next_action,
+                state_version=plan.state_version,
+                accepted=False,
+                transitioned=False,
+                reason_code="control_unsupported",
+            )
+        if publish:
+            await self._publish(
+                plan,
+                event_type="cancel",
+                event_id=None,
+                occurred_at=now,
+            )
         return PlanActionResponse(
             plan_id=plan_id,
             status="cancelled",
             current_step_id=None,
-            state_version=stored.state_version,
+            state_version=plan.state_version,
+            transitioned=True,
         )
 
     async def apply_agent_event(

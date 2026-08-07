@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
+from app.core.errors import AgentUnavailableError
 from app.core.memory_runtime import build_memory_runtime_policy
 from app.db.session import create_all_tables, create_session_factory
 from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
@@ -93,6 +94,14 @@ def _settings(**updates) -> Settings:
         "knowledge_enabled": False,
     }
     return Settings(**{**values, **updates})
+
+
+def _operator_user() -> dict:
+    return {
+        "id": "u1",
+        "roles": ["operator"],
+        "attributes": {"tenant_id": "t1"},
+    }
 
 
 def _plan(**updates) -> Plan:
@@ -828,7 +837,7 @@ class FailFirstRunCreateSink(CapturingStructuredSink):
         raise RuntimeError("formation store down")
 
 
-async def test_plan_service_publishes_create_confirm_agent_update_and_cancel() -> None:
+async def test_plan_service_publishes_updates_and_rejects_running_cancel() -> None:
     sink = CapturingStructuredSink()
     service = PlanService(MemoryPlanRepository(), structured_formation=sink)
     plan = _plan()
@@ -850,14 +859,16 @@ async def test_plan_service_publishes_create_confirm_agent_update_and_cancel() -
         tenant_id="t1",
         user_id="u1",
     )
-    await service.cancel(plan.plan_id, tenant_id="t1", user_id="u1")
+    cancellation = await service.cancel(plan.plan_id, tenant_id="t1", user_id="u1")
 
     assert [event[0] for event in sink.plan_events] == [
         "create",
         "confirm",
         "update",
-        "cancel",
     ]
+    assert not cancellation.accepted
+    assert not cancellation.transitioned
+    assert cancellation.reason_code == "control_unsupported"
     assert sink.plan_events[2][2]["event_id"] == "event_agent_running"
     assert sink.plan_events[2][2]["source_version"] == "event_agent_running"
 
@@ -901,7 +912,7 @@ async def test_marker_failures_do_not_escape_completed_plan_or_invocation(
             request_id="marker_failure",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "still return success"},
         )
     )
@@ -928,7 +939,7 @@ async def test_terminal_run_retries_missing_create_transition_before_completion(
             request_id="run_transition_retry",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "run"},
         )
     )
@@ -1098,7 +1109,7 @@ async def test_invocation_captures_after_run_result_and_capture_failure_keeps_su
             request_id="request_capture",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "summarize this"},
         )
     )
@@ -1140,7 +1151,7 @@ async def test_database_reconciler_recovers_plan_run_result_and_turn_after_resta
             request_id="request_reconcile",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "recover durable formation"},
         )
     )
@@ -1224,6 +1235,8 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
             input={"text": "direct invocation"},
         )
     )
+    selected_definition = await registry_service.get_definition("summarizer")
+    assert selected_definition is not None
     routed = await service.invoke_from_route(
         RouteRequest.model_validate(
             {
@@ -1246,7 +1259,7 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
                 agent_id="summarizer",
                 input={"text": "route invocation"},
             ),
-        ),
+        ).bind_selected_definitions([selected_definition]),
     )
 
     assert direct.status == "completed"
@@ -1296,7 +1309,7 @@ async def test_failed_invocation_is_captured_but_does_not_create_long_term_memor
             request_id="request_failed",
             session_id="failed_session",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "do not infer from the error"},
         )
     )
@@ -1349,6 +1362,8 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
 
     assert await service.invoke_from_route(request, route_only) is None
 
+    selected_definition = await registry_service.get_definition("summarizer")
+    assert selected_definition is not None
     with_invocation = route_only.model_copy(
         update={
             "decision": RouteDecision(
@@ -1361,7 +1376,7 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
                 input={"text": "now complete"},
             ),
         }
-    )
+    ).bind_selected_definitions([selected_definition])
     result = await service.invoke_from_route(request, with_invocation)
     assert result is not None and result.status == "completed"
     assert formation.turns == {}
@@ -1395,7 +1410,7 @@ async def test_production_off_records_are_not_backfilled_after_enable(
             request_id="request_created_off",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "do not backfill"},
         )
     )
@@ -1451,7 +1466,7 @@ async def test_private_skip_trace_is_reconciled_without_structured_jobs(
             request_id="private_skip_retry",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "private"},
             context={"memory_policy": {"mode": "private"}},
         )
@@ -1525,7 +1540,7 @@ async def test_private_skip_event_is_idempotent_when_marker_fails(
             request_id=f"private_marker_{backend}",
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "private"},
             context={"memory_policy": {"mode": "private"}},
         )
@@ -1570,7 +1585,7 @@ async def test_private_plan_claim_suppression_is_atomic() -> None:
     assert await repository.list_formation_pending() == []
 
 
-async def test_private_plan_executor_non_invocation_transitions_are_suppressed() -> None:
+async def test_private_plan_executor_unavailable_preflight_has_no_transition() -> None:
     settings = _settings()
     formation = MemoryFormationTurnJobRepository()
     publisher = StructuredFormationPublisher(settings=settings, repository=formation)
@@ -1580,8 +1595,8 @@ async def test_private_plan_executor_non_invocation_transitions_are_suppressed()
     initial_jobs = len(formation.jobs)
 
     class MissingRegistry:
-        async def get_definition(self, agent_id):
-            return None
+        async def available_definitions(self, user):
+            return []
 
     class InvocationStub:
         invokers = AvailableInvokers()
@@ -1591,12 +1606,14 @@ async def test_private_plan_executor_non_invocation_transitions_are_suppressed()
         registry=MissingRegistry(),
         invocation_service=InvocationStub(),
     )
-    response = await executor.execute(
-        "private_missing_agent",
-        user={"id": "u1", "attributes": {"tenant_id": "t1"}},
-        context={"memory_policy": {"mode": "private"}},
-    )
-    assert response.plan.status == "blocked"
+    with pytest.raises(AgentUnavailableError):
+        await executor.execute(
+            "private_missing_agent",
+            user=_operator_user(),
+            context={"memory_policy": {"mode": "private"}},
+        )
+    stored = await service.get_plan("private_missing_agent", tenant_id="t1", user_id="u1")
+    assert stored is not None and stored.status == "pending"
     assert len(formation.jobs) == initial_jobs
     assert await repository.list_formation_pending() == []
 
@@ -1647,7 +1664,7 @@ async def test_plan_executor_reloads_canonical_plan_before_persisting_step_resul
 
     response = await executor.execute(
         plan.plan_id,
-        user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+        user=_operator_user(),
         input_values={"text": "continue"},
     )
 
@@ -1777,7 +1794,7 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         InvokeRequest(
             session_id="new_session",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "brand new task"},
         )
     )
@@ -1788,7 +1805,7 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         InvokeRequest(
             session_id="s_static",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={
                 "text": "continue",
                 "memory_context": {
@@ -1821,7 +1838,7 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         InvokeRequest(
             session_id="s1",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "continue"},
             context={"plan_id": "plan_agent"},
         )
@@ -1888,7 +1905,7 @@ async def test_concurrent_plan_execution_claims_step_once(registry_service) -> N
             plan_service=plan_service,
         ),
     )
-    user = {"id": "u1", "attributes": {"tenant_id": "t1"}}
+    user = _operator_user()
 
     first = asyncio.create_task(
         executor.execute(_plan().plan_id, user=user, input_values={"text": "run"})
@@ -1927,7 +1944,7 @@ async def test_plan_claim_heartbeat_prevents_reclaim_during_long_agent_call(
             plan_claim_lease_seconds=0.06,
         ),
     )
-    user = {"id": "u1", "attributes": {"tenant_id": "t1"}}
+    user = _operator_user()
     first = asyncio.create_task(
         executor.execute(_plan().plan_id, user=user, input_values={"text": "run"})
     )
@@ -1979,7 +1996,7 @@ async def test_local_function_deduplicates_same_plan_execution_key(registry_serv
             run_id=run_id,
             session_id="s1",
             agent_id=definition.agent_id,
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "run"},
             context={"plan_execution_idempotency_key": "plan_exec_same"},
         )
@@ -2021,7 +2038,7 @@ async def test_request_private_suppresses_structured_jobs_but_records_skip(
         InvokeRequest(
             session_id="private_session",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "private request"},
             context={"memory_policy": {"mode": "private"}},
         )
@@ -2048,7 +2065,7 @@ async def test_blocked_invocation_publishes_run_update_not_fail(registry_service
         InvokeRequest(
             session_id="blocked_session",
             agent_id="summarizer",
-            user={"id": "u1", "attributes": {"tenant_id": "t1"}},
+            user=_operator_user(),
             input={"text": "block"},
         )
     )

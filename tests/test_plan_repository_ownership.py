@@ -53,11 +53,11 @@ async def test_plan_http_contract_rejects_missing_or_cross_user_identity() -> No
             ),
         }
 
-    forged_body = {
+    owned_body = {
         "user": {
-            "id": "u2",
+            "id": "u1",
             "roles": ["operator"],
-            "attributes": {"tenant_id": "forged-tenant"},
+            "attributes": {"tenant_id": "t1"},
         },
         "input": {},
         "context": {},
@@ -79,28 +79,33 @@ async def test_plan_http_contract_rejects_missing_or_cross_user_identity() -> No
             headers=headers("u2"),
             json={
                 "action": "cancel",
-                "user": {"id": "u1", "attributes": {"tenant_id": "t1"}},
+                "user": {"id": "u2", "attributes": {"tenant_id": "t1"}},
             },
         )
         executed = client.post(
             "/api/v1/plans/plan_1/execute",
             headers=headers("u1"),
-            json=forged_body,
+            json=owned_body,
         )
         denied_execute = client.post(
             "/api/v1/plans/plan_1/execute",
             headers=headers("u2"),
-            json={**forged_body, "user": {"id": "u1", "attributes": {"tenant_id": "t1"}}},
+            json={**owned_body, "user": {"id": "u2", "attributes": {"tenant_id": "t1"}}},
         )
         resumed = client.post(
             "/api/v1/plans/plan_1/resume",
             headers=headers("u1"),
-            json=forged_body,
+            json=owned_body,
         )
         confirm_execute = client.post(
             "/api/v1/plans/plan_1/confirm-and-execute",
             headers=headers("u1"),
-            json=forged_body,
+            json=owned_body,
+        )
+        forged_owner = client.post(
+            "/api/v1/plans/plan_1/execute",
+            headers=headers("u1"),
+            json={**owned_body, "user": {"id": "u2", "attributes": {"tenant_id": "t1"}}},
         )
 
     assert owned.status_code == 200
@@ -109,6 +114,7 @@ async def test_plan_http_contract_rejects_missing_or_cross_user_identity() -> No
     assert denied_action.status_code == 404
     assert denied_execute.status_code == 404
     assert executed.status_code == resumed.status_code == confirm_execute.status_code == 200
+    assert forged_owner.status_code == 401
     assert executor.users and all(
         user.id == "u1" and user.tenant_id == "t1" for user in executor.users
     )
@@ -118,6 +124,16 @@ class _OwnedPlanExecutor:
     def __init__(self, service: PlanService) -> None:
         self.service = service
         self.users = []
+
+    async def preflight(self, plan_id: str, *, user):
+        plan = await self.service.get_plan(
+            plan_id,
+            tenant_id=user.tenant_id or "",
+            user_id=user.id,
+        )
+        if plan is None:
+            raise ValueError("Plan not found")
+        return {}
 
     async def execute(self, plan_id: str, *, user, **_) -> PlanExecutionResponse:
         plan = await self.service.get_plan(

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.security import bind_principal_user_context, require_native_principal
 from app.dependencies import get_registry_service
 from app.schemas.agents import (
     AgentListResponse,
@@ -7,6 +8,7 @@ from app.schemas.agents import (
     AvailableAgentsRequest,
     AvailableAgentsResponse,
 )
+from app.schemas.security import NativePrincipal
 from app.services.registry_service import AgentRegistryService
 
 router = APIRouter(prefix="/api/v1", tags=["agents"])
@@ -33,6 +35,7 @@ async def get_agent(
 @router.post("/agents/available", response_model=AvailableAgentsResponse)
 async def available_agents(
     payload: AvailableAgentsRequest,
+    principal: NativePrincipal = Depends(require_native_principal),
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> AvailableAgentsResponse:
-    return await registry.available_for_user(payload.user)
+    return await registry.available_for_user(bind_principal_user_context(payload.user, principal))

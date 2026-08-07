@@ -9,6 +9,7 @@ from app.schemas.delegated_runs import (
     DelegatedRunProgressCommand,
     DelegatedRunStartCommand,
 )
+from app.services.delegated_run_service import DelegatedRunService
 
 
 def test_delegated_run_start_requires_complete_owner_and_deadline() -> None:
@@ -65,3 +66,4 @@ def test_delegated_complete_requires_result_identity() -> None:
 
 def test_delegated_run_port_is_runtime_checkable() -> None:
     assert not isinstance(object(), DelegatedRunApplicationPort)
+    assert isinstance(DelegatedRunService(object()), DelegatedRunApplicationPort)

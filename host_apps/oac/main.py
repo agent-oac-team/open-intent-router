@@ -2,7 +2,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.core.memory_runtime import build_memory_runtime_policy
-from app.dependencies import configure_memory_runtime, get_memory_runtime_policy
+from app.dependencies import (
+    configure_execution_ticket_runtime,
+    configure_memory_runtime,
+    get_memory_runtime_policy,
+)
 from app.main import create_app as create_oir_app
 from host_adapters.oac.api import router as oac_adapter_router
 from host_adapters.oac.api.capabilities import build_capability_router
@@ -26,6 +30,14 @@ def create_app() -> FastAPI:
         ),
         database_url=profile.host.state_rehearsal_database_url,
         collection=profile.host.state_rehearsal_memory_collection,
+    )
+    host_ticket_secret = profile.host.execution_ticket_secret
+    configure_execution_ticket_runtime(
+        secret=(
+            host_ticket_secret.get_secret_value()
+            if host_ticket_secret is not None
+            else profile.core.execution_ticket_secret
+        )
     )
     ports = get_oac_adapter_application_ports()
     host_app = create_oir_app(api_prefix=profile.host.native_mount_prefix)

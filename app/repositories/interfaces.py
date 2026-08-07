@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
@@ -19,6 +20,17 @@ from app.schemas.plans import Plan
 from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.sessions import ChatMessage
 from app.schemas.turns import CanonicalTurn, FormationEligibilitySnapshot
+
+
+@dataclass(frozen=True)
+class PlanCancelTransition:
+    plan: Plan
+    outcome: Literal[
+        "cancelled",
+        "already_cancelled",
+        "control_unsupported",
+        "terminal_conflict",
+    ]
 
 
 class TurnRepository(Protocol):
@@ -93,6 +105,14 @@ class RunRepository(Protocol):
 
     async def get_run(self, run_id: str) -> AgentRun | None: ...
 
+    async def get_owned_run(
+        self, run_id: str, *, tenant_id: str, user_id: str
+    ) -> AgentRun | None: ...
+
+    async def get_active_delegated_run_for_plan(
+        self, plan_id: str, *, tenant_id: str, user_id: str
+    ) -> AgentRun | None: ...
+
     async def list_formation_pending(self, *, limit: int = 100) -> list[AgentRun]: ...
 
     async def mark_formation_published(self, run_id: str, *, source_order: int) -> None: ...
@@ -141,6 +161,17 @@ class PlanRepository(Protocol):
     ) -> Plan | None: ...
 
     async def get(self, plan_id: str, *, tenant_id: str, user_id: str) -> Plan | None: ...
+
+    async def cancel_unstarted(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        run_repository: RunRepository | None,
+        now: datetime,
+        formation_suppressed: bool = False,
+    ) -> PlanCancelTransition | None: ...
 
     async def get_active_by_session(
         self, session_id: str, *, tenant_id: str, user_id: str

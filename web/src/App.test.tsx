@@ -1195,8 +1195,10 @@ describe("意图路由测试台", () => {
       reason: "confirmed_in_conversation_console",
       expected_revision_id: "revision_1",
     });
-    expect(new Headers(confirmCall?.[1]?.headers).get("X-User-ID")).toBe("u1");
-    expect(new Headers(confirmCall?.[1]?.headers).get("X-Tenant-ID")).toBe("tenant_a");
+    const principalHeaders = new Headers(confirmCall?.[1]?.headers);
+    expect(principalHeaders.get("X-OIR-Principal-Envelope")).toBeTruthy();
+    expect(principalHeaders.get("X-User-ID")).toBeNull();
+    expect(principalHeaders.get("X-Tenant-ID")).toBeNull();
     await userEvent.click(within(inspector).getByRole("button", { name: "刷新 Memory Operation 状态" }));
     expect(await within(inspector).findByText("completed / completed")).toBeInTheDocument();
   });

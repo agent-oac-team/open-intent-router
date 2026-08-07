@@ -32,6 +32,11 @@ Adapter 只从受信 active Bundle 展开 `UserContext.entitlements`，不从 Bo
 
 外部 Agent handoff 前，OIR 创建 Canonical Turn 和 Delegated Run。Adapter 返回可选不透明 `execution_ticket`，绑定 run/turn/owner/agent/plan/step/purpose/expiry/nonce，只保存 hash。Ticket 不进入日志、Trace、Diff、Debug 或报告。旧客户端无 Ticket 时，只有受信关联键唯一命中才允许过渡。
 
+Ticket Store、签名配置和 Service 由 Core 统一组装，OAC Adapter 与 Native Event 共用同一实例。
+既有 `OAC_HOST_EXECUTION_TICKET_SECRET` 仍由 Host composition 投影给该 Core Service；OAC
+`OIR-HOST-V2`、Legacy body 中可选 `execution_ticket`、无 Ticket 的唯一关联迁移规则和冻结 fixture
+均不改变。Native Event 只接受 `X-OIR-Execution-Ticket`，不会复用 OAC Legacy body 投影。
+
 ## Governance
 
 - Central 中控调用失败时 fail closed，不代理、重试或回退到 IRS。

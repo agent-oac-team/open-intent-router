@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import ExecutionTicketModel
@@ -26,7 +26,26 @@ class ExecutionTicketStore(Protocol):
 
     async def get(self, ticket_hash: str) -> ExecutionTicketRecord | None: ...
 
-    async def update(self, record: ExecutionTicketRecord) -> ExecutionTicketRecord: ...
+    async def claim(
+        self,
+        ticket_hash: str,
+        *,
+        owner: str,
+        lease_token: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> ExecutionTicketRecord | None: ...
+
+    async def finalize_claim(
+        self,
+        record: ExecutionTicketRecord,
+        *,
+        owner: str,
+        lease_token: str,
+        now: datetime,
+    ) -> ExecutionTicketRecord | None: ...
+
+    async def expire(self, ticket_hash: str) -> ExecutionTicketRecord | None: ...
 
     async def find_active(
         self, query: LegacyExecutionCorrelationQuery
@@ -49,12 +68,63 @@ class MemoryExecutionTicketStore:
             record = self.records.get(ticket_hash)
             return record.model_copy(deep=True) if record else None
 
-    async def update(self, record: ExecutionTicketRecord) -> ExecutionTicketRecord:
+    async def claim(
+        self,
+        ticket_hash: str,
+        *,
+        owner: str,
+        lease_token: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> ExecutionTicketRecord | None:
         async with self._lock:
-            if record.ticket_hash not in self.records:
-                raise ExecutionTicketConflict("Execution Ticket not found")
+            record = self.records.get(ticket_hash)
+            if record is None or not _claimable(record, now):
+                return None
+            claimed = record.model_copy(
+                update={
+                    "status": ExecutionTicketStatus.CLAIMED,
+                    "lease_owner": owner,
+                    "lease_token": lease_token,
+                    "lease_expires_at": lease_expires_at,
+                }
+            )
+            self.records[ticket_hash] = claimed
+            return claimed.model_copy(deep=True)
+
+    async def finalize_claim(
+        self,
+        record: ExecutionTicketRecord,
+        *,
+        owner: str,
+        lease_token: str,
+        now: datetime,
+    ) -> ExecutionTicketRecord | None:
+        async with self._lock:
+            current = self.records.get(record.ticket_hash)
+            if current is None or not _claim_owned(current, owner, lease_token, now):
+                return None
             self.records[record.ticket_hash] = record
             return record.model_copy(deep=True)
+
+    async def expire(self, ticket_hash: str) -> ExecutionTicketRecord | None:
+        async with self._lock:
+            record = self.records.get(ticket_hash)
+            if record is None or record.status not in {
+                ExecutionTicketStatus.ISSUED,
+                ExecutionTicketStatus.CLAIMED,
+            }:
+                return None
+            expired = record.model_copy(
+                update={
+                    "status": ExecutionTicketStatus.EXPIRED,
+                    "lease_owner": None,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                }
+            )
+            self.records[ticket_hash] = expired
+            return expired.model_copy(deep=True)
 
     async def find_active(
         self, query: LegacyExecutionCorrelationQuery
@@ -104,19 +174,105 @@ class DatabaseExecutionTicketStore:
             row = await session.get(ExecutionTicketModel, ticket_hash)
             return _record_from_row(row) if row else None
 
-    async def update(self, record: ExecutionTicketRecord) -> ExecutionTicketRecord:
+    async def claim(
+        self,
+        ticket_hash: str,
+        *,
+        owner: str,
+        lease_token: str,
+        now: datetime,
+        lease_expires_at: datetime,
+    ) -> ExecutionTicketRecord | None:
         async with self.session_factory() as session, session.begin():
-            row = await session.get(ExecutionTicketModel, record.ticket_hash, with_for_update=True)
+            result = await session.execute(
+                update(ExecutionTicketModel)
+                .where(
+                    ExecutionTicketModel.ticket_hash == ticket_hash,
+                    or_(
+                        ExecutionTicketModel.status == ExecutionTicketStatus.ISSUED.value,
+                        and_(
+                            ExecutionTicketModel.status == ExecutionTicketStatus.CLAIMED.value,
+                            ExecutionTicketModel.lease_expires_at.is_not(None),
+                            ExecutionTicketModel.lease_expires_at <= now,
+                        ),
+                    ),
+                )
+                .values(
+                    status=ExecutionTicketStatus.CLAIMED.value,
+                    lease_owner=owner,
+                    lease_token=lease_token,
+                    lease_expires_at=lease_expires_at,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            row = await session.get(ExecutionTicketModel, ticket_hash)
             if row is None:
                 raise ExecutionTicketConflict("Execution Ticket not found")
-            row.status = record.status.value
-            row.run_state_version = record.run_state_version
-            row.event_sequence = record.event_sequence
-            row.lease_owner = record.lease_owner
-            row.lease_token = record.lease_token
-            row.lease_expires_at = record.lease_expires_at
-            row.consumed_event_id = record.consumed_event_id
-            row.consumed_at = record.consumed_at
+            return _record_from_row(row)
+
+    async def finalize_claim(
+        self,
+        record: ExecutionTicketRecord,
+        *,
+        owner: str,
+        lease_token: str,
+        now: datetime,
+    ) -> ExecutionTicketRecord | None:
+        async with self.session_factory() as session, session.begin():
+            result = await session.execute(
+                update(ExecutionTicketModel)
+                .where(
+                    ExecutionTicketModel.ticket_hash == record.ticket_hash,
+                    ExecutionTicketModel.status == ExecutionTicketStatus.CLAIMED.value,
+                    ExecutionTicketModel.lease_owner == owner,
+                    ExecutionTicketModel.lease_token == lease_token,
+                    ExecutionTicketModel.lease_expires_at.is_not(None),
+                    ExecutionTicketModel.lease_expires_at > now,
+                )
+                .values(
+                    status=record.status.value,
+                    run_state_version=record.run_state_version,
+                    event_sequence=record.event_sequence,
+                    lease_owner=record.lease_owner,
+                    lease_token=record.lease_token,
+                    lease_expires_at=record.lease_expires_at,
+                    consumed_event_id=record.consumed_event_id,
+                    consumed_at=record.consumed_at,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            row = await session.get(ExecutionTicketModel, record.ticket_hash)
+            if row is None:
+                raise ExecutionTicketConflict("Execution Ticket not found")
+            return _record_from_row(row)
+
+    async def expire(self, ticket_hash: str) -> ExecutionTicketRecord | None:
+        async with self.session_factory() as session, session.begin():
+            result = await session.execute(
+                update(ExecutionTicketModel)
+                .where(
+                    ExecutionTicketModel.ticket_hash == ticket_hash,
+                    ExecutionTicketModel.status.in_(
+                        (
+                            ExecutionTicketStatus.ISSUED.value,
+                            ExecutionTicketStatus.CLAIMED.value,
+                        )
+                    ),
+                )
+                .values(
+                    status=ExecutionTicketStatus.EXPIRED.value,
+                    lease_owner=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            row = await session.get(ExecutionTicketModel, ticket_hash)
+            if row is None:
+                raise ExecutionTicketConflict("Execution Ticket not found")
             return _record_from_row(row)
 
     async def find_active(
@@ -182,6 +338,29 @@ def _matches_legacy(record: ExecutionTicketRecord, query: LegacyExecutionCorrela
         and claims.plan_id == query.plan_id
         and claims.step_id == query.step_id
         and claims.purpose == query.purpose
+    )
+
+
+def _claimable(record: ExecutionTicketRecord, now: datetime) -> bool:
+    return record.status == ExecutionTicketStatus.ISSUED or (
+        record.status == ExecutionTicketStatus.CLAIMED
+        and record.lease_expires_at is not None
+        and record.lease_expires_at <= _as_utc(now)
+    )
+
+
+def _claim_owned(
+    record: ExecutionTicketRecord,
+    owner: str,
+    lease_token: str,
+    now: datetime,
+) -> bool:
+    return (
+        record.status == ExecutionTicketStatus.CLAIMED
+        and record.lease_owner == owner
+        and record.lease_token == lease_token
+        and record.lease_expires_at is not None
+        and record.lease_expires_at > _as_utc(now)
     )
 
 
