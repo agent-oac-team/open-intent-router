@@ -157,14 +157,14 @@ OAC 可以是一等宿主，
 
 重点参考文档：
 
-- [OAC 共享知识库接口文档](../../../../knowledge_sys/docs/OAC共享知识库接口文档.md)（`knowledge_sys` 主要接口契约与兼容规范基线）
+- OAC 共享知识库接口文档（`knowledge_sys/docs/OAC共享知识库接口文档.md`，`knowledge_sys` 主要接口契约与兼容规范基线）
 - [OAC 从 IRS 无感迁移到 OIR 方案记录](../designs/oac-irs-to-oir-seamless-migration-plan.md)
 - [中控能力设计文档](../designs/中控能力设计文档.md)
 - [上下文模块改造需求分析文档](./上下文模块改造需求分析文档.md)
 - [Governed Context Pipeline 验收记录](../validation/governed-context-pipeline-acceptance.md)
 - [Conversation Memory Formation 上线与回退](../../App-Adr/develop/skills/runbooks/conversation-memory-formation-rollout.md)
-- [共享知识库需求分析文档](../../../../knowledge_sys/docs/OAC共享知识库需求分析文档.md)
-- [OAC API 文档](../../../../OAC/docs/architecture/API.md)
+- 共享知识库需求分析文档（`knowledge_sys/docs/OAC共享知识库需求分析文档.md`）
+- OAC API 文档（`OAC/docs/architecture/API.md`）
 
 知识兼容结论必须按以下证据层级交叉确认：
 

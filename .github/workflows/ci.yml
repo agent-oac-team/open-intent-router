@@ -140,7 +140,9 @@ jobs:
               [[ "$path" == openspec/changes/archive/* ]] && continue
               change_name="${path#openspec/changes/}"
               change_name="${change_name%%/*}"
-              [[ -n "$change_name" ]] && changes["$change_name"]=1
+              if [[ -n "$change_name" && -d "openspec/changes/$change_name" ]]; then
+                changes["$change_name"]=1
+              fi
             done < <(git diff --name-only "$base" "$head" -- "openspec/changes")
           fi
 
