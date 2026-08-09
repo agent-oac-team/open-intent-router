@@ -22,51 +22,59 @@ jobs:
       DATABASE_URL: sqlite+aiosqlite:///./data/open-intent-router-ci.db
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-          cache: pip
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install backend CI dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[ci]"
+        run: uv sync --locked --extra ci
 
       - name: Run backend tests
-        run: python -m pytest
+        run: uv run --locked --extra ci python -m pytest
 
   python-static-checks:
     name: python-static-checks
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-          cache: pip
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install backend CI dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[ci]"
+        run: uv sync --locked --extra ci
 
       - name: Run ruff lint
-        run: ruff check .
+        run: uv run --locked --extra ci ruff check .
 
       - name: Run ruff format check
-        run: ruff format --check .
+        run: uv run --locked --extra ci ruff format --check .
 
       - name: Validate Host Adapter boundary
-        run: python scripts/validate_host_adapter_boundaries.py
+        run: uv run --locked --extra ci python scripts/validate_host_adapter_boundaries.py
 
       - name: Validate frozen IRS contract snapshots
-        run: python scripts/build_oac_irs_contract_index.py --check
+        run: uv run --locked --extra ci python scripts/build_oac_irs_contract_index.py --check
 
   frontend-regression:
     name: frontend-regression
@@ -76,10 +84,10 @@ jobs:
         working-directory: web
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -99,12 +107,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
@@ -116,13 +129,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          declare -A changes=()
-
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            while IFS= read -r change_dir; do
-              change_name="$(basename "$change_dir")"
-              changes["$change_name"]=1
-            done < <(find openspec/changes -mindepth 1 -maxdepth 1 -type d ! -name archive)
+            change_output="$(python scripts/list_changed_openspec_changes.py --all-active)"
           else
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
               base="${{ github.event.pull_request.base.sha }}"
@@ -136,22 +144,17 @@ jobs:
               base="$(git rev-list --max-parents=0 "$head")"
             fi
 
-            while IFS= read -r path; do
-              [[ "$path" == openspec/changes/archive/* ]] && continue
-              change_name="${path#openspec/changes/}"
-              change_name="${change_name%%/*}"
-              if [[ -n "$change_name" && -d "openspec/changes/$change_name" ]]; then
-                changes["$change_name"]=1
-              fi
-            done < <(git diff --name-only "$base" "$head" -- "openspec/changes")
+            change_output="$(
+              python scripts/list_changed_openspec_changes.py --base "$base" --head "$head"
+            )"
           fi
 
-          if (( ${#changes[@]} == 0 )); then
+          if [[ -z "$change_output" ]]; then
             echo "No active OpenSpec change directories need validation."
             exit 0
           fi
 
-          for change_name in "${!changes[@]}"; do
+          while IFS= read -r change_name; do
             echo "Validating OpenSpec change: ${change_name}"
             openspec validate "$change_name" --strict
-          done
+          done <<< "$change_output"

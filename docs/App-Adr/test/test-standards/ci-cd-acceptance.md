@@ -4,17 +4,25 @@
 
 ## 本地验收命令
 
+先从仓库锁文件同步 CI 环境：
+
+```bash
+uv sync --locked --extra ci
+```
+
+`--locked` 会在 `pyproject.toml` 与 `uv.lock` 不一致时失败，不会在验收过程中静默更新依赖版本。
+
 后端回归：
 
 ```bash
-.venv/bin/python -m pytest
+uv run --locked --extra ci python -m pytest
 ```
 
 Python 静态检查：
 
 ```bash
-.venv/bin/python -m ruff check .
-.venv/bin/python -m ruff format --check .
+uv run --locked --extra ci ruff check .
+uv run --locked --extra ci ruff format --check .
 ```
 
 前端回归与生产构建：
@@ -57,8 +65,8 @@ npm install -g @fission-ai/openspec@1.3.1
 
 这些检查覆盖：
 
-- 后端 clean install 后运行 `python -m pytest`。
-- Python `ruff check .` 和 `ruff format --check .`。
+- 后端根据 `uv.lock` clean install 后运行 `python -m pytest`。
+- Python 使用同一 locked environment 运行 `ruff check .` 和 `ruff format --check .`。
 - 前端基于 `web/package-lock.json` 执行 `npm ci`、`npm run test`、`npm run build`。
 - 修改 `openspec/changes/<change-name>/` 时运行 `openspec validate <change-name> --strict`。
 
@@ -76,6 +84,13 @@ CI 使用 `APP_ENV=local`、`STORAGE_BACKEND=memory`、`REGISTRY_BACKEND=file`�
 - `performance-baseline-placeholder`：预留轻量性能基线入口；当 `tests/performance` 或 `benchmarks` 建立后再补具体命令。
 
 这些检查初期不建议配置为 required checks。等漏洞审计噪声、处理 owner 和升级策略稳定后，再把高危漏洞检查升级为阻塞门禁。
+
+## Release Preflight
+
+`.github/workflows/release-preflight.yml` 仅支持手动触发，不属于普通 PR required checks。它启动隔离的 PostgreSQL 15 service container，并运行仓库中依赖
+`OIR_TEST_POSTGRESQL_URL` 或 `OIR_CLEANUP_TEST_DATABASE_URL` 的条件集成测试，用于发布、重要基线同步或数据库并发语义变更前的更高等级证据。
+
+该 workflow 使用一次性数据库和占位凭证，不读取 `.env`、GitHub Secrets 或共享测试数据库。测试必须继续使用随机 schema / resource ID 并在结束时清理自身数据。
 
 ## Dependabot
 

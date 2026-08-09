@@ -118,8 +118,10 @@ npm run dev
 ## CI/CD 门禁与巡检
 
 - PR blocking checks 只放稳定、可复现的检查：后端 pytest、ruff lint / format check、前端 npm ci / test / build、OpenSpec changed validation。
+- Python CI 必须通过已提交的 `uv.lock` 做 locked install；依赖升级只在独立升级 PR 或 advisory freshness 检查中发生，普通 PR 不解析未锁定的新版本。
 - 自动化巡检分层处理：secret scanning 使用 GitHub 原生能力，依赖漏洞和依赖新鲜度首版作为 scheduled / advisory，不默认阻塞普通 PR。
 - CI 不依赖 `.env`、`.venv`、`web/node_modules`、真实 LLM 凭证、真实外部系统或本地数据库；需要外部服务的集成检查必须单独设计 protected environment。
+- PostgreSQL 条件测试通过手动 `Release Preflight` 在隔离 service container 中运行，不纳入普通 PR required checks。
 - Workflow 文件本身不会阻止合并；仓库管理员必须在 GitHub branch protection 中把稳定 job 配置为 required status checks。
 - 详细操作和分层说明见 `docs/App-Adr/test/test-standards/ci-cd-acceptance.md`。
 
