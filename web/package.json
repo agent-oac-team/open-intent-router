@@ -24,7 +24,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "jsdom": "^26.0.0",
+    "jsdom": "^30.0.1",
     "vitest": "^3.0.0"
   }
 }
