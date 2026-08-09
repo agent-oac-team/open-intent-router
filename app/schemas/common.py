@@ -1,11 +1,13 @@
+import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 JsonDict = dict[str, Any]
 JsonList = list[Any]
+
+SAFE_ENTITLEMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 AgentType = Literal[
     "http",
@@ -47,6 +49,19 @@ AgentRunStatus = Literal[
     "clarify",
     "invalid_output",
 ]
+ExecutionPolicy = Literal[
+    "return_plan_only",
+    "require_confirmation",
+    "auto_execute",
+    "host_managed",
+]
+NextActionType = Literal[
+    "confirm_plan",
+    "open_ui",
+    "collect_input",
+    "wait_for_agent_event",
+    "none",
+]
 AgentEventType = Literal[
     "agent_started",
     "agent_progress",
@@ -71,12 +86,36 @@ class UserContext(StrictBaseModel):
     id: str = Field(min_length=1)
     roles: list[str] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
+    entitlements: list[str] = Field(default_factory=list)
     attributes: JsonDict = Field(default_factory=dict)
+
+    @field_validator("entitlements", mode="before")
+    @classmethod
+    def normalize_entitlements(cls, value: Any) -> list[str]:
+        return normalize_entitlements(value)
 
     @property
     def tenant_id(self) -> str | None:
         value = self.attributes.get("tenant_id") or self.attributes.get("tenant")
         return str(value) if value is not None else None
+
+
+def normalize_entitlements(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValueError("entitlements must be an array")
+    normalized: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("entitlements must contain strings")
+        item = item.strip()
+        if not item:
+            continue
+        if not item.isascii() or not SAFE_ENTITLEMENT.fullmatch(item):
+            raise ValueError("entitlement contains an unsafe value")
+        normalized.add(item)
+    return sorted(normalized)
 
 
 class ArtifactRef(StrictBaseModel):

@@ -1,0 +1,31 @@
+{
+  "name": "central-plan-confirm",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/central/plans/{plan_id}/confirm",
+    "headers": {},
+    "query": {
+      "plan_id": "plan_001"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "plan_id": "plan_001",
+      "session_id": "sess_fixture_plan",
+      "status": "running",
+      "current_step_id": "s1",
+      "current_step": {
+        "step_id": "s1",
+        "agent_id": "daily_wecom_task",
+        "status": "pending",
+        "description": "生成企微文案",
+        "runtime_status": "running"
+      }
+    }
+  }
+}

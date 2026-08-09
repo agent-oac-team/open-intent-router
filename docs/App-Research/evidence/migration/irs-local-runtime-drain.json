@@ -1,0 +1,35 @@
+{
+  "after": {
+    "active_plan_count": 0,
+    "active_plan_refs": [],
+    "inflight_agent_count": 0,
+    "inflight_agent_refs": [],
+    "legacy_session_count": 0,
+    "pending_callback_count": 0
+  },
+  "before": {
+    "active_plan_count": 1,
+    "active_plan_refs": [
+      "c1ac377de04bd256f1056498"
+    ],
+    "inflight_agent_count": 1,
+    "inflight_agent_refs": [
+      {
+        "agent": "8e1cdcfeb4f405ada3aa2b7b",
+        "plan": "c1ac377de04bd256f1056498",
+        "status": "running",
+        "step": "e8bc163c82eee18733288c7d"
+      }
+    ],
+    "legacy_session_count": 0,
+    "pending_callback_count": 1
+  },
+  "contract": "irs-runtime-drain/v1",
+  "cutover_watermark": "2026-07-16T11:33:35.148630+00:00",
+  "drained": true,
+  "generated_at": "2026-07-16T11:33:35.148630+00:00",
+  "historical_messages_retained": false,
+  "mode": "terminate",
+  "runtime_state_migration_enabled": false,
+  "terminated_step_count": 2
+}

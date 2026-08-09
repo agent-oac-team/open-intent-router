@@ -1,0 +1,362 @@
+{
+  "protocol": "oac-host-sequence/v1",
+  "source_revision": "OAC cd97c1b with working-tree evidence at 2026-07-16",
+  "variables": {
+    "session_id": "sess_oac_fixture",
+    "user_id": "user_oac_fixture",
+    "user_tags": ["运营版"],
+    "chat_agent_id": "strategy_analysis",
+    "chat_agent_session_id": "coze_conversation_fixture",
+    "non_chat_agent_id": "daily_wecom_task",
+    "plan_id": "plan_fixture_001",
+    "step_id": "step_fixture_001"
+  },
+  "sequences": [
+    {
+      "id": "new-request-direct-reply",
+      "purpose": "新请求由中控直接回复，不启动 Agent 或 Plan",
+      "steps": [
+        {
+          "id": "route",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/route",
+            "target_path": "/api/v1/central/route",
+            "body": {
+              "request_id": "req_direct_reply",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "user_tags": "${user_tags}",
+              "source": "central_chat",
+              "user_query": "请直接回答这个问题",
+              "current_agent_id": null,
+              "current_agent_session_id": null,
+              "frontend_context": {"page": "ai_sidebar", "route": "/home", "active_agent": null}
+            }
+          },
+          "expect": {
+            "status": 200,
+            "json": {"route.action": "reply", "plan": null}
+          }
+        },
+        {
+          "id": "render-reply",
+          "actor": "oac_client",
+          "kind": "assert_state",
+          "expect": {"assistant_pending": false, "active_agent": null, "additional_central_calls": 0}
+        }
+      ]
+    },
+    {
+      "id": "new-request-open-non-chat-agent",
+      "purpose": "新请求打开非聊天 Agent，并回流导航和 running Event",
+      "steps": [
+        {
+          "id": "route",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/route",
+            "target_path": "/api/v1/central/route",
+            "body": {
+              "request_id": "req_open_non_chat",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "user_tags": "${user_tags}",
+              "source": "central_chat",
+              "user_query": "打开企微任务",
+              "current_agent_id": null,
+              "current_agent_session_id": null,
+              "frontend_context": {"page": "ai_sidebar", "route": "/home", "active_agent": null}
+            }
+          },
+          "expect": {"status": 200, "json": {"route.action": "open_agent", "route.agent_id": "${non_chat_agent_id}"}}
+        },
+        {
+          "id": "navigation-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/events/navigation",
+            "target_path": "/api/v1/central/events/navigation",
+            "body": {
+              "event_type": "navigation",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "from": "/home",
+              "to": "/business-matrix/opportunity",
+              "current_agent_id": "${non_chat_agent_id}",
+              "reason": "open_agent"
+            }
+          },
+          "expect": {"status": 202, "json": {"accepted": true}}
+        },
+        {
+          "id": "running-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/events/agent",
+            "target_path": "/api/v1/central/events/agent",
+            "body": {
+              "event_id": "evt_open_non_chat",
+              "event_type": "agent_progress",
+              "session_id": "${session_id}",
+              "agent_id": "${non_chat_agent_id}",
+              "status": "running",
+              "message": "Agent 已打开，任务进行中。",
+              "output": {"route": "/business-matrix/opportunity", "non_chat_agent": true}
+            }
+          },
+          "expect": {"status": 200, "json": {"accepted": true}}
+        }
+      ]
+    },
+    {
+      "id": "continue-chat-agent",
+      "purpose": "在已有聊天 Agent 会话中续接本轮请求并回流结果",
+      "steps": [
+        {
+          "id": "route",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/route",
+            "target_path": "/api/v1/central/route",
+            "body": {
+              "request_id": "req_continue_chat",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "user_tags": "${user_tags}",
+              "source": "agent_chat",
+              "user_query": "继续完善分析",
+              "current_agent_id": "${chat_agent_id}",
+              "current_agent_session_id": "${chat_agent_session_id}",
+              "frontend_context": {"page": "ai_sidebar", "route": "/analysis"}
+            }
+          },
+          "expect": {"status": 200, "json": {"route.action": "continue_agent", "route.agent_id": "${chat_agent_id}"}}
+        },
+        {
+          "id": "running-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/events/agent",
+            "target_path": "/api/v1/central/events/agent",
+            "body": {
+              "event_id": "evt_continue_running",
+              "event_type": "agent_progress",
+              "session_id": "${session_id}",
+              "agent_id": "${chat_agent_id}",
+              "status": "running",
+              "agent_session_id": "${chat_agent_session_id}",
+              "output": {"surface": "ai_sidebar"}
+            }
+          },
+          "expect": {"status": 200, "json": {"accepted": true}}
+        },
+        {
+          "id": "coze-chat",
+          "actor": "oac_client",
+          "kind": "external",
+          "operation": "coze_chat",
+          "input": {"conversation_id": "${chat_agent_session_id}", "content": "继续完善分析"},
+          "expect": {"content_non_empty": true, "conversation_id": "${chat_agent_session_id}"}
+        },
+        {
+          "id": "result-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "known_legacy_semantic": "agent_result+running 表示本轮已有最终文本，但聊天 Agent 会话仍可继续",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/events/agent",
+            "target_path": "/api/v1/central/events/agent",
+            "body": {
+              "event_id": "evt_continue_result",
+              "event_type": "agent_result",
+              "session_id": "${session_id}",
+              "agent_id": "${chat_agent_id}",
+              "status": "running",
+              "agent_session_id": "${chat_agent_session_id}",
+              "message": "分析结果文本",
+              "output": {"content": "分析结果文本"}
+            }
+          },
+          "expect": {"status": 200, "json": {"accepted": true}}
+        }
+      ]
+    },
+    {
+      "id": "plan-confirm-and-first-step",
+      "purpose": "确认 Plan 后按服务端 current_step 打开并启动首个非聊天 Agent",
+      "steps": [
+        {
+          "id": "route-plan",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/route",
+            "target_path": "/api/v1/central/route",
+            "body": {
+              "request_id": "req_plan_fixture",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "user_tags": "${user_tags}",
+              "source": "central_chat",
+              "user_query": "先生成企微任务再制作海报"
+            }
+          },
+          "expect": {"status": 200, "json": {"route.action": "show_plan", "plan.plan_id": "${plan_id}"}}
+        },
+        {
+          "id": "confirm",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/plans/${plan_id}/confirm",
+            "target_path": "/api/v1/central/plans/${plan_id}/confirm"
+          },
+          "expect": {"status": 200, "json": {"status": "running", "current_step_id": "${step_id}", "current_step.agent_id": "${non_chat_agent_id}"}}
+        },
+        {
+          "id": "navigation-event",
+          "actor": "oac_client",
+          "kind": "include",
+          "sequence": "new-request-open-non-chat-agent",
+          "steps": ["navigation-event", "running-event"],
+          "overrides": {"plan_id": "${plan_id}", "step_id": "${step_id}"}
+        }
+      ]
+    },
+    {
+      "id": "agent-completion-event-return",
+      "purpose": "非聊天 Agent 完成后回流 Event，并在 route_required 时重新路由",
+      "steps": [
+        {
+          "id": "completed-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/events/agent",
+            "target_path": "/api/v1/central/events/agent",
+            "body": {
+              "event_id": "evt_non_chat_completed",
+              "event_type": "agent_result",
+              "session_id": "${session_id}",
+              "plan_id": "${plan_id}",
+              "step_id": "${step_id}",
+              "agent_id": "${non_chat_agent_id}",
+              "status": "completed",
+              "message": "当前步骤已结束。",
+              "output": {"non_chat_agent": true, "completed_by": "sidebar_end_button"}
+            }
+          },
+          "expect": {"status": 200, "json": {"accepted": true, "route_required": true}}
+        },
+        {
+          "id": "route-after-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "when": "completed-event.response.route_required == true",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/route",
+            "target_path": "/api/v1/central/route",
+            "body": {
+              "request_id": "req_after_agent_event",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "user_tags": "${user_tags}",
+              "source": "agent_event",
+              "event_id": "evt_non_chat_completed",
+              "plan_id": "${plan_id}",
+              "step_id": "${step_id}",
+              "frontend_context": {"page": "ai_sidebar", "route": "/business-matrix/opportunity"}
+            }
+          },
+          "expect": {"status": 200, "json": {"context.source": "agent_event"}}
+        }
+      ]
+    },
+    {
+      "id": "failed-chat-agent-retry",
+      "purpose": "聊天 Agent 失败后先记录失败 Event，用户重试必须重新经过中控",
+      "steps": [
+        {
+          "id": "failed-event",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/events/agent",
+            "target_path": "/api/v1/central/events/agent",
+            "body": {
+              "event_id": "evt_chat_failed",
+              "event_type": "agent_error",
+              "session_id": "${session_id}",
+              "plan_id": null,
+              "step_id": null,
+              "agent_id": "${chat_agent_id}",
+              "status": "failed",
+              "agent_session_id": "${chat_agent_session_id}",
+              "message": "Agent 调用失败，请稍后重试。",
+              "output": {"error": "fixture provider failure", "retryable": true}
+            }
+          },
+          "expect": {"status": 200, "json": {"accepted": true}}
+        },
+        {
+          "id": "retry-route",
+          "actor": "oac_client",
+          "kind": "http",
+          "request": {
+            "method": "POST",
+            "public_path": "/api/central/route",
+            "target_path": "/api/v1/central/route",
+            "body": {
+              "request_id": "req_retry_chat",
+              "session_id": "${session_id}",
+              "user_id": "${user_id}",
+              "user_tags": "${user_tags}",
+              "source": "agent_chat",
+              "user_query": "原始失败请求",
+              "current_agent_id": "${chat_agent_id}",
+              "current_agent_session_id": "${chat_agent_session_id}",
+              "frontend_context": {
+                "page": "ai_sidebar",
+                "route": "/analysis",
+                "retry": {
+                  "requested": true,
+                  "failed_agent_id": "${chat_agent_id}",
+                  "failed_agent_name": "需求分析",
+                  "failed_event_id": "evt_chat_failed",
+                  "original_user_query": "原始失败请求"
+                }
+              }
+            }
+          },
+          "expect": {"status": 200, "json": {"route.action": "continue_agent", "route.agent_id": "${chat_agent_id}"}}
+        },
+        {
+          "id": "retry-execution",
+          "actor": "oac_client",
+          "kind": "include",
+          "sequence": "continue-chat-agent",
+          "steps": ["running-event", "coze-chat", "result-event"]
+        }
+      ]
+    }
+  ]
+}

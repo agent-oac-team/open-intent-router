@@ -1,26 +1,36 @@
 agents:
-  - agent_id: summarizer
-    name: Text Summarizer
-    description: Summarize long text into concise notes.
+  - agent_id: script_writer
+    name: 话术生成
+    description: 根据沟通目标、客户背景或产品主题生成可直接参考的客户沟通话术。
     version: 1.0.0
     enabled: true
     type: mock
-    domain: productivity
+    domain: ziya_demo
     capabilities:
-      - summarize
-      - extract_key_points
+      - 话术生成
+      - 客户沟通
+      - 文案起草
     tags:
-      - text
-      - summary
+      - 话术
+      - 沟通
+      - 文案
     trigger:
       keywords:
-        - summarize
-        - summary
+        - 话术
+        - 沟通
+        - 文案
+        - 开场白
+        - 邀约
+        - 客户邀约话术
+        - 客户沟通话术
       positive_examples:
-        - summarize this text
-        - make this shorter
+        - 帮我生成一段客户邀约话术，语气专业一点。
+        - 帮我生成一段客户沟通话术
+        - 给我写一段理财产品邀约话术
+        - 生成一段适合微信发送的客户文案
       negative_examples:
-        - translate this text
+        - 查询系统菜单在哪里
+        - 解释理财知识
     access_policy:
       allow_roles:
         - operator
@@ -32,6 +42,7 @@ agents:
       - text
     optional_inputs:
       - tone
+      - channel
     input_schema:
       type: object
       required:
@@ -39,41 +50,71 @@ agents:
       properties:
         text:
           type: string
+        tone:
+          type: string
+        channel:
+          type: string
     output_schema:
       type: object
       properties:
-        summary:
+        draft:
           type: string
     invocation:
       type: mock
       config:
         response:
-          summary: This is a mock summary.
+          draft: 您好，我结合您的关注点整理了一段可参考的话术，建议先说明背景，再给出明确下一步动作。
+      provider_config: {}
+    context:
+      memory:
+        mode: prefetch
+        scopes:
+          - user_preference
+          - stable_fact
+          - task_memory
+        max_items: 5
+      knowledge:
+        mode: disabled
     ui_handoff:
       mode: none
+      route: null
+      params: {}
+    priority: 20
     metadata:
-      owner: examples
+      owner: demo
+      intent_tags:
+        - script
+        - copywriting
 
-  - agent_id: task_creator
-    name: Task Creator
-    description: Create a task or to-do item from user instructions.
+  - agent_id: visit_preparation
+    name: 访前准备
+    description: 围绕一次客户拜访整理准备清单、沟通重点、可能问题和后续跟进动作。
     version: 1.0.0
     enabled: true
     type: mock
-    domain: productivity
+    domain: ziya_demo
     capabilities:
-      - create_task
+      - 访前准备
+      - 客户拜访
+      - 准备清单
     tags:
-      - task
-      - todo
+      - 访前
+      - 拜访
+      - 准备
     trigger:
       keywords:
-        - task
-        - todo
+        - 访前
+        - 拜访
+        - 准备
+        - 客户背景
+        - 跟进
       positive_examples:
-        - create a task from this summary
+        - 帮我做一下明天客户拜访的访前准备
+        - 整理客户拜访前需要关注的要点
+        - 先做访前准备再生成沟通话术
       negative_examples:
-        - summarize this text
+        - 打开系统使用手册
+        - 解释基金净值
     access_policy:
       allow_roles:
         - operator
@@ -82,56 +123,100 @@ agents:
       allow_tenants:
         - "*"
     required_inputs:
-      - title
+      - text
     optional_inputs:
-      - due_date
-      - assignee
+      - customer_profile
+      - visit_goal
     input_schema:
       type: object
       required:
-        - title
+        - text
       properties:
-        title:
+        text:
           type: string
-        due_date:
+        customer_profile:
+          type: string
+        visit_goal:
           type: string
     output_schema:
       type: object
       properties:
-        task_id:
-          type: string
-        title:
-          type: string
+        checklist:
+          type: array
+          items:
+            type: string
     invocation:
       type: mock
       config:
         response:
-          task_id: task_mock_001
-          title: Mock task
+          checklist:
+            - 明确本次拜访目标
+            - 整理客户近期关注点
+            - 准备可能追问和风险提示
+            - 记录会后跟进动作
+      provider_config: {}
+    context:
+      memory:
+        mode: prefetch
+        scopes:
+          - user_preference
+          - stable_fact
+          - session_summary
+        max_items: 5
+      knowledge:
+        mode: controlled_retrieval
+        source_ids:
+          - visit_playbook
+        max_items: 5
+        controlled_retrieval:
+          query_template: "{{ user_input }} {{ slots.visit_goal }}"
+          allowed_variables:
+            - user_input
+            - slots.visit_goal
+          output_key: knowledge_context
     ui_handoff:
       mode: none
+      route: null
+      params: {}
+    priority: 30
     metadata:
-      owner: examples
+      owner: demo
+      intent_tags:
+        - visit
+        - preparation
 
-  - agent_id: handoff_dashboard
-    name: Dashboard Handoff
-    description: Ask the host application to open a dashboard page.
+  - agent_id: system_usage_guide
+    name: 系统使用指引
+    description: 回答系统入口、功能路径、页面操作和常见使用问题，并可要求宿主系统打开相关页面。
     version: 1.0.0
     enabled: true
     type: ui_handoff
-    domain: host
+    domain: ziya_demo
     capabilities:
-      - open_dashboard
+      - 系统使用
+      - 操作指引
+      - 页面跳转
     tags:
-      - ui
-      - handoff
+      - 系统
+      - 使用
+      - 指引
+      - 页面
+      - 操作
     trigger:
       keywords:
-        - dashboard
-        - open dashboard
+        - 系统
+        - 使用
+        - 指引
+        - 怎么操作
+        - 页面
+        - 入口
       positive_examples:
-        - open the dashboard
-      negative_examples: []
+        - 子牙系统里客户画像在哪里
+        - 帮我打开客户画像页面
+        - 这个功能怎么操作
+      negative_examples:
+        - 生成客户沟通话术
+        - 做访前准备
     access_policy:
       allow_roles:
         - operator
@@ -139,20 +224,129 @@ agents:
         - default
       allow_tenants:
         - "*"
+    required_inputs: []
+    optional_inputs:
+      - page
     input_schema:
       type: object
-      properties: {}
+      required: []
+      properties:
+        query:
+          type: string
+        page:
+          type: string
     output_schema:
       type: object
       properties:
         route:
           type: string
+        params:
+          type: object
     invocation:
       type: ui_handoff
       config: {}
+      provider_config: {}
+    context:
+      memory:
+        mode: disabled
+      knowledge:
+        mode: disabled
     ui_handoff:
       mode: host_route
-      route: /dashboard
-      params: {}
+      route: /ziya/help/customer-profile
+      params:
+        source: router_demo
+    priority: 10
     metadata:
-      owner: examples
+      owner: demo
+      intent_tags:
+        - guide
+        - ui
+
+  - agent_id: wealth_knowledge
+    name: 理财知识
+    description: 面向理财相关概念、产品术语、风险提示和基础知识问答提供解释。
+    version: 1.0.0
+    enabled: true
+    type: mock
+    domain: ziya_demo
+    capabilities:
+      - 理财知识
+      - 知识问答
+      - 风险解释
+    tags:
+      - 理财
+      - 知识
+      - 风险
+      - 产品
+      - 问答
+    trigger:
+      keywords:
+        - 理财
+        - 基金
+        - 净值
+        - 风险
+        - 产品
+        - 久期
+        - 收益
+      positive_examples:
+        - 帮我解释一下基金净值是什么意思
+        - 理财产品风险等级怎么理解
+        - 给客户解释一下久期风险
+      negative_examples:
+        - 打开客户画像页面
+        - 帮我生成邀约话术
+    access_policy:
+      allow_roles:
+        - operator
+      allow_groups:
+        - default
+      allow_tenants:
+        - "*"
+    required_inputs:
+      - text
+    optional_inputs:
+      - audience
+    input_schema:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+        audience:
+          type: string
+    output_schema:
+      type: object
+      properties:
+        answer:
+          type: string
+    invocation:
+      type: mock
+      config:
+        response:
+          answer: 这是一个理财知识解释示例。正式接入时可由子牙知识库 Evidence Provider 提供依据。
+      provider_config: {}
+    context:
+      memory:
+        mode: prefetch
+        scopes:
+          - user_preference
+          - stable_fact
+        max_items: 3
+      knowledge:
+        mode: prefetch
+        source_ids:
+          - wealth_product_docs
+          - risk_policy_docs
+        max_items: 5
+    ui_handoff:
+      mode: none
+      route: null
+      params: {}
+    priority: 15
+    metadata:
+      owner: demo
+      intent_tags:
+        - knowledge
+        - wealth

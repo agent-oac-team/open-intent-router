@@ -1,6 +1,17 @@
+from datetime import UTC, datetime
+
 from pydantic import Field, model_validator
 
-from app.schemas.common import ArtifactRef, PlanStatus, PlanStepStatus, StrictBaseModel
+from app.schemas.common import (
+    ArtifactRef,
+    ExecutionPolicy,
+    JsonDict,
+    NextActionType,
+    PlanStatus,
+    PlanStepStatus,
+    StrictBaseModel,
+    UserContext,
+)
 
 
 class PlanStep(StrictBaseModel):
@@ -12,11 +23,30 @@ class PlanStep(StrictBaseModel):
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
 
 
+class NextAction(StrictBaseModel):
+    type: NextActionType = "none"
+    message: str = ""
+    agent_id: str | None = None
+    plan_id: str | None = None
+    step_id: str | None = None
+    route: str | None = None
+    params: JsonDict = Field(default_factory=dict)
+    metadata: JsonDict = Field(default_factory=dict)
+
+
 class Plan(StrictBaseModel):
     plan_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    tenant_id: str = Field(min_length=1)
     session_id: str | None = None
     status: PlanStatus = "pending"
     current_step_id: str | None = None
+    execution_policy: ExecutionPolicy | None = None
+    next_action: NextAction | None = None
+    last_event_id: str | None = None
+    state_version: int = Field(default=0, ge=0)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    formation_event_type: str = Field(default="update", max_length=32)
     steps: list[PlanStep] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -33,19 +63,54 @@ class Plan(StrictBaseModel):
         _validate_no_cycles(graph)
         if self.current_step_id and self.current_step_id not in known:
             raise ValueError("current_step_id must reference a step_id in steps")
-        if not self.current_step_id:
-            self.current_step_id = self.steps[0].step_id
+        if not self.current_step_id and self.status in {"pending", "running", "blocked"}:
+            completed = {step.step_id for step in self.steps if step.status == "completed"}
+            ready = next(
+                (
+                    step
+                    for step in self.steps
+                    if step.status == "pending"
+                    and all(parent in completed for parent in step.depends_on)
+                ),
+                None,
+            )
+            active = next(
+                (step for step in self.steps if step.status in {"running", "blocked"}),
+                None,
+            )
+            self.current_step_id = (ready or active).step_id if ready or active else None
+        if self.status in {"completed", "failed", "cancelled"}:
+            self.current_step_id = None
         return self
 
 
 class PlanActionRequest(StrictBaseModel):
     action: str = Field(pattern="^(confirm|cancel)$")
+    user: UserContext
 
 
 class PlanActionResponse(StrictBaseModel):
     plan_id: str
     status: PlanStatus
     current_step_id: str | None = None
+    next_action: NextAction | None = None
+    state_version: int = Field(default=0, ge=0)
+    accepted: bool = True
+    transitioned: bool = False
+    reason_code: str | None = Field(default=None, max_length=64)
+
+
+class PlanExecutionRequest(StrictBaseModel):
+    user: UserContext
+    input: JsonDict = Field(default_factory=dict)
+    context: JsonDict = Field(default_factory=dict)
+    max_steps: int = Field(default=10, ge=1, le=50)
+
+
+class PlanExecutionResponse(StrictBaseModel):
+    plan: Plan
+    results: list[JsonDict] = Field(default_factory=list)
+    next_action: NextAction | None = None
 
 
 def _validate_no_cycles(graph: dict[str, set[str]]) -> None:

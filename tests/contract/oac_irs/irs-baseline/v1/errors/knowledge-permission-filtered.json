@@ -1,0 +1,46 @@
+{
+  "name": "knowledge-permission-filtered",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/knowledge/search",
+    "headers": {},
+    "body": {
+      "request_id": "req_fixture_permission",
+      "session_id": "sess_gap",
+      "user_id": "u_gap",
+      "user_tags": [],
+      "consumer": "agent",
+      "consumer_id": "fixture_agent",
+      "purpose": "execute",
+      "query": "受限契约内容",
+      "top_k": 5
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_fixture_permission",
+      "matched": false,
+      "confidence": 0.0,
+      "evidence": [],
+      "warnings": [
+        {
+          "code": "permission_filtered",
+          "message": "Restricted knowledge was filtered for this consumer.",
+          "detail": {
+            "asset_id": "asset_fixture_restricted",
+            "chunk_id": "chunk_fixture_restricted"
+          }
+        }
+      ],
+      "trace_id": "k_trace_a1ad2da72c894ae89bcc8d4b239657bb"
+    }
+  },
+  "assertions": {
+    "expected_status": 200,
+    "expected_warning": "permission_filtered"
+  }
+}

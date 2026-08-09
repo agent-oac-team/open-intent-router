@@ -1,12 +1,13 @@
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import AgentDefinition, CandidateAgent
 from app.schemas.common import (
     ArtifactRef,
     ContextRelation,
     ErrorDetail,
+    ExecutionPolicy,
     JsonDict,
     MessageSource,
     RouteAction,
@@ -15,7 +16,8 @@ from app.schemas.common import (
     UserContext,
     normalize_artifact_refs,
 )
-from app.schemas.plans import Plan
+from app.schemas.context import ContextBudget, ContextProjection
+from app.schemas.plans import NextAction, Plan
 
 
 class InputPayload(StrictBaseModel):
@@ -40,6 +42,7 @@ class RouteRequest(StrictBaseModel):
     event_id: str | None = None
     plan_id: str | None = None
     step_id: str | None = None
+    context_budget: ContextBudget | None = None
     frontend_context: JsonDict = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -97,13 +100,32 @@ class InvocationPreview(StrictBaseModel):
 
 
 class RouteResponse(StrictBaseModel):
+    _selected_definitions: dict[str, AgentDefinition] = PrivateAttr(default_factory=dict)
+
     request_id: str
     session_id: str
+    assistant_message: str | None = None
     decision: RouteDecision
     context: RouteContext
+    execution_policy: ExecutionPolicy | None = None
+    next_action: NextAction | None = None
     plan: Plan | None = None
     invocation: InvocationPreview | None = None
     error: ErrorDetail | None = None
+
+    def bind_selected_definitions(
+        self, definitions: list[AgentDefinition] | dict[str, AgentDefinition]
+    ) -> "RouteResponse":
+        values = definitions.values() if isinstance(definitions, dict) else definitions
+        self._selected_definitions = {item.agent_id: item for item in values}
+        return self
+
+    @property
+    def selected_definitions(self) -> dict[str, AgentDefinition]:
+        return dict(self._selected_definitions)
+
+    def selected_definition(self, agent_id: str) -> AgentDefinition | None:
+        return self._selected_definitions.get(agent_id)
 
     @model_validator(mode="before")
     @classmethod
@@ -121,8 +143,6 @@ class RouteResponse(StrictBaseModel):
     def validate_route_response(self) -> "RouteResponse":
         if self.decision.action == "show_plan" and self.plan is None:
             raise ValueError("plan is required when decision.action=show_plan")
-        if self.decision.action != "show_plan" and self.plan is not None:
-            raise ValueError("plan must be null unless decision.action=show_plan")
         if self.decision.action in {"open_agent", "continue_agent"}:
             if self.decision.target_agent_id not in self.context.candidate_agent_ids:
                 raise ValueError("target_agent_id must be in candidate_agent_ids")
@@ -136,3 +156,10 @@ class LLMRouteInput(StrictBaseModel):
     request: RouteRequest
     candidates: list[CandidateAgent]
     context: RouteContext
+    projection: ContextProjection | None = None
+
+
+class RouteAndExecuteResponse(StrictBaseModel):
+    route: RouteResponse
+    results: list[JsonDict] = Field(default_factory=list)
+    next_action: NextAction | None = None

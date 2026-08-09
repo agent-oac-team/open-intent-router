@@ -1,0 +1,55 @@
+{
+  "contract": "oac-execution-ticket/v2",
+  "extends": "oac-execution-ticket/v1",
+  "request": {
+    "path": "/api/v1/central/events/agent",
+    "event_id": {
+      "required": true,
+      "stable_components": ["plan_id", "step_id", "expected_state_version"]
+    },
+    "expected_state_version": {
+      "json_path": "$.expected_state_version",
+      "type": "integer",
+      "minimum": 0,
+      "required_for_conditional_plan_completion": true,
+      "required_for_legacy_clients": false
+    }
+  },
+  "conflict_response": {
+    "http_status": 200,
+    "accepted": false,
+    "duplicate": true,
+    "route_required": false,
+    "conflict": true,
+    "plan_source": "canonical"
+  },
+  "replay_cases": [
+    {
+      "name": "current",
+      "precondition": "plan/current_step/state_version match",
+      "effect": "complete delegated run once"
+    },
+    {
+      "name": "stale_before_claim",
+      "precondition": "current_step or state_version changed",
+      "effect": "return canonical plan without ticket claim"
+    },
+    {
+      "name": "racing_after_check",
+      "precondition": "core plan version conflict",
+      "effect": "return canonical plan without duplicate terminal side effect"
+    }
+  ],
+  "security_inheritance": {
+    "identity_contract": "oac-host-signature/v2",
+    "body_signature_covers_new_fields": true,
+    "bad_key_rejected": true,
+    "wrong_profile_rejected": true,
+    "tampered_body_rejected": true,
+    "expired_request_rejected": true,
+    "replayed_nonce_rejected": true,
+    "cross_owner_plan_hidden": true,
+    "submission_unknown_fails_closed": true,
+    "ticket_disclosure_forbidden": true
+  }
+}

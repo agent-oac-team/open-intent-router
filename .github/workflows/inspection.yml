@@ -1,0 +1,110 @@
+name: Automated Inspection
+
+on:
+  schedule:
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-dependency-audit:
+    name: backend-dependency-audit-advisory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install backend audit dependencies
+        run: uv sync --locked --extra audit
+
+      - name: Audit Python dependencies
+        run: uv run --locked --extra audit pip-audit --local
+
+  frontend-dependency-audit:
+    name: frontend-dependency-audit-advisory
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+
+  dependency-freshness:
+    name: dependency-freshness-advisory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Report outdated Python dependencies
+        run: |
+          uv sync --locked --extra ci --extra audit
+          uv pip list --python .venv/bin/python --outdated --format=columns || true
+
+      - name: Report outdated frontend dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npm outdated || true
+
+  performance-baseline-placeholder:
+    name: performance-baseline-placeholder
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Reserve performance baseline inspection path
+        run: |
+          if [ -d tests/performance ] || [ -d benchmarks ]; then
+            echo "Performance benchmark directory exists. Add benchmark commands here before making this check required."
+          else
+            echo "No lightweight performance baseline suite is defined yet."
+          fi

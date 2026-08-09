@@ -1,9 +1,14 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from app.prompts.router_prompt import DEFAULT_SYSTEM_PROMPT, RouterPromptTemplate
+from app.prompts.router_prompt import (
+    DEFAULT_SYSTEM_PROMPT,
+    RouterPromptTemplate,
+    route_response_schema_hint,
+)
 from app.schemas.agents import CandidateAgent
 from app.schemas.common import UserContext
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteRequest
+from app.services.context_service import ContextService
 
 
 def test_router_prompt_uses_default_when_file_missing(registry_service) -> None:
@@ -44,6 +49,7 @@ user_template: |
     assert "自定义用户模板" in messages[1]["content"]
     assert '"candidate_agents"' in messages[1]["content"]
     assert '"response_schema_hint"' in messages[1]["content"]
+    assert '"routing_rules"' in messages[1]["content"]
 
 
 def test_router_prompt_serializes_datetime_in_request() -> None:
@@ -54,14 +60,62 @@ def test_router_prompt_serializes_datetime_in_request() -> None:
                 "user": {"id": "u1", "roles": ["operator"]},
                 "input": {
                     "text": "summarize this text",
-                    "attachments": [{"created_at": datetime(2026, 1, 1, tzinfo=timezone.utc)}],
+                    "attachments": [{"created_at": datetime(2026, 1, 1, tzinfo=UTC)}],
                 },
             }
         ),
-        candidates=[CandidateAgent(agent_id="summarizer", name="Summarizer", description="Summarize text")],
+        candidates=[
+            CandidateAgent(agent_id="summarizer", name="Summarizer", description="Summarize text")
+        ],
         context=RouteContext(candidate_agent_ids=["summarizer"]),
     )
 
     messages = RouterPromptTemplate().messages(payload)
 
     assert "2026-01-01T00:00:00Z" in messages[1]["content"]
+
+
+def test_router_prompt_includes_context_pack_debug_data() -> None:
+    request = RouteRequest.model_validate(
+        {
+            "session_id": "s1",
+            "user": {"id": "u1", "roles": ["operator"]},
+            "input": {"text": "summarize this text"},
+        }
+    )
+    context = ContextService(settings=_settings()).build_route_context(
+        request,
+        request_id="req_1",
+        candidate_agent_ids=["summarizer"],
+        evidence=[{"id": "ev1", "content": "routing evidence"}],
+    )
+    payload = LLMRouteInput(
+        request=request,
+        candidates=[
+            CandidateAgent(
+                agent_id="summarizer",
+                name="Summarizer",
+                description="Summarize text",
+            )
+        ],
+        context=context,
+    )
+
+    messages = RouterPromptTemplate().messages(payload)
+
+    assert '"context_pack"' in messages[1]["content"]
+    assert '"current_input"' in messages[1]["content"]
+    assert '"routing evidence"' in messages[1]["content"]
+
+
+def test_response_schema_hint_excludes_prompt_only_rules() -> None:
+    schema_hint = route_response_schema_hint(["summarizer"])
+
+    assert "rules" not in schema_hint
+    assert "assistant_message" in schema_hint
+
+
+def _settings():
+    from app.core.config import Settings
+
+    return Settings(storage_backend="memory", registry_backend="database")

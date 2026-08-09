@@ -1,0 +1,65 @@
+{
+  "contract": "oir-content-workbook-migration/v1",
+  "database_url": "sqlite+aiosqlite:///./data/oir-migration.db",
+  "knowledge_collection": "oir_knowledge_vectors",
+  "memory_collection": "oir_memory_vectors",
+  "legacy_vectors_copied": false,
+  "pipeline_version": "oir-excel-parser-v1+oir-row-chunking-v1+embedding-config-v1",
+  "files": [
+    {
+      "stable_key": "01",
+      "file": "01 要素表.xlsx",
+      "status": "validated",
+      "asset_id": "asset_content_production_01",
+      "chunk_count": 44,
+      "manifest_id": "manifest_content_production_01",
+      "file_hash": "3f16d3b9f41cf88d070b7491f69338dfd00ae352d4cb271832f13fcf533f6873"
+    },
+    {
+      "stable_key": "02",
+      "file": "02 KPI + 场景.xlsx",
+      "status": "validated",
+      "asset_id": "asset_content_production_02",
+      "chunk_count": 171,
+      "manifest_id": "manifest_content_production_02",
+      "file_hash": "5d7386fae757b0104126ef04c5c2950840f5d2fd3b46c4e19dce74a4f1a04e83"
+    },
+    {
+      "stable_key": "03",
+      "file": "03 客群表.xlsx",
+      "status": "deferred",
+      "asset_id": "asset_content_production_03",
+      "chunk_count": 0,
+      "manifest_id": "manifest_content_production_03",
+      "file_hash": "b3660585b2042cd5a23dccb5394330d1433e5697fc00d66dab98ac558076e4f5"
+    },
+    {
+      "stable_key": "04",
+      "file": "04 活动表.xlsx",
+      "status": "validated",
+      "asset_id": "asset_content_production_04",
+      "chunk_count": 23,
+      "manifest_id": "manifest_content_production_04",
+      "file_hash": "dfa79ed07ed9e8b45b03fab9f6e8fe1d54f4decf214bfc809b33734cee422551"
+    },
+    {
+      "stable_key": "05",
+      "file": "05 权益表.xlsx",
+      "status": "validated",
+      "asset_id": "asset_content_production_05",
+      "chunk_count": 25,
+      "manifest_id": "manifest_content_production_05",
+      "file_hash": "89f1616f8c66d8e916431d51d57cb9b5f8241c8432c903eadd56af30280b0832"
+    },
+    {
+      "stable_key": "06",
+      "file": "06 企微模板.xlsx",
+      "status": "validated",
+      "asset_id": "asset_content_production_06",
+      "chunk_count": 6,
+      "manifest_id": "manifest_content_production_06",
+      "file_hash": "a7f8be1548fc0cef0758cba4b99a4f31dc86d58be87f26bc5703a3aff44c81f1"
+    }
+  ],
+  "passed": true
+}

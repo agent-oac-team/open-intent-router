@@ -1,0 +1,65 @@
+{
+  "name": "knowledge-admin-chunks",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/knowledge/files/{asset_id}/chunks",
+    "headers": {
+      "X-Admin-Sync-Token": "<redacted-admin-token>",
+      "X-OAC-Username": "fixture-admin",
+      "X-OAC-User-Display-Name": "Fixture Admin"
+    },
+    "query": {
+      "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "items": [
+        {
+          "chunk_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4_1",
+          "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4",
+          "title": "高意向客户跟进规则",
+          "content_snippet": "title: 高意向客户跟进规则；客户等级: 高意向；超期天数: 3；处理动作: 进入提醒队列",
+          "source_ref": {
+            "source_type": "excel",
+            "database": null,
+            "table": null,
+            "fields": [],
+            "business_id": null,
+            "sheet": "跟进规则",
+            "row": 2,
+            "columns": [
+              "title",
+              "客户等级",
+              "超期天数",
+              "处理动作"
+            ],
+            "document_name": null,
+            "section_path": [],
+            "page": null,
+            "paragraph": null,
+            "uri": null
+          },
+          "sensitivity": "internal",
+          "allowed_user_tags": [
+            "运营版"
+          ],
+          "freshness": "current",
+          "enabled": true,
+          "content_hash": "c24492bb9dee7a94618a9654176878a68ea3a99e5ec91d57a4534f4881b93a48",
+          "indexed": true,
+          "created_at": null,
+          "updated_at": null
+        }
+      ],
+      "total": 1,
+      "offset": 0,
+      "limit": 50
+    }
+  }
+}

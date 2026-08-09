@@ -1,0 +1,59 @@
+{
+  "contract": "oir-content-workbook-migration/v1",
+  "database_url": "127.0.0.1:5432/oir",
+  "knowledge_collection": "oir_knowledge_vectors",
+  "memory_collection": "oir_memory_vectors",
+  "legacy_vectors_copied": false,
+  "pipeline_version": "oir-excel-parser-v1+oir-row-chunking-v1+embedding-config-v1",
+  "files": [
+    {
+      "stable_key": "01",
+      "file": "01 要素表.xlsx",
+      "status": "idempotent_existing",
+      "asset_id": "asset_content_production_01",
+      "chunk_count": 44,
+      "manifest_id": "manifest_content_production_01"
+    },
+    {
+      "stable_key": "02",
+      "file": "02 KPI + 场景.xlsx",
+      "status": "idempotent_existing",
+      "asset_id": "asset_content_production_02",
+      "chunk_count": 171,
+      "manifest_id": "manifest_content_production_02"
+    },
+    {
+      "stable_key": "03",
+      "file": "03 客群表.xlsx",
+      "status": "idempotent_existing",
+      "asset_id": "asset_content_production_03",
+      "chunk_count": 0,
+      "manifest_id": "manifest_content_production_03"
+    },
+    {
+      "stable_key": "04",
+      "file": "04 活动表.xlsx",
+      "status": "idempotent_existing",
+      "asset_id": "asset_content_production_04",
+      "chunk_count": 23,
+      "manifest_id": "manifest_content_production_04"
+    },
+    {
+      "stable_key": "05",
+      "file": "05 权益表.xlsx",
+      "status": "idempotent_existing",
+      "asset_id": "asset_content_production_05",
+      "chunk_count": 25,
+      "manifest_id": "manifest_content_production_05"
+    },
+    {
+      "stable_key": "06",
+      "file": "06 企微模板.xlsx",
+      "status": "idempotent_existing",
+      "asset_id": "asset_content_production_06",
+      "chunk_count": 6,
+      "manifest_id": "manifest_content_production_06"
+    }
+  ],
+  "passed": true
+}

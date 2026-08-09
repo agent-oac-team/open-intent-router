@@ -17,7 +17,7 @@ from app.schemas.agents import (
     CandidateAgent,
 )
 from app.schemas.common import UserContext
-
+from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 
 RegistryStatus = Literal["ok", "degraded", "error"]
 
@@ -69,35 +69,56 @@ class AgentRegistryService:
                 return agent
         return None
 
-    async def upsert_definition(self, definition: AgentDefinition) -> AgentDefinition:
+    async def upsert_definition(
+        self, definition: AgentDefinition, *, expected_revision: int | None = None
+    ) -> AgentDefinition:
         repository = self._require_writable_repository()
-        saved = await repository.upsert(definition)
+        saved = await repository.upsert(definition, expected_revision=expected_revision)
         await self.reload()
         return saved
 
-    async def set_enabled(self, agent_id: str, enabled: bool) -> AgentDefinition | None:
+    async def set_enabled(
+        self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
+    ) -> AgentDefinition | None:
         repository = self._require_writable_repository()
-        saved = await repository.set_enabled(agent_id, enabled)
+        saved = await repository.set_enabled(agent_id, enabled, expected_revision=expected_revision)
         await self.reload()
         return saved
 
-    async def delete_definition(self, agent_id: str) -> bool:
+    async def delete_definition(
+        self, agent_id: str, *, expected_revision: int | None = None
+    ) -> bool:
         repository = self._require_writable_repository()
-        deleted = await repository.delete(agent_id)
+        deleted = await repository.delete(agent_id, expected_revision=expected_revision)
         await self.reload()
         return deleted
 
+    async def mutate_definition(self, command: RegistryMutationCommand) -> RegistryMutationResult:
+        repository = self._require_writable_repository()
+        result = await repository.mutate(command)
+        await self.reload()
+        return result
+
     async def list_public(self) -> AgentListResponse:
-        return AgentListResponse(agents=[agent.to_public() for agent in await self.list_definitions()])
+        return AgentListResponse(
+            agents=[agent.to_public() for agent in await self.list_definitions()]
+        )
 
     async def available_for_user(self, user: UserContext) -> AvailableAgentsResponse:
-        agents = [agent for agent in await self.list_definitions(enabled_only=True) if agent.is_available_to(user)]
+        agents = await self.available_definitions(user)
         candidates = [agent.to_candidate() for agent in agents]
         return AvailableAgentsResponse(
             available_agents=[agent.agent_id for agent in agents],
             candidate_agents_for_llm=candidates,
             source=self.state.active_source,
         )
+
+    async def available_definitions(self, user: UserContext) -> list[AgentDefinition]:
+        return [
+            agent
+            for agent in await self.list_definitions(enabled_only=True)
+            if agent.is_available_to(user)
+        ]
 
     async def candidates_for_user(self, user: UserContext) -> list[CandidateAgent]:
         return (await self.available_for_user(user)).candidate_agents_for_llm

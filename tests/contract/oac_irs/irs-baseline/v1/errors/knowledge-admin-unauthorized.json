@@ -1,0 +1,22 @@
+{
+  "name": "knowledge-admin-unauthorized",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/knowledge/files",
+    "headers": {},
+    "body": null
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "detail": "Invalid admin sync token"
+    }
+  },
+  "assertions": {
+    "expected_status": 401,
+    "expected_warning": null
+  }
+}

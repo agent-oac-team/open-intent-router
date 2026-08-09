@@ -1,10 +1,18 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.core.redaction import redact_value
-from app.schemas.common import AgentType, JsonDict, SchemaContract, StrictBaseModel, UserContext
+from app.schemas.agent_context import AgentContextSpec
+from app.schemas.common import (
+    AgentType,
+    JsonDict,
+    SchemaContract,
+    StrictBaseModel,
+    UserContext,
+    normalize_entitlements,
+)
 
 
 class TriggerSpec(StrictBaseModel):
@@ -20,7 +28,13 @@ class AccessPolicy(StrictBaseModel):
     deny_roles: list[str] = Field(default_factory=list)
     deny_groups: list[str] = Field(default_factory=list)
     deny_tenants: list[str] = Field(default_factory=list)
+    any_entitlements: list[str] = Field(default_factory=list)
     required_attributes: JsonDict = Field(default_factory=dict)
+
+    @field_validator("any_entitlements", mode="before")
+    @classmethod
+    def normalize_any_entitlements(cls, value: Any) -> list[str]:
+        return normalize_entitlements(value)
 
     def allows(self, user: UserContext) -> bool:
         tenant_id = user.tenant_id
@@ -38,6 +52,8 @@ class AccessPolicy(StrictBaseModel):
         if self.allow_tenants and "*" not in self.allow_tenants:
             if not tenant_id or tenant_id not in self.allow_tenants:
                 return False
+        if self.any_entitlements and not (set(user.entitlements) & set(self.any_entitlements)):
+            return False
 
         for key, expected in self.required_attributes.items():
             if user.attributes.get(key) != expected:
@@ -62,6 +78,7 @@ class AgentDefinition(StrictBaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
     version: str | None = None
+    revision: int = Field(default=0, ge=0)
     enabled: bool = True
     type: AgentType
     capabilities: list[str] = Field(default_factory=list)
@@ -75,6 +92,7 @@ class AgentDefinition(StrictBaseModel):
     output_schema: SchemaContract = Field(default_factory=SchemaContract)
     invocation: InvocationSpec
     ui_handoff: UiHandoffSpec = Field(default_factory=UiHandoffSpec)
+    context: AgentContextSpec = Field(default_factory=AgentContextSpec)
     priority: int = 0
     metadata: JsonDict = Field(default_factory=dict)
     source: str = "database"
@@ -102,7 +120,11 @@ class AgentDefinition(StrictBaseModel):
         ]
         if missing_from_schema:
             self.input_schema.required.extend(missing_from_schema)
-        if self.type == "ui_handoff" and self.ui_handoff.mode != "none" and not self.ui_handoff.route:
+        if (
+            self.type == "ui_handoff"
+            and self.ui_handoff.mode != "none"
+            and not self.ui_handoff.route
+        ):
             raise ValueError("ui_handoff.route is required when ui_handoff.mode is not none")
         return self
 
@@ -127,6 +149,7 @@ class AgentDefinition(StrictBaseModel):
             name=self.name,
             description=self.description,
             version=self.version,
+            revision=self.revision,
             enabled=self.enabled,
             type=self.type,
             capabilities=self.capabilities,
@@ -139,6 +162,7 @@ class AgentDefinition(StrictBaseModel):
             input_schema=self.input_schema,
             output_schema=self.output_schema,
             ui_handoff=self.ui_handoff,
+            context=self.context,
             priority=self.priority,
             metadata=redact_value(self.metadata),
             source=self.source,
@@ -163,6 +187,7 @@ class AgentPublic(StrictBaseModel):
     name: str
     description: str
     version: str | None = None
+    revision: int = Field(default=0, ge=0)
     enabled: bool
     type: AgentType
     capabilities: list[str] = Field(default_factory=list)
@@ -175,6 +200,7 @@ class AgentPublic(StrictBaseModel):
     input_schema: SchemaContract = Field(default_factory=SchemaContract)
     output_schema: SchemaContract = Field(default_factory=SchemaContract)
     ui_handoff: UiHandoffSpec = Field(default_factory=UiHandoffSpec)
+    context: AgentContextSpec = Field(default_factory=AgentContextSpec)
     priority: int = 0
     metadata: JsonDict = Field(default_factory=dict)
     source: str = "database"

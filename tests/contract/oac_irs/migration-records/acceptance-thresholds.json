@@ -1,0 +1,59 @@
+{
+  "contract": "oac-oir-migration-thresholds/v1",
+  "baseline_file": "irs-local-performance.json",
+  "timeouts_seconds": {
+    "route_total": 20.0,
+    "knowledge_search_provider": 3.0,
+    "knowledge_exact_read": 2.0,
+    "knowledge_admin_upload": 120.0,
+    "identity_signature_clock_skew": 60.0
+  },
+  "local_latency_regression": {
+    "comparison": "p95",
+    "maximum_ratio": 2.0,
+    "minimum_absolute_budget_ms": 5.0,
+    "rule": "oir_p95 <= max(irs_p95 * maximum_ratio, irs_p95 + minimum_absolute_budget_ms)"
+  },
+  "circuit_breaker": {
+    "eligible_operations": ["read_only", "route_stateful_with_not_accepted_proof"],
+    "rolling_window_requests": 20,
+    "minimum_requests": 10,
+    "failure_rate_to_open": 0.5,
+    "consecutive_failures_to_open": 5,
+    "open_seconds": 30,
+    "half_open_max_probes": 3,
+    "successes_to_close": 3,
+    "half_open_failure_reopens": true,
+    "knowledge_failure_warnings": ["embedding_error", "vector_search_error", "timeout", "configuration_error"],
+    "not_failures": ["no_match", "permission_filtered", "secret_filtered", "disabled"]
+  },
+  "diff_gates": {
+    "replay_coverage": 1.0,
+    "blocking_diff_count": 0,
+    "unapproved_route_structure_diff_count": 0,
+    "permission_expansion_count": 0,
+    "cross_user_data_count": 0,
+    "core_fact_conflict_count": 0,
+    "duplicate_write_count": 0,
+    "exact_read_required_fact_pass_rate": 1.0,
+    "knowledge_golden_required_fact_pass_rate": 1.0,
+    "search_expected_asset_recall_at_5": 0.8,
+    "message_exact_text_required": false,
+    "physical_chunk_identity_required": false
+  },
+  "stability_window": {
+    "consecutive_full_replays": 3,
+    "continuous_minutes": 30,
+    "minimum_synthetic_operations": 1000,
+    "allowed_process_crashes": 0,
+    "allowed_unknown_commit_fallbacks": 0,
+    "allowed_write_fallbacks": 0,
+    "allowed_shadow_primary_side_effects": 0,
+    "allowed_unhandled_dead_letters": 0
+  },
+  "scope": {
+    "environment": ["local", "test"],
+    "production_sla": false,
+    "real_user_traffic_required": false
+  }
+}

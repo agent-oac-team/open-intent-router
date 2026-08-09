@@ -1,0 +1,377 @@
+{
+  "contract": "oir-agent-registry-reconciliation/v1",
+  "expected_count": 9,
+  "actual_count": 9,
+  "passed": true,
+  "failed": [],
+  "agents": [
+    {
+      "agent_id": "strategy_analysis",
+      "name": "需求分析",
+      "enabled": true,
+      "permission_groups": [
+        "展业版",
+        "运营版"
+      ],
+      "positive_triggers": [
+        "需求分析",
+        "策略生成",
+        "营销方案",
+        "活动设计",
+        "拉存款",
+        "新客户促动",
+        "客户转化",
+        "经营策略",
+        "经营场景",
+        "目标客群",
+        "经营钩子",
+        "MOT",
+        "帮我想方案",
+        "帮我设计活动"
+      ],
+      "negative_triggers": [
+        "已有策略表批量扩写",
+        "企微文案扩写",
+        "审核话术",
+        "是否合规",
+        "生产排期",
+        "每日任务",
+        "标注任务"
+      ],
+      "invocation_type": "provider_platform",
+      "bot_id_present": true,
+      "ui_handoff_route": null,
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "compliance_review",
+      "name": "合规质控",
+      "enabled": true,
+      "permission_groups": [
+        "展业版",
+        "运营版"
+      ],
+      "positive_triggers": [
+        "合规质控",
+        "话术审核",
+        "能不能发",
+        "是否合规",
+        "有没有违规",
+        "违规词",
+        "预警词",
+        "风控",
+        "KOS",
+        "AI化检测",
+        "批量质检",
+        "Excel审核",
+        "审核文案",
+        "安全优化"
+      ],
+      "negative_triggers": [
+        "从零生成企微文案",
+        "策略方案设计",
+        "生产排期",
+        "每日任务",
+        "标注任务",
+        "北交所打新"
+      ],
+      "invocation_type": "provider_platform",
+      "bot_id_present": true,
+      "ui_handoff_route": null,
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "daily_wecom_task",
+      "name": "企微任务/每日微跟进",
+      "enabled": true,
+      "permission_groups": [
+        "运营版"
+      ],
+      "positive_triggers": [
+        "企微任务",
+        "每日微跟进",
+        "今日任务",
+        "每日任务",
+        "分行任务",
+        "展业清单",
+        "商机任务",
+        "理财任务",
+        "投教任务",
+        "任务卡片",
+        "南京分行",
+        "深圳分行",
+        "北京分行",
+        "CT="
+      ],
+      "negative_triggers": [
+        "月度业务排期",
+        "生产排期",
+        "业务日历",
+        "企微文案扩写",
+        "合规审核",
+        "标注任务"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/business-matrix/opportunity",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "marketing_poster",
+      "name": "营销海报生成",
+      "enabled": true,
+      "permission_groups": [
+        "运营版"
+      ],
+      "positive_triggers": [
+        "营销海报",
+        "海报生成",
+        "平安元素",
+        "活动海报",
+        "视觉资产",
+        "做一张海报",
+        "生成海报",
+        "宣传海报"
+      ],
+      "negative_triggers": [
+        "企微文案",
+        "财经资讯小卡片",
+        "合规审核",
+        "标注任务",
+        "生产排期"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/poster",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "production_schedule",
+      "name": "生产规划-生产排期",
+      "enabled": true,
+      "permission_groups": [
+        "运营版"
+      ],
+      "positive_triggers": [
+        "生产排期",
+        "业务排期",
+        "业务日历",
+        "月度日历",
+        "月度计划",
+        "执行清单",
+        "配置日历",
+        "排期管理",
+        "查看排期",
+        "本月业务"
+      ],
+      "negative_triggers": [
+        "每日微跟进",
+        "今日任务",
+        "分行任务",
+        "企微文案",
+        "策略生成",
+        "审核话术",
+        "标注任务"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/business-matrix/schedule",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "wecom_material",
+      "name": "内容生产",
+      "enabled": true,
+      "permission_groups": [
+        "展业版",
+        "运营版"
+      ],
+      "positive_triggers": [
+        "企微物料",
+        "企微文案",
+        "1v1文案",
+        "批量扩写",
+        "多版本文案",
+        "飞书策略表",
+        "飞书表格",
+        "客户画像",
+        "内容策略",
+        "扩写规则",
+        "口语化文案"
+      ],
+      "negative_triggers": [
+        "模糊营销方案",
+        "活动策略设计",
+        "能不能发",
+        "是否合规",
+        "违规词",
+        "预警词",
+        "批量质检",
+        "生产排期",
+        "标注任务"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/production",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "feishu_labeling",
+      "name": "飞书标注系统",
+      "enabled": true,
+      "permission_groups": [
+        "运营版"
+      ],
+      "positive_triggers": [
+        "飞书标注",
+        "数据标注",
+        "打标",
+        "标注任务",
+        "创建任务",
+        "任务分配",
+        "标注员",
+        "标注进度",
+        "标注工作台",
+        "团队工作量",
+        "CSV导出",
+        "多维表格标注"
+      ],
+      "negative_triggers": [
+        "飞书策略表扩写",
+        "企微文案",
+        "合规审核",
+        "业务排期",
+        "每日微跟进"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/annotation",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "bse_ipo",
+      "name": "北交所打新",
+      "enabled": true,
+      "permission_groups": [
+        "展业版",
+        "运营版"
+      ],
+      "positive_triggers": [
+        "北交所",
+        "打新",
+        "北交所打新",
+        "打新公告",
+        "历史公告",
+        "打新日历",
+        "新股申购",
+        "申购公告",
+        "执行日志"
+      ],
+      "negative_triggers": [
+        "财经资讯小卡片",
+        "每日财经速递",
+        "营销海报",
+        "企微文案",
+        "合规审核"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/business-matrix/bse",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    },
+    {
+      "agent_id": "finance_digest",
+      "name": "每日财经速递",
+      "enabled": true,
+      "permission_groups": [
+        "展业版",
+        "运营版"
+      ],
+      "positive_triggers": [
+        "每日财经速递",
+        "财经速递",
+        "财经资讯",
+        "今日财经",
+        "资讯长图",
+        "资讯小卡片",
+        "财经小卡",
+        "新闻资讯聚合"
+      ],
+      "negative_triggers": [
+        "资讯软文",
+        "观点报告",
+        "话术剧本",
+        "北交所打新",
+        "营销海报",
+        "企微文案"
+      ],
+      "invocation_type": "ui_handoff",
+      "bot_id_present": false,
+      "ui_handoff_route": "/business-matrix/daily-news",
+      "checks": {
+        "stable_id": true,
+        "name": true,
+        "permission": true,
+        "positive_trigger": true,
+        "invocation": true,
+        "ui_handoff": true
+      }
+    }
+  ]
+}

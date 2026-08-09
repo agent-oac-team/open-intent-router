@@ -1,0 +1,47 @@
+{
+  "name": "knowledge-admin-list",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/admin/knowledge/files",
+    "headers": {
+      "X-Admin-Sync-Token": "<redacted-admin-token>",
+      "X-OAC-Username": "fixture-admin",
+      "X-OAC-User-Display-Name": "Fixture Admin"
+    },
+    "query": {},
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "items": [
+        {
+          "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4",
+          "source_type": "excel",
+          "source_name": "契约测试活动表",
+          "business_domain": "内容生产",
+          "owner": "fixture-admin",
+          "sensitivity": "internal",
+          "allowed_user_tags": [
+            "运营版"
+          ],
+          "enabled": true,
+          "freshness": "current",
+          "searchable": true,
+          "status": "indexed",
+          "original_filename": "fixture.xlsx",
+          "file_size": 5016,
+          "checksum": "c509e2e28ddc7d956445e942a2d1cb9d110a974c5f76eb4c8feeae333436dee7",
+          "chunk_count": 1,
+          "warnings_count": 0,
+          "created_at": null,
+          "updated_at": null
+        }
+      ],
+      "total": 1
+    }
+  }
+}

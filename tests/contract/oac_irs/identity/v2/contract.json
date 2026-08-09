@@ -1,0 +1,88 @@
+{
+  "contract": "oir-host-signature/v2",
+  "algorithm": "HMAC-SHA256",
+  "headers": {
+    "key_id": "X-OIR-Host-Key-Id",
+    "audience": "X-OIR-Host-Audience",
+    "timestamp": "X-OIR-Host-Timestamp",
+    "nonce": "X-OIR-Host-Nonce",
+    "content_sha256": "X-OIR-Host-Content-SHA256",
+    "principal_type": "X-OIR-Host-Principal-Type",
+    "user_id": "X-OIR-Host-User-Id",
+    "roles": "X-OIR-Host-Roles",
+    "groups": "X-OIR-Host-Groups",
+    "active_bundle_id": "X-OIR-Host-Active-Bundle-Id",
+    "claims_version": "X-OIR-Host-Claims-Version",
+    "policy_version": "X-OIR-Host-Policy-Version",
+    "credential_class": "X-OIR-Host-Credential-Class",
+    "signature": "X-OIR-Host-Signature"
+  },
+  "audiences": {
+    "local": "oac-oir-adapter-local",
+    "test": "oac-oir-adapter-test"
+  },
+  "canonical_lines": [
+    "OIR-HOST-V2",
+    "key_id",
+    "audience",
+    "timestamp_unix_seconds",
+    "nonce_base64url",
+    "uppercase_method",
+    "normalized_path",
+    "rfc3986_sorted_query",
+    "lowercase_content_sha256_hex",
+    "principal_type",
+    "tenant_id",
+    "user_id",
+    "sorted_comma_roles",
+    "sorted_comma_groups",
+    "active_bundle_id",
+    "claims_version",
+    "policy_version",
+    "credential_class"
+  ],
+  "policy": {
+    "tenant_id": "oac",
+    "max_clock_skew_seconds": 60,
+    "nonce_ttl_seconds": 120,
+    "minimum_nonce_bits": 128,
+    "signature_header_format": "v2=<lowercase hex>",
+    "accepted_key_slots": ["current", "previous"],
+    "signing_key_slot": "current",
+    "body_identity_trusted": false,
+    "authorization_header_forwarded_to_core": false
+  },
+  "credential_profiles": {
+    "oac_user": {"principal_type": "user", "claims_version": "oac-principal-v1", "policy_version": "oac-authz-v1"},
+    "oac_admin": {"principal_type": "user", "claims_version": "oac-admin-principal-v1", "policy_version": "oac-control-v1"},
+    "coze_workflow": {"principal_type": "service", "claims_version": "oac-service-principal-v1", "policy_version": "oac-readonly-v1"}
+  },
+  "test_vector": {
+    "fixture_secret_notice": "Only the literal fixture secret below may appear in source; deployment secrets must come from a secret store.",
+    "secret": "fixture-v2-secret",
+    "request": {
+      "method": "POST",
+      "path": "/api/v1/central/route",
+      "query": "",
+      "body": "{\"request_id\":\"req-v2\",\"session_id\":\"session-v2\",\"user_id\":\"42\",\"user_tags\":[\"运营版\"],\"source\":\"central_chat\",\"user_query\":\"排期\"}"
+    },
+    "identity": {
+      "key_id": "kid-v2",
+      "audience": "oac-oir-adapter-local",
+      "timestamp": 1784170800,
+      "nonce": "bm9uY2UtZml4dHVyZS12Mi0wMDE",
+      "principal_type": "user",
+      "tenant_id": "oac",
+      "user_id": "42",
+      "roles": ["operator"],
+      "groups": [],
+      "active_bundle_id": "oac-operations",
+      "claims_version": "oac-principal-v1",
+      "policy_version": "oac-authz-v1",
+      "credential_class": "oac_user"
+    },
+    "content_sha256": "63f46b5783ec77106d58c9b160388edfffb2dcbd15017ee9497f8f220375148e",
+    "canonical": "OIR-HOST-V2\nkid-v2\noac-oir-adapter-local\n1784170800\nbm9uY2UtZml4dHVyZS12Mi0wMDE\nPOST\n/api/v1/central/route\n\n63f46b5783ec77106d58c9b160388edfffb2dcbd15017ee9497f8f220375148e\nuser\noac\n42\noperator\n\noac-operations\noac-principal-v1\noac-authz-v1\noac_user",
+    "signature": "v2=4e8aa5c32ea9b7bdc898ee21239fd6af1f5df8abe1b43afd5926dd1291f9c725"
+  }
+}

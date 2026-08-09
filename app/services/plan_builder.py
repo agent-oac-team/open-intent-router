@@ -4,7 +4,6 @@ from uuid import uuid4
 from app.schemas.agents import CandidateAgent
 from app.schemas.plans import Plan, PlanStep
 
-
 ORDERING_MARKERS = (
     "first",
     "then",
@@ -24,6 +23,8 @@ def build_ordered_plan_from_text(
     *,
     text: str,
     session_id: str,
+    user_id: str,
+    tenant_id: str,
     candidates: list[CandidateAgent],
 ) -> Plan | None:
     lowered = text.lower()
@@ -56,6 +57,8 @@ def build_ordered_plan_from_text(
 
     return Plan(
         plan_id=f"plan_{uuid4().hex}",
+        user_id=user_id,
+        tenant_id=tenant_id,
         session_id=session_id,
         steps=steps,
     )

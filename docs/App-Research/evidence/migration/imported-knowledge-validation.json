@@ -1,0 +1,267 @@
+{
+  "contract": "oir-imported-knowledge-validation/v1",
+  "dataset_version": "knowledge-golden/v1",
+  "total": 17,
+  "passed_count": 17,
+  "failed": [],
+  "results": [
+    {
+      "id": "search-elements-customer-stage",
+      "operation": "search",
+      "passed": true,
+      "matched": true,
+      "evidence_ids": [
+        "chunk_content_production_01_337e5c16048372b04a68",
+        "chunk_content_production_01_9c60492321a4adbd1ac3",
+        "chunk_content_production_01_2a9d5dfabc8f3d19f667",
+        "chunk_content_production_01_79b86f40d31701fec06b",
+        "chunk_content_production_01_c78a83df7de97fb19a29"
+      ],
+      "warning_codes": []
+    },
+    {
+      "id": "search-kpi-deposit-renewal",
+      "operation": "search",
+      "passed": true,
+      "matched": true,
+      "evidence_ids": [
+        "chunk_content_production_02_d71704b4267d8f30d104",
+        "chunk_content_production_02_894323b3bb268b92dd90",
+        "chunk_content_production_02_369f696d8afff48ff7e8",
+        "chunk_content_production_02_2112a7e37b5792492bff",
+        "chunk_content_production_02_547a0f038e8b67137d48"
+      ],
+      "warning_codes": []
+    },
+    {
+      "id": "search-activity-wealth-step-up",
+      "operation": "search",
+      "passed": true,
+      "matched": true,
+      "evidence_ids": [
+        "chunk_content_production_04_892e81437b4bab613fec",
+        "chunk_content_production_04_36216bf20735d63be861",
+        "chunk_content_production_04_a9df5734261d54c2e751",
+        "chunk_content_production_04_e977523eecafbbe05b1c",
+        "chunk_content_production_04_8f01b2d25f504a36be24"
+      ],
+      "warning_codes": []
+    },
+    {
+      "id": "search-benefit-online-consultation-validity",
+      "operation": "search",
+      "passed": true,
+      "matched": true,
+      "evidence_ids": [
+        "chunk_content_production_05_fe55a5ead5397a8b5a1c",
+        "chunk_content_production_05_380b0777b4f84e42eca8",
+        "chunk_content_production_05_e90177587d03821f9d33",
+        "chunk_content_production_05_f9f6132f30715646e0d9",
+        "chunk_content_production_05_c17523d899dd5b009e66"
+      ],
+      "warning_codes": []
+    },
+    {
+      "id": "search-no-match-no-invention",
+      "operation": "search",
+      "passed": true,
+      "matched": false,
+      "evidence_ids": [],
+      "warning_codes": [
+        "no_match"
+      ]
+    },
+    {
+      "id": "search-permission-filtered",
+      "operation": "search",
+      "passed": true,
+      "matched": false,
+      "evidence_ids": [],
+      "warning_codes": [
+        "permission_filtered"
+      ]
+    },
+    {
+      "id": "grouped-all-assets-including-empty-03",
+      "operation": "grouped_search",
+      "passed": true,
+      "asset_keys": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06"
+      ]
+    },
+    {
+      "id": "grouped-selected-assets",
+      "operation": "grouped_search",
+      "passed": true,
+      "asset_keys": [
+        "04",
+        "05",
+        "06"
+      ]
+    },
+    {
+      "id": "read-single-asset-template",
+      "operation": "read",
+      "passed": true,
+      "asset_ids": [
+        "asset_content_production_06"
+      ],
+      "chunk_ids": [
+        "chunk_content_production_06_0789a1c1670c1bbef71c",
+        "chunk_content_production_06_ea51312c83fccc329734",
+        "chunk_content_production_06_0870bd471c38142e37cb",
+        "chunk_content_production_06_4b700ae29c2178b53bcc",
+        "chunk_content_production_06_ec52d5cfbdf92222d8f5",
+        "chunk_content_production_06_6545d1dfdbe730996278"
+      ],
+      "missing": []
+    },
+    {
+      "id": "read-multiple-assets-order",
+      "operation": "read",
+      "passed": true,
+      "asset_ids": [
+        "asset_content_production_05",
+        "asset_content_production_04"
+      ],
+      "chunk_ids": [
+        "chunk_content_production_04_e25b102dd68bc6b88356",
+        "chunk_content_production_04_36216bf20735d63be861",
+        "chunk_content_production_04_e69db5a0043ee6bb80e4",
+        "chunk_content_production_04_a9df5734261d54c2e751",
+        "chunk_content_production_04_e977523eecafbbe05b1c",
+        "chunk_content_production_04_86fa5fdb8e3749105c74",
+        "chunk_content_production_04_fc5021e8f385c70a7ddf",
+        "chunk_content_production_04_12dd6d3bf4f8aaa640a9",
+        "chunk_content_production_04_dbdbbfa9bb765d00732c",
+        "chunk_content_production_04_2853234223fdc540e6b7",
+        "chunk_content_production_04_c59b88a82cb9f01aba81",
+        "chunk_content_production_04_d206caca253ecb0d2302",
+        "chunk_content_production_04_b1fb61ec740434cc2557",
+        "chunk_content_production_04_3fa6587a71e58e962f2f",
+        "chunk_content_production_04_dd552c59d9d051b75847",
+        "chunk_content_production_04_26348ca70aeb7e9e9e63",
+        "chunk_content_production_04_db0ddc46558c151f6280",
+        "chunk_content_production_04_f97e0cdd0f1bbe3d03d8",
+        "chunk_content_production_04_5b21048b9fbb5ba74069",
+        "chunk_content_production_04_8f01b2d25f504a36be24",
+        "chunk_content_production_04_e6fa8b6877606f0bfce5",
+        "chunk_content_production_04_7933db0661c56398204b",
+        "chunk_content_production_04_892e81437b4bab613fec",
+        "chunk_content_production_05_fe55a5ead5397a8b5a1c",
+        "chunk_content_production_05_380b0777b4f84e42eca8",
+        "chunk_content_production_05_bf5857a83fe641e5054d",
+        "chunk_content_production_05_edeef4089813af4a68ac",
+        "chunk_content_production_05_e90177587d03821f9d33",
+        "chunk_content_production_05_f9f6132f30715646e0d9",
+        "chunk_content_production_05_c17523d899dd5b009e66",
+        "chunk_content_production_05_8533a7bbdd4b6705df8d",
+        "chunk_content_production_05_1cd39f60393bb10ddc13",
+        "chunk_content_production_05_1d6604e30f1cab0f3615",
+        "chunk_content_production_05_79239b8ba2adee51d966",
+        "chunk_content_production_05_e53f7e6703003aaede55",
+        "chunk_content_production_05_f52b587a229361310450",
+        "chunk_content_production_05_3efefe5e238963d60114",
+        "chunk_content_production_05_01ffe9f76c1362203bbd",
+        "chunk_content_production_05_bf9c2537a369de5f1bce",
+        "chunk_content_production_05_9b3ccbf5290ee2cc1e68",
+        "chunk_content_production_05_51599803c3071f7836d0",
+        "chunk_content_production_05_a11adade4e0b178f3546",
+        "chunk_content_production_05_4fd891482b8c412a0b11",
+        "chunk_content_production_05_11353aaf2bc6a8a7e756",
+        "chunk_content_production_05_650641b59af798af422b",
+        "chunk_content_production_05_e017ccf822fac01d6407",
+        "chunk_content_production_05_440447a3ba12ce1fa5de",
+        "chunk_content_production_05_47a97c821466b2835094"
+      ],
+      "missing": []
+    },
+    {
+      "id": "read-single-chunk-dynamic-id",
+      "operation": "read",
+      "passed": true,
+      "asset_ids": [
+        "asset_content_production_01",
+        "asset_content_production_02",
+        "asset_content_production_04",
+        "asset_content_production_05",
+        "asset_content_production_06"
+      ],
+      "chunk_ids": [
+        "chunk_content_production_04_e25b102dd68bc6b88356"
+      ],
+      "missing": []
+    },
+    {
+      "id": "read-multiple-chunks-order-and-missing",
+      "operation": "read",
+      "passed": true,
+      "asset_ids": [
+        "asset_content_production_01",
+        "asset_content_production_02",
+        "asset_content_production_04",
+        "asset_content_production_05",
+        "asset_content_production_06"
+      ],
+      "chunk_ids": [
+        "chunk_content_production_05_fe55a5ead5397a8b5a1c",
+        "chunk_content_production_04_e25b102dd68bc6b88356"
+      ],
+      "missing": [
+        "chunk_missing_fixture"
+      ]
+    },
+    {
+      "id": "read-source-ref-template-row",
+      "operation": "read",
+      "passed": true,
+      "asset_ids": [
+        "asset_content_production_06"
+      ],
+      "chunk_ids": [
+        "chunk_content_production_06_0789a1c1670c1bbef71c"
+      ],
+      "missing": []
+    },
+    {
+      "id": "assets-list-stable-slots",
+      "operation": "assets_list",
+      "passed": true,
+      "asset_ids": [
+        "asset_content_production_01",
+        "asset_content_production_02",
+        "asset_content_production_03",
+        "asset_content_production_04",
+        "asset_content_production_05",
+        "asset_content_production_06"
+      ]
+    },
+    {
+      "id": "asset-detail-empty-03",
+      "operation": "asset_detail",
+      "passed": true,
+      "status": "deferred",
+      "chunk_count": 0
+    },
+    {
+      "id": "asset-chunks-empty-03",
+      "operation": "asset_chunks",
+      "passed": true,
+      "chunk_count": 0
+    },
+    {
+      "id": "chunk-detail-benefit",
+      "operation": "chunk_detail",
+      "passed": true,
+      "chunk_ids": [
+        "chunk_content_production_05_fe55a5ead5397a8b5a1c"
+      ]
+    }
+  ],
+  "passed": true
+}

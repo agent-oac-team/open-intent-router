@@ -1,0 +1,58 @@
+{
+  "captured_at": "2026-07-30T16:33:01.902387+00:00",
+  "comparison_fingerprint": "d5b1ed56e03667d6d3503b003eee528f14c3faaf8560f718b43152c2c63d211a",
+  "content_policy": {
+    "memory_body_included": false
+  },
+  "crud_probe": {
+    "delete_status": "pending",
+    "executed": true,
+    "memory_id": "mem_b692b80076b843a58e08fd21e6b3818b",
+    "post_delete_found": false,
+    "probe_content_sha256": "2bbb6c4dc278b86ca1f0fe8771d174bb41d0e9d085176fe0c897838c2051a427",
+    "recall_found": true,
+    "write_status": "accepted"
+  },
+  "effective_configuration": {
+    "configuration_sources": {
+      "database_url": "MEMORY_DATABASE_URL",
+      "embedding_api_key": "EMBEDDING_API_KEY",
+      "embedding_base_url": "MEMORY_EMBEDDING_BASE_URL",
+      "embedding_dims": "MEMORY_EMBEDDING_DIMS",
+      "embedding_model": "MEMORY_EMBEDDING_MODEL",
+      "milvus_collection": "MEMORY_MILVUS_COLLECTION",
+      "milvus_db_name": "unconfigured",
+      "milvus_token": "unconfigured",
+      "milvus_uri": "MEMORY_MILVUS_URI"
+    },
+    "deprecated_fallbacks": [
+      "EMBEDDING_API_KEY"
+    ],
+    "memory_database_source": "MEMORY_DATABASE_URL",
+    "memory_database_url": "sqlite+aiosqlite:///./data/open-intent-router.db",
+    "memory_embedding_dims": 1024,
+    "memory_embedding_model": "text-embedding-v4",
+    "memory_milvus_collection": "oir_memory_vectors",
+    "memory_milvus_uri": ".data/oir_memory_milvus.db",
+    "memory_mode": "on",
+    "memory_strategy_provider": "memory"
+  },
+  "representative_recall": {
+    "item_count": 0,
+    "memory_ids": [],
+    "query_sha256": "4f401b1519aa32cbeace681781fba00aef66f8b63cd2c5f2e1af39b4046c2517",
+    "status": "empty"
+  },
+  "schema_version": "oir-memory-invariance-v1",
+  "storage": {
+    "active_item_count_after": 0,
+    "active_item_count_before": 0,
+    "collection": "oir_memory_vectors",
+    "count_limit": 100,
+    "count_truncated": false
+  },
+  "subject": {
+    "tenant_id_sha256": "4e64a10a18f09dad323062045284e90c24b7108e612baad008e9b99839d1e257",
+    "user_id_sha256": "4e64a10a18f09dad323062045284e90c24b7108e612baad008e9b99839d1e257"
+  }
+}

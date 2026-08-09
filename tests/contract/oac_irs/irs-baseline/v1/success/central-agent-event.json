@@ -1,0 +1,36 @@
+{
+  "name": "central-agent-event",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/central/events/agent",
+    "headers": {},
+    "query": {},
+    "body": {
+      "event_id": "evt_fixture_agent",
+      "event_type": "agent_result",
+      "session_id": "sess_fixture",
+      "agent_id": "daily_wecom_task",
+      "status": "completed",
+      "artifact_refs": [
+        "artifact_fixture_001"
+      ],
+      "message": "测试智能体已完成。",
+      "output": {
+        "result": "fixture result"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "event_id": "evt_fixture_agent",
+      "session_id": "sess_fixture",
+      "accepted": true,
+      "duplicate": false,
+      "route_required": true
+    }
+  }
+}

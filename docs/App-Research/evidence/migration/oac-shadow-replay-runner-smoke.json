@@ -1,0 +1,35 @@
+{
+  "blocking_diff_count": 0,
+  "category_coverage": {
+    "e2e": {
+      "coverage": 1.0,
+      "processed": 1,
+      "total": 1
+    },
+    "knowledge": {
+      "coverage": 1.0,
+      "processed": 1,
+      "total": 1
+    },
+    "permission": {
+      "coverage": 1.0,
+      "processed": 1,
+      "total": 1
+    },
+    "route": {
+      "coverage": 1.0,
+      "processed": 1,
+      "total": 1
+    }
+  },
+  "contract": "oac-oir-shadow-replay/v1",
+  "coverage": 1.0,
+  "dataset_id": "oac-oir-shadow-smoke-v1",
+  "dataset_version": "shadow-replay/v1",
+  "diff_count": 0,
+  "execution_scope": "local_runner_smoke",
+  "full_environment_replay_required": true,
+  "passed": true,
+  "processed_count": 4,
+  "sample_count": 4
+}

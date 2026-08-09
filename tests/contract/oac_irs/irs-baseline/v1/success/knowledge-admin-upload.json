@@ -1,0 +1,82 @@
+{
+  "name": "knowledge-admin-upload",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/admin/knowledge/files",
+    "headers": {
+      "X-Admin-Sync-Token": "<redacted-admin-token>",
+      "X-OAC-Username": "fixture-admin",
+      "X-OAC-User-Display-Name": "Fixture Admin"
+    },
+    "query": {},
+    "body": {
+      "source_name": "契约测试活动表",
+      "business_domain": "内容生产",
+      "sensitivity": "internal",
+      "allowed_user_tags": "运营版",
+      "file": {
+        "filename": "fixture.xlsx",
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "asset": {
+        "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4",
+        "source_type": "excel",
+        "source_name": "契约测试活动表",
+        "business_domain": "内容生产",
+        "owner": "fixture-admin",
+        "sensitivity": "internal",
+        "allowed_user_tags": [
+          "运营版"
+        ],
+        "enabled": true,
+        "freshness": "current",
+        "searchable": true,
+        "status": "indexed",
+        "original_filename": "fixture.xlsx",
+        "file_size": 5016,
+        "checksum": "c509e2e28ddc7d956445e942a2d1cb9d110a974c5f76eb4c8feeae333436dee7",
+        "chunk_count": 1,
+        "warnings_count": 0,
+        "created_at": null,
+        "updated_at": null
+      },
+      "job": {
+        "job_id": "kjob_6c78b151b65547e79b1d8727abfe601a",
+        "asset_id": "asset_file_c43030d2c00e42bcbb7069e7b855a6d4",
+        "status": "indexed",
+        "stage": "indexed",
+        "file_metadata": {
+          "original_filename": "fixture.xlsx",
+          "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "extension": "xlsx",
+          "file_size": 5016,
+          "sha256": "c509e2e28ddc7d956445e942a2d1cb9d110a974c5f76eb4c8feeae333436dee7",
+          "storage_uri": "<fixture-storage>/asset_file_c43030d2c00e42bcbb7069e7b855a6d4/6dfa87a40b4e4e669d5a149ed1f28cc7.xlsx",
+          "parser_version": "v1",
+          "chunking_strategy_version": "v1",
+          "embedding_model": "text-embedding-v4",
+          "embedding_dim": 8
+        },
+        "warnings": [],
+        "error_message": null,
+        "total_chunks": 1,
+        "parsed_chunks": 1,
+        "indexed_chunks": 1,
+        "retry_count": 0,
+        "created_by": "fixture-admin",
+        "started_at": "2026-07-16T03:14:53.093227Z",
+        "finished_at": "2026-07-16T03:14:54.611236Z",
+        "created_at": "2026-07-16T03:14:53.092985Z",
+        "updated_at": "2026-07-16T03:14:54.611237Z"
+      }
+    }
+  }
+}

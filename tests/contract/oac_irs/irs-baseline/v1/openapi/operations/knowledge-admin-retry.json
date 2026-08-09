@@ -1,0 +1,594 @@
+{
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "KnowledgeAdminAssetSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_user_tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed User Tags",
+            "type": "array"
+          },
+          "asset_id": {
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "business_domain": {
+            "default": "",
+            "title": "Business Domain",
+            "type": "string"
+          },
+          "checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum"
+          },
+          "chunk_count": {
+            "default": 0,
+            "title": "Chunk Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "file_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size"
+          },
+          "freshness": {
+            "enum": [
+              "current",
+              "stale",
+              "expired",
+              "unknown"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          },
+          "owner": {
+            "default": "",
+            "title": "Owner",
+            "type": "string"
+          },
+          "searchable": {
+            "title": "Searchable",
+            "type": "boolean"
+          },
+          "sensitivity": {
+            "enum": [
+              "public",
+              "internal",
+              "restricted",
+              "secret"
+            ],
+            "title": "Sensitivity",
+            "type": "string"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          },
+          "source_type": {
+            "enum": [
+              "database",
+              "excel",
+              "table",
+              "document"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "uploaded",
+                  "processing",
+                  "indexed",
+                  "failed",
+                  "disabled",
+                  "deleted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "warnings_count": {
+            "default": 0,
+            "title": "Warnings Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "asset_id",
+          "source_type",
+          "source_name",
+          "sensitivity",
+          "enabled",
+          "freshness",
+          "searchable"
+        ],
+        "title": "KnowledgeAdminAssetSummary",
+        "type": "object"
+      },
+      "KnowledgeAdminRetryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/KnowledgeAdminAssetSummary"
+          },
+          "job": {
+            "$ref": "#/components/schemas/KnowledgeImportJob"
+          }
+        },
+        "required": [
+          "asset",
+          "job"
+        ],
+        "title": "KnowledgeAdminRetryResponse",
+        "type": "object"
+      },
+      "KnowledgeFileMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "chunking_strategy_version": {
+            "default": "v1",
+            "title": "Chunking Strategy Version",
+            "type": "string"
+          },
+          "content_type": {
+            "default": "",
+            "title": "Content Type",
+            "type": "string"
+          },
+          "embedding_dim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Dim"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "extension": {
+            "minLength": 1,
+            "title": "Extension",
+            "type": "string"
+          },
+          "file_size": {
+            "minimum": 0.0,
+            "title": "File Size",
+            "type": "integer"
+          },
+          "original_filename": {
+            "minLength": 1,
+            "title": "Original Filename",
+            "type": "string"
+          },
+          "parser_version": {
+            "default": "v1",
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "sha256": {
+            "minLength": 1,
+            "title": "Sha256",
+            "type": "string"
+          },
+          "storage_uri": {
+            "minLength": 1,
+            "title": "Storage Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "original_filename",
+          "extension",
+          "file_size",
+          "sha256",
+          "storage_uri"
+        ],
+        "title": "KnowledgeFileMetadata",
+        "type": "object"
+      },
+      "KnowledgeImportJob": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "default": "",
+            "title": "Created By",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "file_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KnowledgeFileMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "indexed_chunks": {
+            "default": 0,
+            "title": "Indexed Chunks",
+            "type": "integer"
+          },
+          "job_id": {
+            "minLength": 1,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "parsed_chunks": {
+            "default": 0,
+            "title": "Parsed Chunks",
+            "type": "integer"
+          },
+          "retry_count": {
+            "default": 0,
+            "title": "Retry Count",
+            "type": "integer"
+          },
+          "stage": {
+            "default": "uploaded",
+            "enum": [
+              "uploaded",
+              "parsing",
+              "chunking",
+              "embedding",
+              "indexing",
+              "indexed",
+              "failed",
+              "cleanup"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "default": "uploaded",
+            "enum": [
+              "uploaded",
+              "processing",
+              "indexed",
+              "failed",
+              "disabled",
+              "deleted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_chunks": {
+            "default": 0,
+            "title": "Total Chunks",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "job_id",
+          "asset_id"
+        ],
+        "title": "KnowledgeImportJob",
+        "type": "object"
+      },
+      "KnowledgeWarning": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "no_match",
+              "permission_filtered",
+              "secret_filtered",
+              "embedding_error",
+              "vector_search_error",
+              "timeout",
+              "top_k_capped",
+              "disabled",
+              "low_confidence",
+              "configuration_error",
+              "unsupported_file_type",
+              "file_too_large",
+              "parse_warning",
+              "import_failed",
+              "cleanup_warning",
+              "limit_capped",
+              "max_chars_capped",
+              "result_truncated",
+              "missing_ids",
+              "filtered_ids",
+              "ambiguous_source_ref",
+              "unsupported_source_ref"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "KnowledgeWarning",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "OAC Central Backend",
+    "version": "0.1.0"
+  },
+  "method": "POST",
+  "openapi": "3.1.0",
+  "operation": {
+    "operationId": "retry_knowledge_file_api_v1_admin_knowledge_files__asset_id__retry_post",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "asset_id",
+        "required": true,
+        "schema": {
+          "title": "Asset Id",
+          "type": "string"
+        }
+      },
+      {
+        "in": "header",
+        "name": "x-admin-sync-token",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "X-Admin-Sync-Token"
+        }
+      },
+      {
+        "in": "header",
+        "name": "x-oac-username",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "X-Oac-Username"
+        }
+      }
+    ],
+    "responses": {
+      "200": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/KnowledgeAdminRetryResponse"
+            }
+          }
+        },
+        "description": "Successful Response"
+      },
+      "422": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        },
+        "description": "Validation Error"
+      }
+    },
+    "summary": "Retry Knowledge File",
+    "tags": [
+      "admin-knowledge"
+    ]
+  },
+  "path": "/api/v1/admin/knowledge/files/{asset_id}/retry"
+}

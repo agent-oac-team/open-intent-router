@@ -1,0 +1,43 @@
+{
+  "name": "knowledge-vector-search-error",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/knowledge/search",
+    "headers": {},
+    "body": {
+      "request_id": "req_fixture_vector_error",
+      "session_id": "sess_gap",
+      "user_id": "u_gap",
+      "user_tags": [],
+      "consumer": "central",
+      "consumer_id": "oac_central",
+      "purpose": "answer",
+      "query": "任意查询",
+      "top_k": 5
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_fixture_vector_error",
+      "matched": false,
+      "confidence": 0.0,
+      "evidence": [],
+      "warnings": [
+        {
+          "code": "vector_search_error",
+          "message": "fake vector search failure",
+          "detail": {}
+        }
+      ],
+      "trace_id": "k_trace_1496be88bea24688b4c9a36f410aa10d"
+    }
+  },
+  "assertions": {
+    "expected_status": 200,
+    "expected_warning": "vector_search_error"
+  }
+}

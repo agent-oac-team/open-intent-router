@@ -1,0 +1,117 @@
+{
+  "name": "knowledge-asset-chunks",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/knowledge/assets/{asset_id}/chunks",
+    "headers": {},
+    "query": {
+      "user_id": "user_fixture",
+      "user_tags": "运营版",
+      "asset_id": "asset_content_production_04"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "request_id": "req_k_access_bae545fb43ab4c6ea52d18f2b4a812a8",
+      "target_type": "asset",
+      "assets": [
+        {
+          "asset_id": "asset_content_production_04",
+          "source_type": "excel",
+          "source_name": "asset_content_production_04 表",
+          "business_domain": "内容生产",
+          "owner": "",
+          "sensitivity": "internal",
+          "allowed_user_tags": [],
+          "enabled": true,
+          "freshness": "current",
+          "chunk_count": 1,
+          "visible_chunk_count": 1,
+          "chunks": [
+            {
+              "chunk_id": "chunk_fixture_04_1",
+              "asset_id": "asset_content_production_04",
+              "title": "chunk_fixture_04_1",
+              "content": "活动名称：契约测试活动；活动期限：2026 年 12 月 31 日。",
+              "source_ref": {
+                "source_type": "excel",
+                "database": null,
+                "table": null,
+                "fields": [],
+                "business_id": null,
+                "sheet": "活动表",
+                "row": 2,
+                "columns": [],
+                "document_name": null,
+                "section_path": [],
+                "page": null,
+                "paragraph": null,
+                "uri": null
+              },
+              "business_domain": "内容生产",
+              "sensitivity": "internal",
+              "allowed_user_tags": [],
+              "freshness": "current",
+              "enabled": true,
+              "content_hash": "hash_chunk_fixture_04_1",
+              "created_at": null,
+              "updated_at": null
+            }
+          ],
+          "created_at": null,
+          "updated_at": null
+        }
+      ],
+      "chunks": [
+        {
+          "chunk_id": "chunk_fixture_04_1",
+          "asset_id": "asset_content_production_04",
+          "title": "chunk_fixture_04_1",
+          "content": "活动名称：契约测试活动；活动期限：2026 年 12 月 31 日。",
+          "source_ref": {
+            "source_type": "excel",
+            "database": null,
+            "table": null,
+            "fields": [],
+            "business_id": null,
+            "sheet": "活动表",
+            "row": 2,
+            "columns": [],
+            "document_name": null,
+            "section_path": [],
+            "page": null,
+            "paragraph": null,
+            "uri": null
+          },
+          "business_domain": "内容生产",
+          "sensitivity": "internal",
+          "allowed_user_tags": [],
+          "freshness": "current",
+          "enabled": true,
+          "content_hash": "hash_chunk_fixture_04_1",
+          "created_at": null,
+          "updated_at": null
+        }
+      ],
+      "pagination": {
+        "offset": 0,
+        "limit": 50,
+        "total": 1,
+        "returned": 1,
+        "has_more": false
+      },
+      "warnings": [],
+      "metadata": {
+        "filtered_count": 0,
+        "consumer": "central",
+        "consumer_id": "knowledge_api",
+        "purpose": "answer"
+      }
+    }
+  }
+}

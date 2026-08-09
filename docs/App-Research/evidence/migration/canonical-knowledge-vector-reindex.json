@@ -1,0 +1,29 @@
+{
+  "contract": "oir-canonical-knowledge-reindex/v1",
+  "collection": "oir_knowledge_vectors",
+  "recreated": true,
+  "vector_source": "oir_canonical_chunks",
+  "legacy_vectors_copied": false,
+  "canonical_chunk_count": 269,
+  "upserted_count": 269,
+  "raw_query_record_count": 271,
+  "indexed_record_count": 269,
+  "duplicate_query_record_count": 2,
+  "expected_by_asset": {
+    "asset_content_production_01": 44,
+    "asset_content_production_02": 171,
+    "asset_content_production_04": 23,
+    "asset_content_production_05": 25,
+    "asset_content_production_06": 6
+  },
+  "indexed_by_asset": {
+    "asset_content_production_01": 44,
+    "asset_content_production_02": 171,
+    "asset_content_production_04": 23,
+    "asset_content_production_05": 25,
+    "asset_content_production_06": 6
+  },
+  "missing_chunk_ids": [],
+  "extra_chunk_ids": [],
+  "passed": true
+}

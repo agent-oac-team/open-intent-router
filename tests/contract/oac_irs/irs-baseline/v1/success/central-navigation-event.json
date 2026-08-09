@@ -1,0 +1,26 @@
+{
+  "name": "central-navigation-event",
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/central/events/navigation",
+    "headers": {},
+    "query": {},
+    "body": {
+      "event_type": "navigation",
+      "session_id": "sess_fixture",
+      "user_id": "user_fixture",
+      "from": "/home",
+      "to": "/customer",
+      "reason": "fixture_navigation"
+    }
+  },
+  "response": {
+    "status": 202,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "accepted": true
+    }
+  }
+}

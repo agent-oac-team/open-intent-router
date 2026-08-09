@@ -1,0 +1,172 @@
+{
+  "dataset_id": "oac-knowledge-golden",
+  "version": "knowledge-golden/v1",
+  "source_root": "/Users/lijingtong/project/data/内容生产",
+  "comparison_policy": {
+    "blocking": ["permission_expansion", "core_fact_conflict", "missing_stable_asset_slot", "invented_evidence"],
+    "physical_chunk_identity_required": false,
+    "rank_exact_match_required": false,
+    "source_semantics_required": true
+  },
+  "assets": {
+    "01": {"asset_id": "asset_content_production_01", "source_file": "01 要素表.xlsx", "sheet": "01 要素表", "expected_data_rows": 44},
+    "02": {"asset_id": "asset_content_production_02", "source_file": "02 KPI + 场景.xlsx", "sheet": "02 KPI + 场景", "expected_data_rows": 171},
+    "03": {"asset_id": "asset_content_production_03", "source_file": "03 客群表.xlsx", "sheet": "03 客群表", "expected_data_rows": 0, "status": "deferred"},
+    "04": {"asset_id": "asset_content_production_04", "source_file": "04 活动表.xlsx", "sheet": "04 活动表", "expected_data_rows": 23},
+    "05": {"asset_id": "asset_content_production_05", "source_file": "05 权益表.xlsx", "sheet": "05 权益表", "expected_data_rows": 25},
+    "06": {"asset_id": "asset_content_production_06", "source_file": "06 企微模板.xlsx", "sheet": "06 企微模板", "expected_data_rows": 6}
+  },
+  "runtime_variables": {
+    "chunk_04_first": "manifest.assets.04.first_chunk_id",
+    "chunk_05_first": "manifest.assets.05.first_chunk_id",
+    "chunk_06_row_2": "manifest.assets.06.source_refs.excel:06 企微模板:2.single_chunk_id"
+  },
+  "cases": [
+    {
+      "id": "search-elements-customer-stage",
+      "operation": "search",
+      "dimensions": ["matched", "business_fact", "asset_01"],
+      "request": {"query": "客户阶段字段用来决定什么", "scope": {"asset_ids": ["asset_content_production_01"]}, "top_k": 5},
+      "expected": {
+        "matched": true,
+        "evidence_asset_ids": ["asset_content_production_01"],
+        "required_facts": ["客户阶段", "判断使用哪类模板", "未认知", "已购买"],
+        "source": {"file": "01 要素表.xlsx", "sheet": "01 要素表"}
+      }
+    },
+    {
+      "id": "search-kpi-deposit-renewal",
+      "operation": "search",
+      "dimensions": ["matched", "business_fact", "asset_02"],
+      "request": {"query": "存款产品销售里的复购场景是什么", "scope": {"asset_ids": ["asset_content_production_02"]}, "top_k": 5},
+      "expected": {
+        "matched": true,
+        "evidence_asset_ids": ["asset_content_production_02"],
+        "required_facts": ["复购", "重复购买", "存款月日均", "提升"],
+        "source": {"file": "02 KPI + 场景.xlsx", "sheet": "02 KPI + 场景"}
+      }
+    },
+    {
+      "id": "search-activity-wealth-step-up",
+      "operation": "search",
+      "dimensions": ["matched", "business_fact", "asset_04", "numeric_fact"],
+      "request": {"query": "财富节节高达标额3000万及以上奖励多少", "scope": {"asset_ids": ["asset_content_production_04"]}, "top_k": 5},
+      "expected": {
+        "matched": true,
+        "evidence_asset_ids": ["asset_content_production_04"],
+        "required_facts": ["财富节节高", "3000万及以上", "10800元", "微信立减金"],
+        "source": {"file": "04 活动表.xlsx", "sheet": "04 活动表"}
+      }
+    },
+    {
+      "id": "search-benefit-online-consultation-validity",
+      "operation": "search",
+      "dimensions": ["matched", "business_fact", "asset_05", "time_fact"],
+      "request": {"query": "在线问诊权益什么时候发放，有效期到什么时候", "scope": {"asset_ids": ["asset_content_production_05"]}, "top_k": 5},
+      "expected": {
+        "matched": true,
+        "evidence_asset_ids": ["asset_content_production_05"],
+        "required_facts": ["每月6日自动发放", "本月6日至下月5日", "在线问诊"],
+        "source": {"file": "05 权益表.xlsx", "sheet": "05 权益表"}
+      }
+    },
+    {
+      "id": "search-no-match-no-invention",
+      "operation": "search",
+      "dimensions": ["no_match", "negative"],
+      "request": {"query": "火星基地量子通行证兑换规则", "scope": {"asset_ids": ["asset_content_production_01", "asset_content_production_02", "asset_content_production_04", "asset_content_production_05", "asset_content_production_06"]}, "top_k": 5},
+      "expected": {"matched": false, "evidence_count": 0, "warning_codes": ["no_match"], "invented_evidence_forbidden": true}
+    },
+    {
+      "id": "search-permission-filtered",
+      "operation": "search",
+      "dimensions": ["permission", "negative", "filtered"],
+      "fixture_policy_overlay": {"asset_id": "asset_content_production_05", "sensitivity": "restricted", "allowed_groups": ["knowledge_admin"]},
+      "request": {"query": "在线问诊发放规则", "caller": "agent", "groups": ["standard_user"], "scope": {"asset_ids": ["asset_content_production_05"]}},
+      "expected": {"matched": false, "evidence_count": 0, "warning_codes": ["permission_filtered"], "forbidden_content": ["每月6日自动发放"]}
+    },
+    {
+      "id": "grouped-all-assets-including-empty-03",
+      "operation": "grouped_search",
+      "dimensions": ["grouped", "include_empty", "empty_03"],
+      "request": {"query": "活动权益和企微模板", "asset_group": "content_production", "include_empty_assets": true, "top_k_per_asset": 3},
+      "expected": {
+        "asset_keys_in_order": ["01", "02", "03", "04", "05", "06"],
+        "assets.03.asset_id": "asset_content_production_03",
+        "assets.03.matched": false,
+        "assets.03.evidence_count": 0,
+        "assets.03.status": "deferred"
+      }
+    },
+    {
+      "id": "grouped-selected-assets",
+      "operation": "grouped_search",
+      "dimensions": ["grouped", "selected_assets"],
+      "request": {"query": "财富节节高适合用什么企微模板", "asset_group": "content_production", "asset_keys": ["04", "05", "06"], "include_empty_assets": true, "top_k_per_asset": 3},
+      "expected": {"asset_keys_in_order": ["04", "05", "06"], "forbidden_asset_keys": ["01", "02", "03"]}
+    },
+    {
+      "id": "read-single-asset-template",
+      "operation": "read",
+      "dimensions": ["exact_read", "asset"],
+      "request": {"target": {"type": "asset", "asset_id": "asset_content_production_06"}, "return_options": {"include_content": true, "include_structured_payload": true}},
+      "expected": {"target_type": "asset", "asset_ids": ["asset_content_production_06"], "minimum_chunks": 6, "required_facts": ["交易促成模板", "认知培育模板", "提醒关注模板"]}
+    },
+    {
+      "id": "read-multiple-assets-order",
+      "operation": "read",
+      "dimensions": ["exact_read", "assets", "order"],
+      "request": {"target": {"type": "assets", "asset_ids": ["asset_content_production_05", "asset_content_production_04"]}},
+      "expected": {"target_type": "assets", "asset_ids_in_order": ["asset_content_production_05", "asset_content_production_04"]}
+    },
+    {
+      "id": "read-single-chunk-dynamic-id",
+      "operation": "read",
+      "dimensions": ["exact_read", "chunk", "manifest_variable"],
+      "request": {"target": {"type": "chunk", "chunk_id": "${chunk_04_first}"}},
+      "expected": {"target_type": "chunk", "chunk_ids": ["${chunk_04_first}"], "source": {"file": "04 活动表.xlsx", "sheet": "04 活动表"}}
+    },
+    {
+      "id": "read-multiple-chunks-order-and-missing",
+      "operation": "read",
+      "dimensions": ["exact_read", "chunks", "order", "missing"],
+      "request": {"target": {"type": "chunks", "chunk_ids": ["${chunk_05_first}", "chunk_missing_fixture", "${chunk_04_first}"]}},
+      "expected": {"chunk_ids_in_order": ["${chunk_05_first}", "${chunk_04_first}"], "warning_codes": ["missing_ids"], "missing_ids": ["chunk_missing_fixture"]}
+    },
+    {
+      "id": "read-source-ref-template-row",
+      "operation": "read",
+      "dimensions": ["exact_read", "source_ref"],
+      "request": {"target": {"type": "source_ref", "asset_id": "asset_content_production_06", "source_ref": {"source_type": "excel", "sheet": "06 企微模板", "row": 2}}},
+      "expected": {"chunk_ids": ["${chunk_06_row_2}"], "required_facts": ["交易促成模板", "场景切入", "交互钩子"]}
+    },
+    {
+      "id": "assets-list-stable-slots",
+      "operation": "assets_list",
+      "dimensions": ["assets", "stable_slots"],
+      "request": {"asset_group": "content_production", "include_metadata": true},
+      "expected": {"asset_ids_in_order": ["asset_content_production_01", "asset_content_production_02", "asset_content_production_03", "asset_content_production_04", "asset_content_production_05", "asset_content_production_06"], "asset_03_status": "deferred"}
+    },
+    {
+      "id": "asset-detail-empty-03",
+      "operation": "asset_detail",
+      "dimensions": ["assets", "empty_03"],
+      "request": {"asset_id": "asset_content_production_03", "include_metadata": true},
+      "expected": {"asset_id": "asset_content_production_03", "status": "deferred", "chunk_count": 0, "source_file": "03 客群表.xlsx"}
+    },
+    {
+      "id": "asset-chunks-empty-03",
+      "operation": "asset_chunks",
+      "dimensions": ["chunks", "empty_03", "pagination"],
+      "request": {"asset_id": "asset_content_production_03", "offset": 0, "limit": 50},
+      "expected": {"chunks": [], "pagination.total": 0, "pagination.returned": 0}
+    },
+    {
+      "id": "chunk-detail-benefit",
+      "operation": "chunk_detail",
+      "dimensions": ["chunks", "exact_read", "manifest_variable"],
+      "request": {"chunk_id": "${chunk_05_first}", "include_content": true, "include_source_ref": true},
+      "expected": {"chunk_ids": ["${chunk_05_first}"], "source": {"file": "05 权益表.xlsx", "sheet": "05 权益表"}}
+    }
+  ]
+}

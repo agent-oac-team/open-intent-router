@@ -1,0 +1,180 @@
+{
+  "contract": "oir-knowledge-cleanup/v1",
+  "database": "test-open-intent-router.db",
+  "database_chunk_count": 0,
+  "deleted_collection": null,
+  "deleted_tables": [
+    "knowledge_operation_traces",
+    "knowledge_migration_manifests",
+    "knowledge_import_jobs",
+    "knowledge_asset_chunks",
+    "knowledge_assets",
+    "knowledge_asset_groups",
+    "knowledge_retrieval_logs",
+    "knowledge_chunks",
+    "knowledge_sources"
+  ],
+  "deleted_vector_path": null,
+  "expected_database_chunk_count": 0,
+  "history": {
+    "rows_scanned": 0,
+    "rows_to_sanitize": 0
+  },
+  "history_rows_sanitized": 0,
+  "knowledge_vectors_deferred": true,
+  "manifest": {
+    "collections": {
+      "oir_knowledge_vectors": {
+        "aggregate_hash": "5b3cfb3faabf5de8fefe747edfbe74d4196d67a1063dbfca49379183ca4d5f7c",
+        "present": true
+      }
+    },
+    "local_vector_path": {
+      "aggregate_hash": "56dad56e27ba1908102ac9a17ce10848313354cdd58da3de69db47e0cf8c14f5",
+      "name": "oir_knowledge_milvus.db"
+    },
+    "schema_version": "oir-knowledge-replica/v1",
+    "tables": {
+      "knowledge_asset_chunks": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "467fd493202025676a8454deb046320f2039f01e638b1e35725494027d6200b7"
+      },
+      "knowledge_asset_groups": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "70f6f00907f92fcee1bc4b7901f9b558e6759aaeb01851d496ef1c11dca55c9a"
+      },
+      "knowledge_assets": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "68e68f66069718037ec9981023076b5a4d95de4bd97ed9076ebcbb55be752dc2"
+      },
+      "knowledge_chunks": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "78d0356402fa0044cadb7f0dbca8813041dda33391367f0b40290e879bead902"
+      },
+      "knowledge_import_jobs": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "caf397465ddcd2e64680e37c723343a42cbaf3771f4231db44dd672a972e63d7"
+      },
+      "knowledge_migration_manifests": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "e67fce53f794e0989ca2bccedba7f4311efbf539498dbc5383c69d886e7e8e12"
+      },
+      "knowledge_operation_traces": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "4fbf5f157861e4b35599d8e42fa14a16e0d9903bb19244234c02d1e52052b27e"
+      },
+      "knowledge_retrieval_logs": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "ad366a62fa2ae9bb4e02c72da9aae4612f9a1c845ea1fca95086b8df4518a9d0"
+      },
+      "knowledge_sources": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0,
+        "schema_fingerprint": "b88a7c25784abb3df277fef54c5bb89c2494b8b3448b4b852e49cec17961faed"
+      }
+    }
+  },
+  "memory_after": {
+    "collection": "oir_memory_vectors",
+    "tables": {
+      "memory_events": {
+        "aggregate_hash": "12234b4a9236eb83df0d4f7bf6f10a16a85e795dd80643c52aaade49b8bec7b7",
+        "row_count": 2
+      },
+      "memory_formation_jobs": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      },
+      "memory_formation_turns": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      },
+      "memory_index_operations": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      },
+      "memory_items": {
+        "aggregate_hash": "91e1a1b45fe460fdd95ff49295ef1caf83b5ea8d5aba361e9a0d894d76a87a56",
+        "row_count": 1
+      },
+      "memory_revisions": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      }
+    },
+    "vector_path": {
+      "aggregate_hash": "d95562f9920bb7c5ffbbf7e3bf98741c3f1da1cbc8639c106417086323f3e73a",
+      "name": "oir_memory_milvus.db"
+    }
+  },
+  "memory_before": {
+    "collection": "oir_memory_vectors",
+    "tables": {
+      "memory_events": {
+        "aggregate_hash": "12234b4a9236eb83df0d4f7bf6f10a16a85e795dd80643c52aaade49b8bec7b7",
+        "row_count": 2
+      },
+      "memory_formation_jobs": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      },
+      "memory_formation_turns": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      },
+      "memory_index_operations": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      },
+      "memory_items": {
+        "aggregate_hash": "91e1a1b45fe460fdd95ff49295ef1caf83b5ea8d5aba361e9a0d894d76a87a56",
+        "row_count": 1
+      },
+      "memory_revisions": {
+        "aggregate_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "row_count": 0
+      }
+    },
+    "vector_path": {
+      "aggregate_hash": "d95562f9920bb7c5ffbbf7e3bf98741c3f1da1cbc8639c106417086323f3e73a",
+      "name": "oir_memory_milvus.db"
+    }
+  },
+  "memory_unchanged": true,
+  "planned_actions": {
+    "delete_local_vector_path": "deferred",
+    "drop_collection": "deferred",
+    "drop_tables": [
+      "knowledge_operation_traces",
+      "knowledge_migration_manifests",
+      "knowledge_import_jobs",
+      "knowledge_asset_chunks",
+      "knowledge_assets",
+      "knowledge_asset_groups",
+      "knowledge_retrieval_logs",
+      "knowledge_chunks",
+      "knowledge_sources"
+    ]
+  },
+  "reconciliation": {
+    "difference": 1,
+    "disposition": "no_migration_knowledge_sys_is_canonical",
+    "knowledge_sys_chunk_count": 270,
+    "oir_chunk_count": 269
+  },
+  "status": "executed",
+  "untouched_memory_objects": [
+    "memory_* tables",
+    "oir_memory_vectors",
+    "oir_memory_milvus.db",
+    "MEMORY_* configuration"
+  ]
+}

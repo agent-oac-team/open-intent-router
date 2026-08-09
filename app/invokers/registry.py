@@ -15,3 +15,6 @@ class AgentInvokerRegistry:
         if invoker is None:
             raise InvocationError(f"No invoker registered for Agent type: {agent_type}")
         return invoker
+
+    def has(self, agent_type: AgentType) -> bool:
+        return agent_type in self._invokers

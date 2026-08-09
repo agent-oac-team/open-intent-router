@@ -9,5 +9,4 @@ class AgentInvoker(Protocol):
         self,
         definition: AgentDefinition,
         invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        ...
+    ) -> AgentInvocationResult: ...
