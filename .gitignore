@@ -13,3 +13,5 @@ web/dist/
 web/.vite/
 web/coverage/
 .DS_Store
+.codex/
+.codegraph/
