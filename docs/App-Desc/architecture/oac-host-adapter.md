@@ -37,6 +37,26 @@ Ticket Store、签名配置和 Service 由 Core 统一组装，OAC Adapter 与 N
 `OIR-HOST-V2`、Legacy body 中可选 `execution_ticket`、无 Ticket 的唯一关联迁移规则和冻结 fixture
 均不改变。Native Event 只接受 `X-OIR-Execution-Ticket`，不会复用 OAC Legacy body 投影。
 
+## External Execution Binding
+
+OAC Legacy Registry 的 v2 兼容转换只在 Adapter 边界进行：`bot_id` 映射为规范
+`external_execution.executor_ref`，`route_path` 映射为 `ui_handoff.route`；这些字段不会进入
+OIR Core 的公共运行模型。Host composition 将 Legacy Registry Definition 临时投影进每次请求独立的
+v2 Snapshot；随后只有 Core 的 Router 决定 Handling。对于已由可信 Snapshot 选中的 External
+Execution，Core 先通过宿主无关的 External Executor 端口确认该逻辑引用可由当前 Host 承接，再持久化
+Delegated Run 并签发既有不透明 Ticket。OAC 只承接通过
+`OAC_HOST_EXTERNAL_EXECUTOR_REFS` 显式声明的逻辑引用；未知 `bot_id` 在 Run/Ticket 前被拒绝。
+`acceptance_id` 对同一 Route/Turn 重试保持稳定，并由持久化的安全指纹记录跨 worker/process 去重；已有
+Run 会复用其已持久化的 canonical binding，而不是再次承接。拒绝、越权或不健康的引用不会创建 Delegated
+Run 或 Ticket。Run 和 Trace 只记录受限的 executor 标识及不可逆 binding 指纹，不记录 endpoint、
+凭据或私有配置。相同 Canonical Run 的重放会返回同一有效 Ticket；受限唯一约束和 Run 级发行栅栏防止
+跨进程双签或失败补偿误终止已签发的 Run。接受记录的请求指纹和 binding 指纹均使用配置密钥的域分隔 HMAC，
+避免低熵 principal、entitlement 或 Host binding 值被离线枚举。
+
+配置任一 External Executor capability 时，Host 必须同时设置
+`OAC_HOST_EXECUTION_TICKET_SECRET` 或 Core 的 `EXECUTION_TICKET_SECRET`，以便跨进程重建同一
+不透明 Ticket；缺失时启动失败而不是在路由期间留下半完成 Run。
+
 ## Governance
 
 - Central 中控调用失败时 fail closed，不代理、重试或回退到 IRS。

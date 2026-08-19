@@ -53,6 +53,10 @@ from app.repositories.execution_traces import (
     DatabaseExecutionTraceRepository,
     MemoryExecutionTraceRepository,
 )
+from app.repositories.external_execution_acceptances import (
+    DatabaseExternalExecutionAcceptanceStore,
+    MemoryExternalExecutionAcceptanceStore,
+)
 from app.repositories.file_registry import FileRegistrySource
 from app.repositories.memory import (
     MemoryAgentDefinitionRepository,
@@ -598,6 +602,14 @@ def get_execution_ticket_service() -> ExecutionTicketService:
         store = MemoryExecutionTicketStore()
     secret = _execution_ticket_secret_override or settings.execution_ticket_secret
     return ExecutionTicketService(store, secret=secret)
+
+
+@lru_cache
+def get_external_execution_acceptance_store():
+    settings = get_settings()
+    if settings.storage_backend == "database":
+        return DatabaseExternalExecutionAcceptanceStore(create_session_factory(settings))
+    return MemoryExternalExecutionAcceptanceStore()
 
 
 def get_native_agent_event_service() -> NativeAgentEventService:

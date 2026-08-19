@@ -5,8 +5,10 @@ import pytest
 
 from app.core.config import Settings
 from app.db.session import create_all_tables, create_session_factory
+from app.repositories.database import DatabaseRunRepository
 from app.repositories.execution_tickets import (
     DatabaseExecutionTicketStore,
+    ExecutionTicketConflict,
     MemoryExecutionTicketStore,
     ticket_hash,
 )
@@ -15,6 +17,7 @@ from app.schemas.execution_tickets import (
     ExecutionTicketStatus,
     LegacyExecutionCorrelationQuery,
 )
+from app.schemas.logs import AgentRun
 from app.services.execution_ticket_service import ExecutionTicketError, ExecutionTicketService
 
 
@@ -241,6 +244,133 @@ async def test_database_claim_is_atomic_across_service_instances(tmp_path) -> No
     stored = await issuer.store.get(ticket_hash(issued.ticket))
     assert stored is not None
     assert stored.lease_token == claims[0].record.lease_token
+
+
+async def test_database_retry_ticket_is_one_shared_bearer_across_service_instances(
+    tmp_path,
+) -> None:
+    settings = Settings(
+        storage_backend="database",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'concurrent-retry-tickets.db'}",
+    )
+    await create_all_tables(settings)
+    session_factory = create_session_factory(settings)
+    run = _run()
+    await DatabaseRunRepository(session_factory).add_run(
+        AgentRun(
+            run_id=run.run_id,
+            request_id="request-1",
+            session_id="session-1",
+            agent_id=run.agent_id,
+            user_id=run.user_id,
+            tenant_id=run.tenant_id,
+            turn_id=run.turn_id,
+            plan_id=run.plan_id,
+            step_id=run.step_id,
+            status="running",
+            invoker_type="delegated",
+            delegated=True,
+            state_version=run.state_version,
+            event_sequence=run.event_sequence,
+            deadline_at=run.deadline_at,
+        )
+    )
+    now = datetime.now(UTC)
+    first = ExecutionTicketService(
+        DatabaseExecutionTicketStore(session_factory), secret="ticket-secret"
+    )
+    second = ExecutionTicketService(
+        DatabaseExecutionTicketStore(session_factory), secret="ticket-secret"
+    )
+
+    issued = await asyncio.gather(
+        first.issue(
+            run,
+            request_id="request-1",
+            purpose="agent_event",
+            ttl_seconds=120,
+            now=now,
+            reuse_active_for_run=True,
+        ),
+        second.issue(
+            run,
+            request_id="request-1",
+            purpose="agent_event",
+            ttl_seconds=120,
+            now=now,
+            reuse_active_for_run=True,
+        ),
+    )
+
+    assert issued[0].ticket == issued[1].ticket
+    active = await first.store.find_active(
+        LegacyExecutionCorrelationQuery(
+            tenant_id="tenant-1",
+            user_id="user-1",
+            request_id="request-1",
+            agent_id="agent-1",
+            plan_id="plan-1",
+            step_id="step-1",
+            event_id="event-retry",
+            purpose="agent_event",
+            now=now,
+        )
+    )
+    assert len(active) == 1
+    assert active[0].ticket_hash == ticket_hash(issued[0].ticket)
+
+
+async def test_database_issue_failure_fence_blocks_late_ticket_issue_for_the_same_run(
+    tmp_path,
+) -> None:
+    settings = Settings(
+        storage_backend="database",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'failed-retry-ticket.db'}",
+    )
+    await create_all_tables(settings)
+    session_factory = create_session_factory(settings)
+    run = _run()
+    await DatabaseRunRepository(session_factory).add_run(
+        AgentRun(
+            run_id=run.run_id,
+            request_id="request-1",
+            session_id="session-1",
+            agent_id=run.agent_id,
+            user_id=run.user_id,
+            tenant_id=run.tenant_id,
+            turn_id=run.turn_id,
+            plan_id=run.plan_id,
+            step_id=run.step_id,
+            status="running",
+            invoker_type="delegated",
+            delegated=True,
+            state_version=run.state_version,
+            event_sequence=run.event_sequence,
+            deadline_at=run.deadline_at,
+        )
+    )
+    first = ExecutionTicketService(
+        DatabaseExecutionTicketStore(session_factory), secret="ticket-secret"
+    )
+    second = ExecutionTicketService(
+        DatabaseExecutionTicketStore(session_factory), secret="ticket-secret"
+    )
+
+    assert (
+        await first.recover_after_issue_failure(
+            run,
+            purpose="agent_event",
+        )
+        is None
+    )
+    with pytest.raises(ExecutionTicketConflict, match="issuance"):
+        await second.issue(
+            run,
+            request_id="request-1",
+            purpose="agent_event",
+            ttl_seconds=120,
+            reuse_active_for_run=True,
+        )
 
 
 @pytest.mark.parametrize("finalizer", ["release", "consume", "progress"])

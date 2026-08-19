@@ -8,7 +8,12 @@ from app.repositories.database import (
     DatabaseRunRepository,
 )
 from app.schemas.events import AgentEvent
-from app.schemas.logs import AgentResult, AgentRun
+from app.schemas.logs import (
+    AgentResult,
+    AgentRun,
+    ExternalExecutionBindingSnapshot,
+    external_execution_binding_fingerprint,
+)
 
 
 async def test_delegated_run_result_event_fields_round_trip_database(tmp_path) -> None:
@@ -31,6 +36,12 @@ async def test_delegated_run_result_event_fields_round_trip_database(tmp_path) -
         step_id="step-1",
         status="running",
         invoker_type="delegated",
+        agent_revision=7,
+        handling_kind="external_execution",
+        binding_snapshot=ExternalExecutionBindingSnapshot(
+            executor_ref="host_executor",
+            executor_binding_id=external_execution_binding_fingerprint("external_binding"),
+        ),
         delegated=True,
         state_version=2,
         deadline_at=now + timedelta(minutes=5),
@@ -74,6 +85,12 @@ async def test_delegated_run_result_event_fields_round_trip_database(tmp_path) -
 
     assert stored_run.turn_id == "turn-1" and stored_run.delegated is True
     assert stored_run.state_version == 2 and stored_run.claim_token == "claim-token"
+    assert stored_run.agent_revision == 7
+    assert stored_run.handling_kind == "external_execution"
+    assert stored_run.binding_snapshot == ExternalExecutionBindingSnapshot(
+        executor_ref="host_executor",
+        executor_binding_id=external_execution_binding_fingerprint("external_binding"),
+    )
     assert stored_result.turn_id == "turn-1" and stored_result.run_state_version == 3
     assert duplicate is False
     assert stored_event.turn_id == "turn-1" and stored_event.sequence == 1

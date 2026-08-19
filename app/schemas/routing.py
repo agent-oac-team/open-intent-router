@@ -3,7 +3,12 @@ from typing import Any, Literal
 
 from pydantic import Field, PrivateAttr, model_validator
 
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2, CandidateAgent
+from app.schemas.agents import (
+    AgentDefinition,
+    AgentDefinitionV2,
+    CandidateAgent,
+    ExternalExecutionHandling,
+)
 from app.schemas.common import (
     ArtifactRef,
     ContextRelation,
@@ -111,6 +116,10 @@ class RouteResponse(StrictBaseModel):
     _routed_session_id: str | None = PrivateAttr(default=None)
     _routed_response_request_id: str | None = PrivateAttr(default=None)
     _routed_invocation: InvocationPreview | None = PrivateAttr(default=None)
+    _routed_external_target_agent_id: str | None = PrivateAttr(default=None)
+    _routed_external_next_action: NextAction | None = PrivateAttr(default=None)
+    _routed_external_binding: object | None = PrivateAttr(default=None)
+    _routed_external_declared: bool = PrivateAttr(default=False)
     _routed_execution_bound: bool = PrivateAttr(default=False)
 
     request_id: str
@@ -155,6 +164,23 @@ class RouteResponse(StrictBaseModel):
         self._routed_invocation = (
             self.invocation.model_copy(deep=True) if self.invocation is not None else None
         )
+        target = self.decision.target_agent_id
+        definition = self._selected_definitions.get(target) if target else None
+        binding = self._selected_bindings.get(target) if target else None
+        if isinstance(definition, AgentDefinitionV2) and isinstance(
+            definition.handling, ExternalExecutionHandling
+        ):
+            self._routed_external_target_agent_id = target
+            self._routed_external_declared = True
+        if (
+            self._routed_external_declared
+            and binding is not None
+            and self.next_action is not None
+            and self.next_action.type == "wait_for_agent_event"
+            and self.invocation is None
+        ):
+            self._routed_external_next_action = self.next_action.model_copy(deep=True)
+            self._routed_external_binding = binding
         self._routed_execution_bound = True
         return self
 
@@ -188,6 +214,53 @@ class RouteResponse(StrictBaseModel):
             and self._routed_session_id == request.session_id == self.session_id
             and self._routed_response_request_id == self.request_id
         )
+
+    def has_trusted_external_execution_for(self, request: RouteRequest) -> bool:
+        """Whether this mutable response still represents its routed External Execution."""
+
+        trusted_action = self._routed_external_next_action
+        trusted_binding = self._routed_external_binding
+        target = self._routed_external_target_agent_id
+        return (
+            self._routed_execution_bound
+            and target is not None
+            and trusted_action is not None
+            and trusted_binding is not None
+            and self.invocation is None
+            and self.next_action == trusted_action
+            and self.next_action.type == "wait_for_agent_event"
+            and self.decision.action in {"open_agent", "continue_agent"}
+            and self.decision.target_agent_id == target
+            and self._selected_bindings.get(target) is trusted_binding
+            and self._routed_source_request is request
+            and self._routed_source_request_id == request.request_id
+            and self._routed_user == request.user
+            and self._routed_session_id == request.session_id == self.session_id
+            and self._routed_response_request_id == self.request_id
+        )
+
+    def trusted_external_execution_action_for(self, request: RouteRequest) -> NextAction | None:
+        """Return the immutable action facts for a trusted External handoff.
+
+        ``RouteResponse.plan`` and ``RouteRequest.plan_id`` remain ordinary wire
+        models and therefore must not provide execution ownership after routing.
+        The private action capability was captured with the selected Binding and
+        is the sole source of plan/step facts for External Execution.
+        """
+
+        if not self.has_trusted_external_execution_for(request):
+            return None
+        trusted_action = self._routed_external_next_action
+        return trusted_action.model_copy(deep=True) if trusted_action is not None else None
+
+    def is_routed_external_execution(self) -> bool:
+        """Whether this Route was originally selected for External Execution.
+
+        Host adapters use this private capability marker to fail closed when the
+        mutable response loses its trusted external Binding before side effects.
+        """
+
+        return self._routed_execution_bound and self._routed_external_declared
 
     @model_validator(mode="before")
     @classmethod

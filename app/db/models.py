@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -272,6 +273,9 @@ class AgentRunModel(Base):
     invoker_type: Mapped[str] = mapped_column(String(64))
     agent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     handling_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # A durable fence for External Execution Ticket issuance.  It is internal
+    # persistence state, not part of the public AgentRun wire model.
+    external_ticket_issuance_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
     binding_snapshot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     delegated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     delegation_key: Mapped[str | None] = mapped_column(
@@ -306,6 +310,16 @@ class AgentRunModel(Base):
 
 class ExecutionTicketModel(Base):
     __tablename__ = "execution_tickets"
+    __table_args__ = (
+        Index(
+            "uq_execution_tickets_reusable_active_run_purpose",
+            "run_id",
+            "purpose",
+            unique=True,
+            sqlite_where=text("canonical_reuse = 1 AND status IN ('issued', 'claimed')"),
+            postgresql_where=text("canonical_reuse AND status IN ('issued', 'claimed')"),
+        ),
+    )
 
     ticket_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     request_id: Mapped[str] = mapped_column(String(128), index=True)
@@ -328,10 +342,27 @@ class ExecutionTicketModel(Base):
     )
     consumed_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canonical_reuse: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ExternalExecutionAcceptanceModel(Base):
+    """Host-neutral, safe idempotency record for accepted External Execution."""
+
+    __tablename__ = "external_execution_acceptances"
+
+    acceptance_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    executor_ref: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AgentResultModel(Base):

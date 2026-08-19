@@ -7,10 +7,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
 from app.core.errors import LLMError
 from app.repositories.execution_tickets import MemoryExecutionTicketStore
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
-from app.schemas.agents import AgentDefinition, InvocationSpec
+from app.schemas.agents import AgentDefinition, AgentDefinitionV2, InvocationSpec
 from app.schemas.delegated_runs import (
     DelegatedRunCommandResult,
     DelegatedRunReference,
@@ -18,15 +19,27 @@ from app.schemas.delegated_runs import (
 )
 from app.schemas.events import AgentEventResponse
 from app.schemas.execution_traces import ExecutionTraceQuery
+from app.schemas.external_execution import (
+    ExternalExecutorAcceptance,
+    ExternalExecutorAcceptanceRequest,
+)
+from app.schemas.logs import external_execution_binding_fingerprint
 from app.schemas.plans import NextAction, Plan, PlanActionResponse, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketService
 from app.services.execution_trace_service import ExecutionTraceService
+from app.services.external_execution_service import ExternalExecutionService
+from app.services.registry_snapshot import RegistrySnapshotBuilder
+from app.services.router_service import RouterService
+from app.services.snapshot_routing_service import SnapshotRoutingService
 from host_adapters.oac.api.central import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, MemoryCutoverAuditRepository
 from host_adapters.oac.identity.models import TrustedHostIdentity
+from host_adapters.oac.mappers.registry import registry_agent_to_native
+from host_adapters.oac.routing import OacLegacyRegistryRoutingAdapter
+from host_adapters.oac.schemas.registry import RegistryAgent
 from host_apps.oac.config import OacHostSettings, get_oac_host_settings
 from host_apps.oac.dependencies import (
     get_cutover_guard,
@@ -134,6 +147,105 @@ class UiHandoffRoutingPort(RoutingPort):
         )
 
 
+class ExternalExecutor:
+    def __init__(self, *, accepted: bool = True) -> None:
+        self.accepted = accepted
+        self.requests: list[ExternalExecutorAcceptanceRequest] = []
+
+    def supports(self, _executor_ref: str) -> bool:
+        return True
+
+    async def accept(
+        self, request: ExternalExecutorAcceptanceRequest
+    ) -> ExternalExecutorAcceptance:
+        self.requests.append(request)
+        if not self.accepted:
+            return ExternalExecutorAcceptance(
+                accepted=False,
+                reason_code="external_executor_unauthorized",
+            )
+        return ExternalExecutorAcceptance(accepted=True, binding_id="oac_external_executor")
+
+
+class ExternalExecutionRoutingPort:
+    def __init__(self, executor: ExternalExecutor, *, bind_selection: bool = True) -> None:
+        self.executor = executor
+        self.bind_selection = bind_selection
+        definition = AgentDefinitionV2.model_validate(
+            {
+                "schema_version": "oir-agent-v2",
+                "agent_id": "agent-1",
+                "name": "External Agent",
+                "description": "delegated by the host",
+                "revision": 3,
+                "access_policy": {
+                    "allow_tenants": ["oac"],
+                    "allow_roles": ["operator"],
+                },
+                "handling": {
+                    "kind": "external_execution",
+                    "executor_ref": "host_executor",
+                    "params": {"task": "run"},
+                },
+            }
+        )
+        self.definition = definition
+
+    async def route(self, request):
+        response = RouteResponse(
+            request_id=request.request_id or "request-1",
+            session_id=request.session_id,
+            decision=RouteDecision(
+                action="open_agent",
+                target_agent_id="agent-1",
+                message="external",
+            ),
+            context=RouteContext(candidate_agent_ids=["agent-1"]),
+            next_action=NextAction(
+                type="wait_for_agent_event",
+                agent_id="agent-1",
+                metadata={"handling_kind": "external_execution"},
+            ),
+        )
+        # The Adapter receives an already selected immutable Snapshot binding, not
+        # a Host-provided executor reference or replacement Handling.
+        snapshot = RegistrySnapshotBuilder(None, external_executor=self.executor).build(
+            [self.definition], source="oac-central-external-route"
+        )
+        selected = snapshot.select_for_user("agent-1", request.user)
+        assert selected is not None
+        response.bind_selected_definitions({"agent-1": self.definition})
+        if self.bind_selection:
+            response.bind_selected_bindings({"agent-1": selected})
+        return response.bind_routed_execution(request)
+
+
+class UiRewrittenExternalExecutionRoutingPort(ExternalExecutionRoutingPort):
+    async def route(self, request):
+        response = await super().route(request)
+        response.next_action = NextAction(
+            type="open_ui",
+            agent_id="agent-1",
+            route="/rewritten-by-host",
+            metadata={"handling_kind": "ui_handoff"},
+        )
+        return response
+
+
+class LegacyExternalTargetLLM:
+    async def route(self, payload):
+        return RouteResponse(
+            request_id=payload.request.request_id or "request-1",
+            session_id=payload.request.session_id,
+            decision=RouteDecision(
+                action="open_agent",
+                target_agent_id="agent-1",
+                message="external",
+            ),
+            context=RouteContext(candidate_agent_ids=["agent-1"]),
+        )
+
+
 class TurnPort:
     def __init__(self) -> None:
         now = datetime.now(UTC)
@@ -172,6 +284,9 @@ class DelegatedPort:
         self.failed = None
         self.completed_events = set()
         self.failed_events = set()
+
+    async def find_existing(self, _command):
+        return None
 
     async def start(self, command):
         self.started = command
@@ -469,6 +584,251 @@ def test_route_ui_handoff_does_not_start_delegated_run_or_issue_ticket() -> None
     }
     assert route.json()["execution_ticket"] is None
     assert delegated.started is None
+
+
+def _external_execution_client(*, accepted: bool, bind_selection: bool = True):
+    client, delegated, events = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    tickets = client.app.dependency_overrides[get_execution_ticket_service]()
+    executor = ExternalExecutor(accepted=accepted)
+    external_execution = ExternalExecutionService(
+        external_executor=executor,
+        delegated_runs=delegated,
+        tickets=tickets,
+        ticket_ttl_seconds=300,
+    )
+    trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=ExternalExecutionRoutingPort(executor, bind_selection=bind_selection),
+        external_execution=external_execution,
+        execution_traces=trace_service,
+    )
+    return client, delegated, events, executor, tickets, trace_service
+
+
+def test_external_route_accepts_binding_before_run_then_issues_ticket_bound_to_it() -> None:
+    client, delegated, _, executor, tickets, trace_service = _external_execution_client(
+        accepted=True
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "external-route-request",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "delegate this",
+        },
+    )
+
+    assert route.status_code == 200
+    ticket = route.json()["execution_ticket"]
+    assert ticket
+    assert delegated.started is not None
+    assert delegated.started.agent_revision == 3
+    assert delegated.started.handling_kind == "external_execution"
+    assert delegated.started.binding_snapshot.model_dump(mode="json") == {
+        "schema_version": "oir-binding-v1",
+        "kind": "external_execution",
+        "executor_ref": "host_executor",
+        "executor_binding_id": external_execution_binding_fingerprint(
+            "oac_external_executor",
+            secret="test-secret",
+        ),
+    }
+    assert executor.requests[0].executor_ref == "host_executor"
+    assert executor.requests[0].principal.user_id == "trusted-user"
+    assert executor.requests[0].params == {"task": "run"}
+    assert "task" not in delegated.started.binding_snapshot.model_dump_json()
+    record = next(iter(tickets.store.records.values()))
+    assert record.claims.run_id == "run-1"
+    assert record.claims.turn_id == "turn-1"
+    assert record.claims.agent_id == "agent-1"
+    trace = asyncio.run(
+        trace_service.snapshot(
+            ExecutionTraceQuery(
+                tenant_id="oac",
+                user_id="trusted-user",
+                session_id="session-1",
+                turn_id="turn-1",
+            )
+        )
+    )
+    run_trace = next(event for event in trace.events if event.event_type == "agent_run")
+    assert run_trace.facts == {
+        "agent_id": "agent-1",
+        "invoker_type": "external_execution",
+        "delegated": True,
+        "handling_kind": "external_execution",
+        "executor_ref": "host_executor",
+        "executor_binding_id": external_execution_binding_fingerprint(
+            "oac_external_executor",
+            secret="test-secret",
+        ),
+    }
+    assert "task" not in trace.model_dump_json()
+
+    terminal = client.post(
+        "/api/v1/central/events/agent",
+        json={
+            "event_id": "external-terminal-event",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "status": "completed",
+            "event_type": "agent_result",
+            "message": "done",
+            "execution_ticket": ticket,
+        },
+    )
+
+    assert terminal.status_code == 200
+    assert delegated.completed is not None
+    assert delegated.completed.run_id == "run-1"
+    assert delegated.completed.turn_id == "turn-1"
+
+
+def test_legacy_oac_bot_uses_v2_snapshot_external_executor_path() -> None:
+    client, delegated, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    executor = ExternalExecutor(accepted=True)
+    legacy_registry = RegistryPort()
+    legacy_registry.definitions = [
+        registry_agent_to_native(
+            RegistryAgent(
+                agent_id="agent-1",
+                name="External Agent",
+                description="delegated by the Host",
+                bot_id="host_executor",
+                route_path="",
+                allowed_user_tags=["运营版"],
+                positive_keywords=["delegate"],
+                negative_keywords=[],
+                enabled=True,
+            )
+        )
+    ]
+    snapshot_routing = SnapshotRoutingService(
+        router_factory=lambda snapshot_runtime: RouterService(
+            settings=Settings(storage_backend="memory"),
+            registry=legacy_registry,
+            llm_client=LegacyExternalTargetLLM(),
+            snapshot_runtime=snapshot_runtime,
+        ),
+        external_executor=executor,
+    )
+    external_execution = ExternalExecutionService(
+        external_executor=executor,
+        delegated_runs=delegated,
+        tickets=client.app.dependency_overrides[get_execution_ticket_service](),
+        ticket_ttl_seconds=300,
+    )
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=OacLegacyRegistryRoutingAdapter(
+            registry=legacy_registry,
+            snapshot_routing=snapshot_routing,
+        ),
+        registry=legacy_registry,
+        external_execution=external_execution,
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "legacy-bot-route-request",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "delegate this",
+        },
+    )
+
+    assert route.status_code == 200, route.json()
+    assert route.json()["execution_ticket"]
+    assert route.json()["next_action"]["type"] == "wait_for_agent_event"
+    assert delegated.started is not None
+    assert delegated.started.handling_kind == "external_execution"
+    assert delegated.started.binding_snapshot.executor_ref == "host_executor"
+    assert executor.requests[0].executor_ref == "host_executor"
+
+
+def test_external_route_rejection_creates_no_delegated_run_or_ticket() -> None:
+    client, delegated, _, executor, tickets, _ = _external_execution_client(accepted=False)
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "external-rejected-request",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "delegate this",
+        },
+    )
+
+    assert route.status_code == 503
+    assert route.json()["detail"]["code"] == "external_execution_binding_unavailable"
+    assert route.json()["detail"]["message"] == "External Execution Binding is unavailable"
+    assert executor.requests
+    assert delegated.started is None
+    assert tickets.store.records == {}
+
+
+def test_untrusted_external_route_does_not_fall_back_to_legacy_delegation() -> None:
+    client, delegated, _, executor, tickets, _ = _external_execution_client(
+        accepted=True,
+        bind_selection=False,
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "external-untrusted-request",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "delegate this",
+        },
+    )
+
+    assert route.status_code == 503
+    assert route.json()["detail"]["code"] == "external_execution_binding_unavailable"
+    assert executor.requests == []
+    assert delegated.started is None
+    assert tickets.store.records == {}
+
+
+def test_rewritten_external_handling_does_not_become_a_ui_handoff() -> None:
+    client, delegated, _, executor, tickets, _ = _external_execution_client(accepted=True)
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=UiRewrittenExternalExecutionRoutingPort(executor),
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "external-ui-rewritten-request",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "delegate this",
+        },
+    )
+
+    assert route.status_code == 503
+    assert route.json()["detail"]["code"] == "external_execution_binding_unavailable"
+    assert executor.requests == []
+    assert delegated.started is None
+    assert tickets.store.records == {}
 
 
 def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace() -> None:

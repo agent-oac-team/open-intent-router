@@ -73,6 +73,13 @@ class DatabaseDelegatedRunStartStore(DelegatedRunStartStore):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
 
+    async def find_existing(self, *, delegation_key: str) -> AgentRun | None:
+        async with self.session_factory() as session:
+            existing = await session.scalar(
+                select(AgentRunModel).where(AgentRunModel.delegation_key == delegation_key)
+            )
+            return _run_from_row(existing) if existing is not None else None
+
     async def start(
         self,
         *,
@@ -100,7 +107,10 @@ class DatabaseDelegatedRunStartStore(DelegatedRunStartStore):
                 turn = _validate_start_turn(turn_row, command)
                 await _validate_plan_step(session, command)
                 run = _new_run(command, run_id=run_id, delegation_key=delegation_key)
-                session.add(AgentRunModel(**_run_values(run)))
+                run_values = _run_values(run)
+                if command.handling_kind == "external_execution":
+                    run_values["external_ticket_issuance_state"] = "unissued"
+                session.add(AgentRunModel(**run_values))
                 updated_turn = _attach_run(turn, run)
                 _apply_turn_row(turn_row, updated_turn)
                 await session.flush()
@@ -139,6 +149,22 @@ class MemoryDelegatedRunStartStore(DelegatedRunStartStore):
         self._lock = (
             plan_repository.delegated_run_lock if plan_repository is not None else asyncio.Lock()
         )
+
+    async def find_existing(self, *, delegation_key: str) -> AgentRun | None:
+        async with self._lock:
+            existing_id = self.delegation_keys.get(delegation_key)
+            if existing_id is None:
+                existing_id = next(
+                    (
+                        run.run_id
+                        for run in self.run_repository.runs.values()
+                        if run.delegation_key == delegation_key
+                    ),
+                    None,
+                )
+                if existing_id is not None:
+                    self.delegation_keys[delegation_key] = existing_id
+            return await self.run_repository.get_run(existing_id) if existing_id else None
 
     async def start(
         self,
@@ -1283,6 +1309,9 @@ def _new_run(command: DelegatedRunStartCommand, *, run_id: str, delegation_key: 
         step_id=command.step_id,
         status="pending",
         invoker_type="delegated",
+        agent_revision=command.agent_revision,
+        handling_kind=command.handling_kind,
+        binding_snapshot=command.binding_snapshot,
         delegated=True,
         delegation_key=delegation_key,
         state_version=1,

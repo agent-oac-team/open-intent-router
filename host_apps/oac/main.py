@@ -15,6 +15,7 @@ from host_apps.oac.capabilities import OacHostCapabilityProvider
 from host_apps.oac.config import build_oac_host_profile, memory_execution_plane_for_shadow
 from host_apps.oac.dependencies import (
     get_oac_adapter_application_ports,
+    get_oac_external_executor,
 )
 
 
@@ -40,7 +41,10 @@ def create_app() -> FastAPI:
         )
     )
     ports = get_oac_adapter_application_ports()
-    host_app = create_oir_app(api_prefix=profile.host.native_mount_prefix)
+    host_app = create_oir_app(
+        api_prefix=profile.host.native_mount_prefix,
+        external_executor=get_oac_external_executor(),
+    )
 
     @host_app.middleware("http")
     async def capture_host_wire_body(request: Request, call_next):

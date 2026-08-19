@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from app.core.errors import AgentUnavailableError
+from app.core.errors import AgentUnavailableError, ExternalExecutionBindingUnavailableError
 from app.schemas.common import UserContext
 from app.schemas.delegated_runs import (
     DelegatedRunCompleteCommand,
@@ -203,59 +203,101 @@ async def central_route(
             and trace_complete
         )
         ticket = None
-        if _requires_delegated_execution(native_response):
+        is_external_execution = native_response.is_routed_external_execution()
+        if is_external_execution or _requires_delegated_execution(native_response):
             deadline = datetime.now(UTC) + timedelta(seconds=settings.execution_ticket_ttl_seconds)
-            started = await ports.delegated_runs.start(
-                DelegatedRunStartCommand(
-                    tenant_id=identity.tenant_id,
-                    user_id=identity.user_id,
-                    session_id=request.session_id,
-                    request_id=native_response.request_id,
+            if is_external_execution:
+                if ports.external_execution is None:
+                    raise ExternalExecutionBindingUnavailableError(
+                        "External Execution Binding is unavailable",
+                        details={"reason_code": "external_executor_unavailable"},
+                    )
+                external_started = await ports.external_execution.start_from_route(
+                    native_request,
+                    native_response,
                     turn_id=turn.turn.turn_id,
-                    agent_id=native_response.decision.target_agent_id or "",
-                    plan_id=native_response.plan.plan_id
-                    if native_response.plan
-                    else request.plan_id,
-                    step_id=(
-                        native_response.plan.current_step_id
-                        if native_response.plan
-                        else request.step_id
-                    ),
                     deadline_at=deadline,
-                    input=native_response.invocation.input if native_response.invocation else {},
                 )
-            )
-            trace_complete = (
-                await _record_trace(
-                    ports,
-                    ExecutionTraceEventDraft(
-                        trace_id=trace_id_for_turn(turn.turn.turn_id),
+                trace_complete = (
+                    await _record_trace(
+                        ports,
+                        ExecutionTraceEventDraft(
+                            trace_id=trace_id_for_turn(turn.turn.turn_id),
+                            tenant_id=identity.tenant_id,
+                            user_id=identity.user_id,
+                            session_id=request.session_id,
+                            turn_id=turn.turn.turn_id,
+                            run_id=external_started.run.run_id,
+                            event_type="agent_run",
+                            stage="delegated_start",
+                            status=str(external_started.run.status),
+                            source="oir:agent_run",
+                            source_event_id=f"run:{external_started.run.run_id}:started",
+                            facts={
+                                "agent_id": external_started.run.agent_id,
+                                "invoker_type": "external_execution",
+                                "delegated": True,
+                                **external_started.binding_trace_facts,
+                            },
+                        ),
+                    )
+                    and trace_complete
+                )
+                ticket = external_started.execution_ticket
+            else:
+                started = await ports.delegated_runs.start(
+                    DelegatedRunStartCommand(
                         tenant_id=identity.tenant_id,
                         user_id=identity.user_id,
                         session_id=request.session_id,
+                        request_id=native_response.request_id,
                         turn_id=turn.turn.turn_id,
-                        run_id=started.run.run_id,
-                        event_type="agent_run",
-                        stage="delegated_start",
-                        status=str(started.run.status),
-                        source="oir:agent_run",
-                        source_event_id=f"run:{started.run.run_id}:started",
-                        facts={
-                            "agent_id": started.run.agent_id,
-                            "invoker_type": "host_delegated",
-                            "delegated": True,
-                        },
-                    ),
+                        agent_id=native_response.decision.target_agent_id or "",
+                        plan_id=native_response.plan.plan_id
+                        if native_response.plan
+                        else request.plan_id,
+                        step_id=(
+                            native_response.plan.current_step_id
+                            if native_response.plan
+                            else request.step_id
+                        ),
+                        deadline_at=deadline,
+                        input=native_response.invocation.input
+                        if native_response.invocation
+                        else {},
+                    )
                 )
-                and trace_complete
-            )
-            issued = await tickets.issue(
-                started.run,
-                request_id=native_response.request_id,
-                purpose="agent_event",
-                ttl_seconds=settings.execution_ticket_ttl_seconds,
-            )
-            ticket = issued.ticket
+                trace_complete = (
+                    await _record_trace(
+                        ports,
+                        ExecutionTraceEventDraft(
+                            trace_id=trace_id_for_turn(turn.turn.turn_id),
+                            tenant_id=identity.tenant_id,
+                            user_id=identity.user_id,
+                            session_id=request.session_id,
+                            turn_id=turn.turn.turn_id,
+                            run_id=started.run.run_id,
+                            event_type="agent_run",
+                            stage="delegated_start",
+                            status=str(started.run.status),
+                            source="oir:agent_run",
+                            source_event_id=f"run:{started.run.run_id}:started",
+                            facts={
+                                "agent_id": started.run.agent_id,
+                                "invoker_type": "host_delegated",
+                                "delegated": True,
+                            },
+                        ),
+                    )
+                    and trace_complete
+                )
+                issued = await tickets.issue(
+                    started.run,
+                    request_id=native_response.request_id,
+                    purpose="agent_event",
+                    ttl_seconds=settings.execution_ticket_ttl_seconds,
+                )
+                ticket = issued.ticket
         if not trace_complete:
             response.headers["X-OIR-Trace-Completeness"] = "incomplete"
         return route_response_to_compat(

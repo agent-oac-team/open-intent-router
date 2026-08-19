@@ -16,6 +16,7 @@ from app.schemas.agents import (
     AgentDefinition,
     AgentDefinitionV2,
     CandidateAgent,
+    ExternalExecutionHandling,
     InvocationHandling,
     UiHandoffHandling,
 )
@@ -686,6 +687,23 @@ class RouterService:
                         route=handoff.route,
                         params=handoff.params,
                         metadata={"handling_kind": "ui_handoff"},
+                    ),
+                    "invocation": None,
+                }
+            )
+        if isinstance(agent, AgentDefinitionV2) and isinstance(
+            agent.handling, ExternalExecutionHandling
+        ):
+            plan = output.plan
+            return output.model_copy(
+                update={
+                    "next_action": NextAction(
+                        type="wait_for_agent_event",
+                        message="该能力由宿主外部执行，等待 Agent 返回结果。",
+                        agent_id=agent.agent_id,
+                        plan_id=plan.plan_id if plan is not None else None,
+                        step_id=plan.current_step_id if plan is not None else None,
+                        metadata={"handling_kind": "external_execution"},
                     ),
                     "invocation": None,
                 }

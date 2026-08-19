@@ -1,7 +1,12 @@
 from collections.abc import Mapping
 
 from app.core.errors import AgentUnavailableError, InvocationError
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import (
+    AgentDefinition,
+    AgentDefinitionV2,
+    ExternalExecutionHandling,
+    UiHandoffHandling,
+)
 from app.schemas.common import JsonDict, UserContext
 from app.schemas.invocation import AgentInvocationResult
 from app.schemas.plans import NextAction, Plan, PlanExecutionResponse, PlanStep
@@ -14,6 +19,7 @@ from app.services.plan_service import PlanService, PlanStateConflict
 from app.services.registry_service import AgentRegistryService
 
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
+PlanAgentDefinition = AgentDefinition | AgentDefinitionV2
 
 
 class PlanExecutor:
@@ -60,7 +66,7 @@ class PlanExecutor:
         input_values: JsonDict | None = None,
         context: JsonDict | None = None,
         max_steps: int = 10,
-        selected_definitions: Mapping[str, AgentDefinition] | None = None,
+        selected_definitions: Mapping[str, PlanAgentDefinition] | None = None,
     ) -> PlanExecutionResponse:
         user = _trusted_plan_user(user)
         tenant_id = user.tenant_id or ""
@@ -142,6 +148,46 @@ class PlanExecutor:
                 )
 
             definition = selected_definitions[step.agent_id]
+
+            if isinstance(definition, AgentDefinitionV2):
+                if isinstance(definition.handling, UiHandoffHandling):
+                    next_action = NextAction(
+                        type="open_ui",
+                        message="需要宿主应用打开对应界面继续执行。",
+                        plan_id=plan.plan_id,
+                        step_id=step.step_id,
+                        agent_id=definition.agent_id,
+                        route=definition.handling.route,
+                        params=definition.handling.params.model_dump(
+                            mode="json", exclude_none=True
+                        ),
+                        metadata={"handling_kind": "ui_handoff"},
+                    )
+                    plan = await self._save_step_status(
+                        plan, step, "blocked", next_action, publish=publish_plan
+                    )
+                    return PlanExecutionResponse(
+                        plan=plan, results=results, next_action=next_action
+                    )
+                if isinstance(definition.handling, ExternalExecutionHandling):
+                    next_action = NextAction(
+                        type="wait_for_agent_event",
+                        message="该步骤由宿主外部执行，等待 Agent 返回结果。",
+                        plan_id=plan.plan_id,
+                        step_id=step.step_id,
+                        agent_id=definition.agent_id,
+                        metadata={"handling_kind": "external_execution"},
+                    )
+                    plan = await self._save_step_status(
+                        plan, step, "blocked", next_action, publish=publish_plan
+                    )
+                    return PlanExecutionResponse(
+                        plan=plan, results=results, next_action=next_action
+                    )
+                raise AgentUnavailableError(
+                    "Invocation Binding must be resolved before Plan execution",
+                    details={"agent_id": definition.agent_id},
+                )
 
             if definition.type == "ui_handoff":
                 next_action = NextAction(
@@ -326,7 +372,7 @@ def _trusted_plan_user(user: UserContext) -> UserContext:
 
 def _ensure_plan_agents_available(
     plan: Plan,
-    selected_definitions: Mapping[str, AgentDefinition],
+    selected_definitions: Mapping[str, PlanAgentDefinition],
 ) -> None:
     unavailable = [
         step.agent_id

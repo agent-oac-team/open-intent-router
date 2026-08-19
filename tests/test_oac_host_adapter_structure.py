@@ -72,6 +72,28 @@ def test_oac_host_profile_keeps_host_configuration_out_of_core(monkeypatch) -> N
     assert not hasattr(profile.host, "database_url")
 
 
+def test_oac_external_executor_capabilities_are_explicit_host_configuration() -> None:
+    host = OacHostSettings(
+        _env_file=None,
+        external_executor_refs="registered_bot, another_bot,registered_bot",
+    )
+
+    assert host.supported_external_executor_refs == {"registered_bot", "another_bot"}
+
+
+def test_external_executor_capability_requires_a_durable_ticket_secret() -> None:
+    host = OacHostSettings(_env_file=None, external_executor_refs="registered_bot")
+
+    with pytest.raises(ValueError, match="External Execution requires"):
+        build_oac_host_profile(core=Settings(_env_file=None), host=host)
+
+    profile = build_oac_host_profile(
+        core=Settings(_env_file=None, execution_ticket_secret="ticket-secret"),
+        host=host,
+    )
+    assert profile.host.supported_external_executor_refs == {"registered_bot"}
+
+
 @pytest.mark.parametrize(
     "payload",
     [

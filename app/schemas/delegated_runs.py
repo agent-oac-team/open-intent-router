@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from app.schemas.common import JsonDict, StrictBaseModel
+from app.schemas.logs import ExecutionBindingSnapshot
 
 DELEGATED_RUN_MAINTENANCE_EVENT_PREFIX = "event_timeout_"
 
@@ -35,6 +36,9 @@ class DelegatedRunStartCommand(StrictBaseModel):
     deadline_at: datetime
     input: JsonDict = Field(default_factory=dict)
     metadata: JsonDict = Field(default_factory=dict)
+    agent_revision: int | None = Field(default=None, ge=0)
+    handling_kind: Literal["invocation", "external_execution", "ui_handoff"] | None = None
+    binding_snapshot: ExecutionBindingSnapshot | None = None
 
 
 class DelegatedRunEventCommand(StrictBaseModel):
@@ -94,7 +98,19 @@ class DelegatedRunReference(StrictBaseModel):
     step_id: str | None = None
     status: DelegatedRunStatus
     state_version: int = Field(ge=1)
+    # The Ticket callback cursor must advance with the canonical Run. Keeping
+    # it here prevents a retried External Execution response from resetting to 0.
+    event_sequence: int = Field(default=0, ge=0)
     deadline_at: datetime
+
+
+class DelegatedRunExisting(StrictBaseModel):
+    """Canonical immutable execution facts for one idempotent Delegated Run."""
+
+    run: DelegatedRunReference
+    agent_revision: int | None = Field(default=None, ge=0)
+    handling_kind: Literal["invocation", "external_execution", "ui_handoff"] | None = None
+    binding_snapshot: ExecutionBindingSnapshot | None = None
 
 
 class DelegatedRunCommandResult(StrictBaseModel):

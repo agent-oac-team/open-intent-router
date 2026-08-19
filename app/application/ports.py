@@ -1,12 +1,14 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinition, AgentDefinitionV2
 from app.schemas.common import UserContext
 from app.schemas.delegated_runs import (
     DelegatedRunCancelCommand,
     DelegatedRunCommandResult,
     DelegatedRunCompleteCommand,
+    DelegatedRunExisting,
     DelegatedRunFailCommand,
     DelegatedRunProgressCommand,
     DelegatedRunStartCommand,
@@ -19,6 +21,12 @@ from app.schemas.execution_traces import (
     ExecutionTraceQuery,
     ExecutionTraceSnapshot,
     ExecutionTraceWriteResult,
+)
+from app.schemas.external_execution import (
+    ExternalExecutionAcceptanceReservation,
+    ExternalExecutionStartResult,
+    ExternalExecutorAcceptance,
+    ExternalExecutorAcceptanceRequest,
 )
 from app.schemas.memory import (
     MemoryGovernanceRepairResponse,
@@ -38,6 +46,19 @@ from app.services.registry_service import RegistryState
 @runtime_checkable
 class RoutingApplicationPort(Protocol):
     async def route(self, request: RouteRequest) -> RouteResponse: ...
+
+
+@runtime_checkable
+class SnapshotRoutingApplicationPort(Protocol):
+    """Route one request through a freshly compiled trusted v2 Definition Snapshot."""
+
+    async def route_with_snapshot(
+        self,
+        request: RouteRequest,
+        *,
+        definitions: Sequence[AgentDefinitionV2],
+        source: str,
+    ) -> RouteResponse: ...
 
 
 @runtime_checkable
@@ -75,6 +96,11 @@ class TurnApplicationPort(Protocol):
 
 @runtime_checkable
 class DelegatedRunApplicationPort(Protocol):
+    async def find_existing(
+        self,
+        command: DelegatedRunStartCommand,
+    ) -> DelegatedRunExisting | None: ...
+
     async def start(self, command: DelegatedRunStartCommand) -> DelegatedRunCommandResult: ...
 
     async def progress(self, command: DelegatedRunProgressCommand) -> DelegatedRunCommandResult: ...
@@ -86,6 +112,41 @@ class DelegatedRunApplicationPort(Protocol):
     async def cancel(self, command: DelegatedRunCancelCommand) -> DelegatedRunCommandResult: ...
 
     async def timeout(self, command: DelegatedRunTimeoutCommand) -> DelegatedRunCommandResult: ...
+
+
+@runtime_checkable
+class ExternalExecutorApplicationPort(Protocol):
+    """A Host-owned capability that accepts one declared executor reference."""
+
+    def supports(self, executor_ref: str) -> bool: ...
+
+    async def accept(
+        self,
+        request: ExternalExecutorAcceptanceRequest,
+    ) -> ExternalExecutorAcceptance: ...
+
+
+@runtime_checkable
+class ExternalExecutionAcceptanceApplicationPort(Protocol):
+    """Durably record one Host acceptance without persisting Host-private binding data."""
+
+    async def record_accepted(
+        self, reservation: ExternalExecutionAcceptanceReservation
+    ) -> bool: ...
+
+
+@runtime_checkable
+class ExternalExecutionApplicationPort(Protocol):
+    """Start one already-routed External Execution without letting a Host rewrite Handling."""
+
+    async def start_from_route(
+        self,
+        request: RouteRequest,
+        response: RouteResponse,
+        *,
+        turn_id: str,
+        deadline_at: datetime,
+    ) -> ExternalExecutionStartResult: ...
 
 
 @runtime_checkable

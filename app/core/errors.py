@@ -75,6 +75,13 @@ class InvocationBindingUnavailableError(AppError):
     code = "invocation_binding_unavailable"
 
 
+class ExternalExecutionBindingUnavailableError(AppError):
+    """A selected External Execution Definition cannot be accepted by this Host."""
+
+    status_code = 503
+    code = "external_execution_binding_unavailable"
+
+
 class RuntimeCatalogUnavailableError(AppError):
     status_code = 503
     code = "runtime_catalog_unavailable"

@@ -39,6 +39,10 @@ class ExecutionTicketRecord(StrictBaseModel):
     lease_expires_at: datetime | None = None
     consumed_event_id: str | None = Field(default=None, max_length=128)
     consumed_at: datetime | None = None
+    # Only External Execution uses this durable, one-active-ticket contract.
+    # Generic legacy Ticket issuance intentionally remains able to demonstrate
+    # ambiguous correlation so legacy callbacks fail closed.
+    canonical_reuse: bool = False
 
 
 class ExecutionTicketIssueResult(StrictBaseModel):

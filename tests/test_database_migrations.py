@@ -78,7 +78,23 @@ def test_postgresql_schema_contains_hashed_execution_ticket_contract() -> None:
     assert "claims_text TEXT NOT NULL" in schema_sql
     assert "lease_expires_at TIMESTAMP WITH TIME ZONE" in schema_sql
     assert "consumed_event_id VARCHAR(128)" in schema_sql
+    assert "canonical_reuse BOOLEAN DEFAULT FALSE NOT NULL" in schema_sql
+    assert "uq_execution_tickets_reusable_active_run_purpose" in schema_sql
     assert "execution_ticket TEXT" not in schema_sql
+
+
+def test_postgresql_schema_contains_safe_external_execution_acceptance_idempotency() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS external_execution_acceptances" in schema_sql
+    assert "acceptance_id VARCHAR(128) NOT NULL" in schema_sql
+    assert "request_fingerprint VARCHAR(64) NOT NULL" in schema_sql
+    assert (
+        "binding_id"
+        not in schema_sql.split("CREATE TABLE IF NOT EXISTS external_execution_acceptances", 1)[
+            1
+        ].split("CREATE TABLE IF NOT EXISTS agent_results", 1)[0]
+    )
 
 
 def test_postgresql_schema_contains_registry_revision_and_audit_contract() -> None:
@@ -226,6 +242,7 @@ async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp
         "turn_id",
         "agent_revision",
         "handling_kind",
+        "external_ticket_issuance_state",
         "binding_snapshot_text",
         "delegated",
         "state_version",
@@ -238,6 +255,49 @@ async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp
     }
     assert schema["agent_results"] >= {"turn_id", "run_state_version"}
     assert schema["agent_events"] >= {"turn_id", "sequence", "run_state_version"}
+
+
+async def test_create_all_tables_adds_scoped_canonical_ticket_fence_to_legacy_database(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-tickets.db'}"
+    settings = Settings(storage_backend="database", database_url=database_url)
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE execution_tickets (
+                    ticket_hash VARCHAR(64) PRIMARY KEY,
+                    run_id VARCHAR(128) NOT NULL,
+                    purpose VARCHAR(64) NOT NULL,
+                    status VARCHAR(32) NOT NULL
+                )
+                """
+            )
+        )
+    await engine.dispose()
+
+    await create_all_tables(settings)
+    await create_all_tables(settings)
+
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        schema = await conn.run_sync(
+            lambda sync_conn: {
+                "columns": {
+                    column["name"] for column in inspect(sync_conn).get_columns("execution_tickets")
+                },
+                "indexes": {
+                    index["name"]: index
+                    for index in inspect(sync_conn).get_indexes("execution_tickets")
+                },
+            }
+        )
+    await engine.dispose()
+
+    assert "canonical_reuse" in schema["columns"]
+    assert schema["indexes"]["uq_execution_tickets_reusable_active_run_purpose"]["unique"]
 
 
 async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp_path) -> None:

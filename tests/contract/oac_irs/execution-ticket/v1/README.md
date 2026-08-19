@@ -16,6 +16,9 @@ Ticket 不放入 `route`，因为它不是路由业务决策；不放入 `contex
 3. 最终 Event 被 Adapter/Core 幂等接受后清除当前 Ticket。
 4. 网络失败且提交结果未知时保留 Ticket供同一 Event 幂等重试。
 5. 用户点击失败重试时先重新 Route，新 Run 获得新 Ticket，旧 Ticket 不跨 Run 复用。
+   这里的“retry route”只指创建**新 handoff / 新 Canonical Run**的用户重试；同一
+   request/turn 的网络重放或并发交付会复用同一 Canonical Run 与同一 Ticket，不能让后一个
+   响应作废先前已经交付给外部 Agent 的 bearer。
 
 ## 向后兼容
 

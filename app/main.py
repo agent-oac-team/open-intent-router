@@ -18,6 +18,7 @@ from app.api import (
     runtime,
     sessions,
 )
+from app.application import ExternalExecutorApplicationPort
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import create_all_tables
@@ -57,7 +58,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if catalog is not None:
             catalog_started = True
             _app.state.registry_snapshot_runtime = RegistrySnapshotRuntime(
-                RegistrySnapshotBuilder(catalog)
+                RegistrySnapshotBuilder(
+                    catalog,
+                    external_executor=_app.state.external_executor,
+                )
             )
         if settings.storage_backend == "database":
             await create_all_tables(settings)
@@ -119,6 +123,7 @@ def create_app(
     *,
     api_prefix: str = "",
     runtime_descriptors: Sequence[RuntimeAdapterDescriptor] | None = None,
+    external_executor: ExternalExecutorApplicationPort | None = None,
 ) -> FastAPI:
     settings = get_settings()
     normalized_prefix = _normalize_api_prefix(api_prefix)
@@ -136,6 +141,7 @@ def create_app(
     # supplies a Snapshot.  Keeping this process-owned Runtime ready now lets
     # Direct Invoke switch atomically once that authoritative source exists.
     app.state.registry_snapshot_runtime: RegistrySnapshotRuntime | None = None
+    app.state.external_executor = external_executor
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[

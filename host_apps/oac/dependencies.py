@@ -9,6 +9,7 @@ from app.dependencies import (
     get_delegated_run_service,
     get_event_service,
     get_execution_trace_service,
+    get_external_execution_acceptance_store,
     get_memory_governance_service,
     get_memory_management_service,
     get_plan_service,
@@ -23,8 +24,10 @@ from app.repositories.registry_audit import (
     MemoryRegistryAuditStore,
     RegistryAuditStore,
 )
+from app.services.snapshot_routing_service import SnapshotRoutingService
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, FileCutoverAuditRepository
+from host_adapters.oac.external_executor import OacExternalExecutor
 from host_adapters.oac.identity import HostIdentityVerifier
 from host_adapters.oac.identity.models import (
     HostAuthenticationError,
@@ -32,21 +35,68 @@ from host_adapters.oac.identity.models import (
     TrustedHostIdentity,
 )
 from host_adapters.oac.repositories.nonces import MemoryNonceStore
+from host_adapters.oac.routing import OacLegacyRegistryRoutingAdapter
 from host_apps.oac.config import get_oac_host_settings
 
 
 @lru_cache
 def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
     return OacAdapterApplicationPorts(
-        routing=build_router_service(),
+        routing=get_oac_legacy_registry_routing(),
         registry=get_registry_service(),
         events=get_event_service(),
         plans=get_plan_service(),
         delegated_runs=get_delegated_run_service(),
         turns=get_turn_service(),
+        external_execution=get_oac_external_execution_service(),
         execution_traces=get_execution_trace_service(),
         memory_management=get_memory_management_service(),
         memory_governance=get_memory_governance_service(),
+    )
+
+
+@lru_cache
+def get_oac_external_executor() -> OacExternalExecutor:
+    settings = get_oac_host_settings()
+    host_ticket_secret = (
+        settings.execution_ticket_secret.get_secret_value()
+        if settings.execution_ticket_secret is not None
+        else None
+    )
+    return OacExternalExecutor(
+        supported_executor_refs=settings.supported_external_executor_refs,
+        acceptance_store=get_external_execution_acceptance_store(),
+        acceptance_fingerprint_secret=host_ticket_secret or get_execution_ticket_service().secret,
+    )
+
+
+@lru_cache
+def get_oac_snapshot_routing() -> SnapshotRoutingService:
+    return SnapshotRoutingService(
+        router_factory=lambda snapshot_runtime: build_router_service(
+            snapshot_runtime=snapshot_runtime
+        ),
+        external_executor=get_oac_external_executor(),
+    )
+
+
+@lru_cache
+def get_oac_legacy_registry_routing() -> OacLegacyRegistryRoutingAdapter:
+    return OacLegacyRegistryRoutingAdapter(
+        registry=get_registry_service(),
+        snapshot_routing=get_oac_snapshot_routing(),
+    )
+
+
+@lru_cache
+def get_oac_external_execution_service():
+    from app.services.external_execution_service import ExternalExecutionService
+
+    return ExternalExecutionService(
+        external_executor=get_oac_external_executor(),
+        delegated_runs=get_delegated_run_service(),
+        tickets=get_execution_ticket_service(),
+        ticket_ttl_seconds=get_oac_host_settings().execution_ticket_ttl_seconds,
     )
 
 

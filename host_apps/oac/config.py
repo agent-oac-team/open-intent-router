@@ -55,6 +55,7 @@ class OacHostSettings(BaseSettings):
     execution_ticket_secret: SecretStr | None = Field(default=None)
     execution_ticket_ttl_seconds: int = Field(default=900, ge=30, le=86400)
     execution_ticket_lease_seconds: int = Field(default=30, ge=5, le=300)
+    external_executor_refs: str = ""
     oac_admin_key_id: str | None = None
     oac_admin_credential: SecretStr | None = Field(default=None)
     coze_workflow_key_id: str | None = None
@@ -86,6 +87,12 @@ class OacHostSettings(BaseSettings):
     @property
     def allowed_attribute_keys(self) -> frozenset[str]:
         return _csv_values(self.identity_allowed_attribute_keys)
+
+    @property
+    def supported_external_executor_refs(self) -> frozenset[str]:
+        """Explicit Host-owned logical External Executor capability identifiers."""
+
+        return _csv_values(self.external_executor_refs)
 
 
 def memory_execution_plane_for_shadow(mode: ShadowMode) -> str:
@@ -140,6 +147,17 @@ def validate_governance_profile(profile: OacHostProfile) -> None:
             not host.oir_control_write_enabled or not host.oir_runtime_write_enabled
         ):
             raise ValueError("OIR must be the only writable primary outside an explicit freeze")
+    if host.supported_external_executor_refs:
+        host_ticket_secret = (
+            host.execution_ticket_secret.get_secret_value()
+            if host.execution_ticket_secret is not None
+            else None
+        )
+        if not (host_ticket_secret or profile.core.execution_ticket_secret):
+            raise ValueError(
+                "External Execution requires OAC_HOST_EXECUTION_TICKET_SECRET "
+                "or EXECUTION_TICKET_SECRET"
+            )
     if host.shadow_mode == "state_rehearsal":
         if not host.state_rehearsal_database_url:
             raise ValueError("State Rehearsal requires an isolated database URL")

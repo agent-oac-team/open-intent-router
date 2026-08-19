@@ -6,6 +6,7 @@ from app.schemas.delegated_runs import (
     DelegatedRunCancelCommand,
     DelegatedRunCommandResult,
     DelegatedRunCompleteCommand,
+    DelegatedRunExisting,
     DelegatedRunFailCommand,
     DelegatedRunOrphanQuery,
     DelegatedRunOrphanResponse,
@@ -27,6 +28,9 @@ class DelegatedRunStartResult:
 
 
 class DelegatedRunStartStore:
+    async def find_existing(self, *, delegation_key: str) -> AgentRun | None:
+        raise NotImplementedError
+
     async def start(
         self,
         *,
@@ -107,6 +111,20 @@ class DelegatedRunService:
         self.cancel_store = cancel_store
         self.maintenance_store = maintenance_store
 
+    async def find_existing(
+        self,
+        command: DelegatedRunStartCommand,
+    ) -> DelegatedRunExisting | None:
+        run = await self.start_store.find_existing(delegation_key=_delegation_key(command))
+        if run is None:
+            return None
+        return DelegatedRunExisting(
+            run=_run_reference(run, fallback_deadline=command.deadline_at),
+            agent_revision=run.agent_revision,
+            handling_kind=run.handling_kind,
+            binding_snapshot=run.binding_snapshot,
+        )
+
     async def start(self, command: DelegatedRunStartCommand) -> DelegatedRunCommandResult:
         delegation_key = _delegation_key(command)
         stored = await self.start_store.start(
@@ -126,6 +144,7 @@ class DelegatedRunService:
                 step_id=run.step_id,
                 status=run.status,
                 state_version=run.state_version,
+                event_sequence=run.event_sequence,
                 deadline_at=run.deadline_at or command.deadline_at,
             ),
             duplicate=stored.duplicate,
@@ -226,5 +245,6 @@ def _run_reference(run: AgentRun, fallback_deadline=None) -> DelegatedRunReferen
         step_id=run.step_id,
         status=run.status,
         state_version=run.state_version,
+        event_sequence=run.event_sequence,
         deadline_at=run.deadline_at or fallback_deadline,
     )

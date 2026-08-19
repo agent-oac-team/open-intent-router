@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -36,10 +37,13 @@ class ExecutionTicketService:
         purpose: str,
         ttl_seconds: int,
         now: datetime | None = None,
+        reuse_active_for_run: bool = False,
     ) -> ExecutionTicketIssueResult:
         issued_at = _as_utc(now or datetime.now(UTC))
         if ttl_seconds <= 0:
             raise ExecutionTicketError("Ticket TTL must be positive")
+        if reuse_active_for_run and not self.secret:
+            raise ExecutionTicketError("Ticket signing secret is required for retry-safe reuse")
         claims = ExecutionTicketClaims(
             request_id=request_id,
             run_id=run.run_id,
@@ -54,8 +58,83 @@ class ExecutionTicketService:
             nonce=new_nonce(),
         )
         ticket = self._encode(claims)
-        await self.store.put(ExecutionTicketRecord(ticket_hash=ticket_hash(ticket), claims=claims))
-        return ExecutionTicketIssueResult(ticket=ticket, claims=claims)
+        record = ExecutionTicketRecord(
+            ticket_hash=ticket_hash(ticket),
+            claims=claims,
+            run_state_version=run.state_version,
+            event_sequence=run.event_sequence,
+            canonical_reuse=reuse_active_for_run,
+        )
+        if reuse_active_for_run:
+            record = await self.store.issue_or_reuse_active_for_run(record, now=issued_at)
+            ticket = self._encode(record.claims)
+        else:
+            await self.store.put(record)
+        return ExecutionTicketIssueResult(ticket=ticket, claims=record.claims)
+
+    async def recover_after_issue_failure(
+        self,
+        run: DelegatedRunReference,
+        *,
+        purpose: str,
+        now: datetime | None = None,
+    ) -> ExecutionTicketIssueResult | None:
+        """Recover a committed canonical Ticket before safe Run compensation.
+
+        A network/process failure can occur after the Ticket transaction commits.
+        The store therefore owns a durable issuance fence: it either returns the
+        one active bearer or records that this Run can no longer receive one.
+        """
+
+        recovered = await self.recover_committed_ticket(
+            run,
+            purpose=purpose,
+            now=now,
+        )
+        if recovered is not None:
+            return recovered
+        if not self.secret:
+            raise ExecutionTicketError("Ticket signing secret is required for retry-safe reuse")
+        record = await self.store.recover_active_or_mark_issue_failed(
+            run_id=run.run_id,
+            purpose=purpose,
+            now=_as_utc(now or datetime.now(UTC)),
+        )
+        if record is None:
+            return None
+        return ExecutionTicketIssueResult(
+            ticket=self._encode(record.claims),
+            claims=record.claims,
+        )
+
+    async def recover_committed_ticket(
+        self,
+        run: DelegatedRunReference,
+        *,
+        purpose: str,
+        now: datetime | None = None,
+    ) -> ExecutionTicketIssueResult | None:
+        """Return a Ticket that committed before the caller lost its response.
+
+        This is deliberately read/recovery-only: a retry of an already-created
+        Run must remain eligible for a later handoff if no Ticket was committed.
+        Only the creator's compensating path may install the failed issuance
+        fence through :meth:`recover_after_issue_failure`.
+        """
+
+        if not self.secret:
+            raise ExecutionTicketError("Ticket signing secret is required for retry-safe reuse")
+        record = await self.store.find_canonical_active_for_run(
+            run_id=run.run_id,
+            purpose=purpose,
+            now=_as_utc(now or datetime.now(UTC)),
+        )
+        if record is None:
+            return None
+        return ExecutionTicketIssueResult(
+            ticket=self._encode(record.claims),
+            claims=record.claims,
+        )
 
     async def resolve_legacy(
         self, query: LegacyExecutionCorrelationQuery
@@ -360,6 +439,11 @@ class ExecutionTicketService:
     def _encode(self, claims: ExecutionTicketClaims) -> str:
         raw = secrets.token_urlsafe(32)
         if self.secret:
+            raw = hmac.new(
+                self.secret.encode(),
+                f"execution-ticket:{claims.nonce}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
             digest = hashlib.sha256(f"{raw}.{self.secret}".encode()).hexdigest()[:32]
             return f"{raw}.{digest}"
         return raw

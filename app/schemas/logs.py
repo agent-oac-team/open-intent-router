@@ -1,4 +1,6 @@
+import hmac
 import re
+import secrets
 from datetime import datetime
 from hashlib import sha256
 from typing import Literal
@@ -13,6 +15,10 @@ _BINDING_VERSION_FINGERPRINT_PREFIX = "oir-binding-version-sha256-"
 _BINDING_VERSION_FINGERPRINT_PATTERN = re.compile(
     rf"^{_BINDING_VERSION_FINGERPRINT_PREFIX}[0-9a-f]{{64}}$"
 )
+_EXTERNAL_EXECUTION_BINDING_FINGERPRINT_PREFIX = "oir-external-binding-sha256-"
+_EXTERNAL_EXECUTION_BINDING_FINGERPRINT_PATTERN = re.compile(
+    rf"^{_EXTERNAL_EXECUTION_BINDING_FINGERPRINT_PREFIX}[0-9a-f]{{64}}$"
+)
 _SECRET_LIKE_BINDING_VALUE_PATTERNS = (
     re.compile(r"^AKIA[0-9A-Z]{16}$"),
     re.compile(r"^AIza[A-Za-z0-9_-]{35}$"),
@@ -23,10 +29,21 @@ _SECRET_LIKE_BINDING_VALUE_PATTERNS = (
     re.compile(r"^sk_(?:live|test)_[A-Za-z0-9_-]{16,}$"),
     re.compile(r"^xoxb-[0-9A-Za-z-]{20,}$"),
 )
+_PROCESS_EXTERNAL_BINDING_FINGERPRINT_KEY = secrets.token_bytes(32)
 
 
 def _is_secret_like_binding_value(value: str) -> bool:
     return any(pattern.fullmatch(value) for pattern in _SECRET_LIKE_BINDING_VALUE_PATTERNS)
+
+
+def is_safe_binding_identifier(value: object) -> bool:
+    """Return whether a persisted binding reference is a logical identifier."""
+
+    return (
+        isinstance(value, str)
+        and bool(_BINDING_IDENTIFIER_PATTERN.fullmatch(value))
+        and not _is_secret_like_binding_value(value)
+    )
 
 
 def _is_safe_binding_version(value: str) -> bool:
@@ -38,6 +55,28 @@ def binding_version_fingerprint(value: str) -> str:
 
     digest = sha256(f"oir-binding-version-v1:{value}".encode()).hexdigest()
     return f"{_BINDING_VERSION_FINGERPRINT_PREFIX}{digest}"
+
+
+def external_execution_binding_fingerprint(value: str, *, secret: str | None = None) -> str:
+    """Project Host binding data with a secret-keyed, non-reversible identifier.
+
+    The service path supplies its durable Ticket secret so retries in separate
+    workers create the same projection. The process-local key keeps direct model
+    construction safe without turning low-entropy test values into enumerable
+    plain SHA-256 digests.
+    """
+
+    key = secret.encode() if secret else _PROCESS_EXTERNAL_BINDING_FINGERPRINT_KEY
+    digest = hmac.new(key, f"oir-external-binding-v1:{value}".encode(), sha256).hexdigest()
+    return f"{_EXTERNAL_EXECUTION_BINDING_FINGERPRINT_PREFIX}{digest}"
+
+
+def is_external_execution_binding_fingerprint(value: object) -> bool:
+    """Return whether a persisted External Execution binding is a safe projection."""
+
+    return isinstance(value, str) and bool(
+        _EXTERNAL_EXECUTION_BINDING_FINGERPRINT_PATTERN.fullmatch(value)
+    )
 
 
 class InvocationBindingSnapshot(StrictBaseModel):
@@ -55,7 +94,7 @@ class InvocationBindingSnapshot(StrictBaseModel):
     def require_logical_identifier(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        if not _BINDING_IDENTIFIER_PATTERN.fullmatch(value) or _is_secret_like_binding_value(value):
+        if not is_safe_binding_identifier(value):
             raise ValueError("binding references must be logical identifiers")
         return value
 
@@ -65,6 +104,32 @@ class InvocationBindingSnapshot(StrictBaseModel):
         if not _is_safe_binding_version(value):
             raise ValueError("binding versions must be bounded safe identifiers")
         return value
+
+
+class ExternalExecutionBindingSnapshot(StrictBaseModel):
+    """Bounded External Executor facts; never persist endpoint or configuration data."""
+
+    schema_version: Literal["oir-binding-v1"] = "oir-binding-v1"
+    kind: Literal["external_execution"] = "external_execution"
+    executor_ref: str
+    executor_binding_id: str
+
+    @field_validator("executor_ref")
+    @classmethod
+    def require_logical_identifier(cls, value: str) -> str:
+        if not is_safe_binding_identifier(value):
+            raise ValueError("binding references must be logical identifiers")
+        return value
+
+    @field_validator("executor_binding_id")
+    @classmethod
+    def require_safe_external_binding_fingerprint(cls, value: str) -> str:
+        if not is_external_execution_binding_fingerprint(value):
+            raise ValueError("external execution bindings must be non-reversible fingerprints")
+        return value
+
+
+ExecutionBindingSnapshot = InvocationBindingSnapshot | ExternalExecutionBindingSnapshot
 
 
 class AgentRun(StrictBaseModel):
@@ -81,7 +146,7 @@ class AgentRun(StrictBaseModel):
     invoker_type: str
     agent_revision: int | None = Field(default=None, ge=0)
     handling_kind: Literal["invocation", "external_execution", "ui_handoff"] | None = None
-    binding_snapshot: InvocationBindingSnapshot | None = None
+    binding_snapshot: ExecutionBindingSnapshot | None = None
     delegated: bool = False
     delegation_key: str | None = None
     state_version: int = Field(default=1, ge=1)

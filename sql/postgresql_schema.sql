@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     invoker_type VARCHAR(64) NOT NULL,
     agent_revision INTEGER,
     handling_kind VARCHAR(32),
+    external_ticket_issuance_state VARCHAR(16),
     binding_snapshot_text TEXT,
     delegated BOOLEAN DEFAULT FALSE NOT NULL,
     delegation_key VARCHAR(128),
@@ -311,6 +312,7 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS plan_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS step_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS agent_revision INTEGER;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS handling_kind VARCHAR(32);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS external_ticket_issuance_state VARCHAR(16);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS binding_snapshot_text TEXT;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS turn_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS delegated BOOLEAN DEFAULT FALSE NOT NULL;
@@ -362,10 +364,12 @@ CREATE TABLE IF NOT EXISTS execution_tickets (
     lease_expires_at TIMESTAMP WITH TIME ZONE,
     consumed_event_id VARCHAR(128),
     consumed_at TIMESTAMP WITH TIME ZONE,
+    canonical_reuse BOOLEAN DEFAULT FALSE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     PRIMARY KEY (ticket_hash)
 );
+ALTER TABLE execution_tickets ADD COLUMN IF NOT EXISTS canonical_reuse BOOLEAN DEFAULT FALSE NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_execution_tickets_request_id ON execution_tickets (request_id);
 CREATE INDEX IF NOT EXISTS ix_execution_tickets_run_id ON execution_tickets (run_id);
 CREATE INDEX IF NOT EXISTS ix_execution_tickets_turn_id ON execution_tickets (turn_id);
@@ -380,6 +384,19 @@ CREATE INDEX IF NOT EXISTS ix_execution_tickets_lease_expires_at
     ON execution_tickets (lease_expires_at);
 CREATE INDEX IF NOT EXISTS ix_execution_tickets_consumed_event_id
     ON execution_tickets (consumed_event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_tickets_reusable_active_run_purpose
+    ON execution_tickets (run_id, purpose)
+    WHERE canonical_reuse AND status IN ('issued', 'claimed');
+
+CREATE TABLE IF NOT EXISTS external_execution_acceptances (
+    acceptance_id VARCHAR(128) NOT NULL,
+    request_fingerprint VARCHAR(64) NOT NULL,
+    executor_ref VARCHAR(128) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (acceptance_id)
+);
+CREATE INDEX IF NOT EXISTS ix_external_execution_acceptances_executor_ref
+    ON external_execution_acceptances (executor_ref);
 
 CREATE TABLE IF NOT EXISTS agent_results (
     result_id VARCHAR(128) NOT NULL,

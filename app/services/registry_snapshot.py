@@ -12,6 +12,7 @@ from typing import Literal, TypeAlias
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
+from app.application.ports import ExternalExecutorApplicationPort
 from app.core.errors import RegistryError
 from app.runtime.catalog import RuntimeCatalog
 from app.schemas.agents import (
@@ -315,9 +316,11 @@ class RegistrySnapshotBuilder:
         runtime_catalog: RuntimeCatalog | None,
         *,
         supported_executor_refs: Collection[str] = (),
+        external_executor: ExternalExecutorApplicationPort | None = None,
     ) -> None:
         self._runtime_catalog = runtime_catalog
         self._supported_executor_refs = frozenset(supported_executor_refs)
+        self._external_executor = external_executor
 
     def validate_definition_for_write(self, raw_definition: object) -> AgentDefinitionV2:
         """Reject a Definition before persistence when schema or deployment binding is invalid."""
@@ -447,7 +450,7 @@ class RegistrySnapshotBuilder:
             )
             reason_code = (
                 None
-                if requirement.executor_ref in self._supported_executor_refs
+                if self._supports_external_executor(requirement.executor_ref)
                 else "external_executor_unsupported"
             )
             return requirement, reason_code
@@ -462,6 +465,15 @@ class RegistrySnapshotBuilder:
                 None,
             )
         raise ValueError("Unknown Agent Handling")
+
+    def _supports_external_executor(self, executor_ref: str) -> bool:
+        external_executor = self._external_executor
+        if external_executor is None:
+            return executor_ref in self._supported_executor_refs
+        try:
+            return bool(external_executor.supports(executor_ref))
+        except Exception:
+            return False
 
     def _invocation_isolation_reason(
         self,

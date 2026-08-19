@@ -7,14 +7,23 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.errors import RegistryVersionConflict
+from app.repositories.external_execution_acceptances import MemoryExternalExecutionAcceptanceStore
 from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
+from app.schemas.external_execution import (
+    ExternalExecutionPrincipal,
+    ExternalExecutorAcceptanceRequest,
+)
+from app.services.registry_snapshot import RegistrySnapshotBuilder
 from host_adapters.oac.api.registry import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
+from host_adapters.oac.external_executor import OacExternalExecutor
 from host_adapters.oac.identity.models import TrustedHostIdentity
 from host_adapters.oac.mappers.registry import (
     InvalidRoutePath,
     registry_agent_from_native,
+    registry_agent_from_native_v2,
     registry_agent_to_native,
+    registry_agent_to_native_v2,
 )
 from host_adapters.oac.schemas.registry import RegistryAgent
 from host_apps.oac.dependencies import (
@@ -124,6 +133,153 @@ def test_registry_fixtures_parse_and_mapper_round_trips_legacy_fields() -> None:
     assert native.access_policy.allow_groups == []
     assert native.access_policy.any_entitlements == ["workspace.operations.access"]
     assert native.trigger.negative_examples == ["忽略"]
+
+
+def test_registry_legacy_wire_maps_to_one_canonical_v2_handling_without_changing_wire() -> None:
+    bot = RegistryAgent.model_validate(
+        {
+            "agent_id": "external_agent",
+            "name": "External",
+            "description": "delegated externally",
+            "bot_id": "host_executor",
+            "route_path": "",
+            "allowed_user_tags": ["运营版"],
+            "positive_keywords": ["delegate"],
+            "negative_keywords": [],
+            "enabled": True,
+        }
+    )
+    ui = RegistryAgent.model_validate(_fixture("registry-create")["request"]["body"])
+
+    canonical_bot = registry_agent_to_native_v2(bot)
+    canonical_ui = registry_agent_to_native_v2(ui)
+
+    assert canonical_bot.handling.model_dump(mode="json", exclude_none=True) == {
+        "kind": "external_execution",
+        "executor_ref": "host_executor",
+        "params": {},
+    }
+    assert canonical_ui.handling.model_dump(mode="json", exclude_none=True) == {
+        "kind": "ui_handoff",
+        "route": "/fixture",
+        "params": {},
+    }
+    assert registry_agent_from_native_v2(canonical_bot) == bot
+    assert registry_agent_from_native_v2(canonical_ui) == ui
+    assert "bot_id" not in canonical_bot.model_dump(mode="json")
+    assert "route_path" not in canonical_ui.model_dump(mode="json")
+
+
+async def test_oac_external_executor_requires_an_explicit_host_capability() -> None:
+    store = MemoryExternalExecutionAcceptanceStore()
+    executor = OacExternalExecutor(
+        supported_executor_refs={"registered_bot"},
+        acceptance_store=store,
+        acceptance_fingerprint_secret="oac-test-secret",
+    )
+    unknown = ExternalExecutorAcceptanceRequest(
+        acceptance_id="external_acceptance_unknown",
+        executor_ref="unknown_bot",
+        agent_id="external_agent",
+        agent_revision=1,
+        principal=ExternalExecutionPrincipal(tenant_id="oac", user_id="user-1"),
+    )
+
+    snapshot = RegistrySnapshotBuilder(None, external_executor=executor).build(
+        [
+            registry_agent_to_native_v2(
+                RegistryAgent(
+                    agent_id="external_agent",
+                    name="Unknown External",
+                    description="must not be delegated",
+                    bot_id="unknown_bot",
+                    route_path="",
+                    allowed_user_tags=["运营版"],
+                    positive_keywords=["delegate"],
+                    negative_keywords=[],
+                )
+            )
+        ],
+        source="oac-unknown-executor-test",
+    )
+
+    assert executor.supports("unknown_bot") is False
+    assert (
+        snapshot.entry_for("external_agent").isolation_reason_code
+        == "external_executor_unsupported"
+    )
+    rejected = await executor.accept(unknown)
+    assert rejected.accepted is False
+    assert rejected.reason_code == "external_executor_unsupported"
+    assert store.records == {}
+
+
+async def test_oac_external_executor_rechecks_health_for_a_prior_acceptance() -> None:
+    store = MemoryExternalExecutionAcceptanceStore()
+    request = ExternalExecutorAcceptanceRequest(
+        acceptance_id="external_acceptance_health",
+        executor_ref="registered_bot",
+        agent_id="external_agent",
+        agent_revision=1,
+        principal=ExternalExecutionPrincipal(tenant_id="oac", user_id="user-1"),
+    )
+    healthy = OacExternalExecutor(
+        supported_executor_refs={"registered_bot"},
+        acceptance_store=store,
+        acceptance_fingerprint_secret="oac-test-secret",
+    )
+
+    assert (await healthy.accept(request)).accepted is True
+    unhealthy = OacExternalExecutor(
+        supported_executor_refs={"registered_bot"},
+        acceptance_store=store,
+        acceptance_fingerprint_secret="oac-test-secret",
+        healthy=False,
+    )
+    rejected = await unhealthy.accept(request)
+
+    assert rejected.accepted is False
+    assert rejected.reason_code == "external_executor_unhealthy"
+    assert len(store.records) == 1
+
+
+async def test_oac_external_acceptance_fingerprint_is_keyed_and_requires_a_secret() -> None:
+    request = ExternalExecutorAcceptanceRequest(
+        acceptance_id="external_acceptance_keyed",
+        executor_ref="registered_bot",
+        agent_id="external_agent",
+        agent_revision=1,
+        principal=ExternalExecutionPrincipal(
+            tenant_id="oac",
+            user_id="user-1",
+            entitlements=["premium"],
+        ),
+        params={"task": "low-entropy-value"},
+    )
+    first_store = MemoryExternalExecutionAcceptanceStore()
+    second_store = MemoryExternalExecutionAcceptanceStore()
+    first = OacExternalExecutor(
+        supported_executor_refs={"registered_bot"},
+        acceptance_store=first_store,
+        acceptance_fingerprint_secret="first-host-secret",
+    )
+    second = OacExternalExecutor(
+        supported_executor_refs={"registered_bot"},
+        acceptance_store=second_store,
+        acceptance_fingerprint_secret="second-host-secret",
+    )
+
+    assert (await first.accept(request)).accepted is True
+    assert (await second.accept(request)).accepted is True
+    assert (
+        first_store.records[request.acceptance_id].request_fingerprint
+        != second_store.records[request.acceptance_id].request_fingerprint
+    )
+    with pytest.raises(ValueError, match="fingerprint secret"):
+        OacExternalExecutor(
+            supported_executor_refs={"registered_bot"},
+            acceptance_store=MemoryExternalExecutionAcceptanceStore(),
+        )
 
 
 @pytest.mark.parametrize("route", ["https://evil.example/x", "//evil", "/a/../b", "/a\\b"])

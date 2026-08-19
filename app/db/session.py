@@ -67,6 +67,7 @@ def _ensure_compatible_columns(sync_conn) -> None:
     if "plans" in tables:
         _ensure_plan_ownership(sync_conn, inspector, tables, dialect=dialect)
     _ensure_context_owner_columns(sync_conn, inspector, tables, dialect=dialect)
+    _ensure_execution_ticket_columns(sync_conn, inspector, tables, dialect=dialect)
     _ensure_canonical_pipeline_indexes(sync_conn, tables)
 
 
@@ -106,6 +107,7 @@ def _context_owner_column_definitions(dialect: str) -> dict[str, dict[str, str]]
             "step_id": "VARCHAR(128)",
             "agent_revision": "INTEGER",
             "handling_kind": "VARCHAR(32)",
+            "external_ticket_issuance_state": "VARCHAR(16)",
             "binding_snapshot_text": "TEXT",
             "formation_suppressed": "BOOLEAN DEFAULT FALSE NOT NULL",
             "formation_published_order": "INTEGER DEFAULT 0 NOT NULL",
@@ -142,6 +144,34 @@ def _context_owner_column_definitions(dialect: str) -> dict[str, dict[str, str]]
             "run_state_version": "INTEGER",
         },
     }
+
+
+def _ensure_execution_ticket_columns(
+    sync_conn, inspector, tables: set[str], *, dialect: str
+) -> None:
+    if "execution_tickets" not in tables:
+        return
+    columns = _column_names(inspector, "execution_tickets")
+    if "canonical_reuse" not in columns:
+        sync_conn.execute(
+            text(
+                "ALTER TABLE execution_tickets "
+                "ADD COLUMN canonical_reuse BOOLEAN DEFAULT FALSE NOT NULL"
+            )
+        )
+    predicate = (
+        "canonical_reuse AND status IN ('issued', 'claimed')"
+        if dialect == "postgresql"
+        else "canonical_reuse = 1 AND status IN ('issued', 'claimed')"
+    )
+    sync_conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uq_execution_tickets_reusable_active_run_purpose "
+            "ON execution_tickets (run_id, purpose) "
+            f"WHERE {predicate}"
+        )
+    )
 
 
 def _ensure_canonical_pipeline_indexes(sync_conn, tables: set[str]) -> None:

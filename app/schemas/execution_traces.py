@@ -3,6 +3,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.logs import (
+    is_external_execution_binding_fingerprint,
+    is_safe_binding_identifier,
+)
+
 ExecutionTraceEventType = Literal[
     "canonical_turn",
     "context_pack",
@@ -39,6 +44,8 @@ _FACT_KEYS: dict[str, frozenset[str]] = {
             "binding_schema_version",
             "adapter_contract_version",
             "adapter_implementation_version",
+            "executor_ref",
+            "executor_binding_id",
         }
     ),
     "agent_event": frozenset(
@@ -143,6 +150,14 @@ class _ExecutionTraceEventEnvelope(BaseModel):
             raise ValueError(f"facts contains unsupported fields for {self.event_type}: {names}")
         for value in self.facts.values():
             _validate_fact_value(value)
+        binding_id = self.facts.get("executor_binding_id")
+        if binding_id is not None and not is_external_execution_binding_fingerprint(binding_id):
+            raise ValueError(
+                "executor_binding_id must be a non-reversible external binding fingerprint"
+            )
+        executor_ref = self.facts.get("executor_ref")
+        if executor_ref is not None and not is_safe_binding_identifier(executor_ref):
+            raise ValueError("executor_ref must be a logical binding identifier")
         return self
 
 

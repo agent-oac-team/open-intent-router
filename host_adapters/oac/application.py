@@ -4,6 +4,7 @@ from app.application import (
     DelegatedRunApplicationPort,
     EventApplicationPort,
     ExecutionTraceApplicationPort,
+    ExternalExecutionApplicationPort,
     MemoryGovernanceApplicationPort,
     MemoryManagementApplicationPort,
     PlanApplicationPort,
@@ -21,6 +22,7 @@ class OacAdapterApplicationPorts:
     plans: PlanApplicationPort
     delegated_runs: DelegatedRunApplicationPort
     turns: TurnApplicationPort
+    external_execution: ExternalExecutionApplicationPort | None = None
     execution_traces: ExecutionTraceApplicationPort | None = None
     memory_management: MemoryManagementApplicationPort | None = None
     memory_governance: MemoryGovernanceApplicationPort | None = None
