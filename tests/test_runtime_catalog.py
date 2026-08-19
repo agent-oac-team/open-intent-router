@@ -87,6 +87,7 @@ async def test_catalog_commits_a_frozen_mapping_after_every_adapter_is_healthy()
 
     assert catalog.keys() == ("first", "second")
     assert catalog.get("first").key == "first"
+    assert catalog.descriptor("first").key == "first"
     with pytest.raises(TypeError):
         catalog.adapters["other"] = object()
 
@@ -100,6 +101,32 @@ async def test_catalog_commits_a_frozen_mapping_after_every_adapter_is_healthy()
         "dispose:second",
         "dispose:first",
     ]
+
+
+@pytest.mark.asyncio
+async def test_catalog_descriptor_metadata_is_defensively_detached_from_nested_schema() -> None:
+    events: list[str] = []
+    source_schema = {
+        "type": "object",
+        "properties": {"function": {"const": "side_effect"}},
+    }
+    source = replace(descriptor("metadata", events), config_schema=source_schema)
+    catalog = await RuntimeCatalog.activate(
+        [source],
+        RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
+        shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
+    )
+
+    returned_schema = catalog.descriptor("metadata").config_schema
+    returned_schema["properties"]["function"]["const"] = "caller-change"
+    source_schema["properties"]["function"]["const"] = "deployment-change"
+
+    assert catalog.descriptor("metadata").config_schema == {
+        "type": "object",
+        "properties": {"function": {"const": "side_effect"}},
+    }
+
+    await catalog.aclose()
 
 
 @pytest.mark.asyncio

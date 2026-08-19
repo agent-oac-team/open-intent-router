@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from inspect import isawaitable, iscoroutinefunction
 from math import isfinite
@@ -47,10 +48,16 @@ class RuntimeCatalogKeyError(RuntimeCatalogError):
 
 @dataclass(frozen=True, slots=True)
 class RuntimeAdapterCapability:
-    """Stable capabilities declared by a trusted deployment adapter."""
+    """Stable capabilities declared by a trusted deployment adapter.
+
+    ``v2_invocation`` is deliberately separate from generic invocation support:
+    legacy adapters may still be installed for the old Definition contract while
+    being unable to consume an ``oir-agent-v2`` Invocation Binding.
+    """
 
     invocation: bool
     cancellation: bool = False
+    v2_invocation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +124,12 @@ class RuntimeCatalog:
         self._adapters: Mapping[str, object] = MappingProxyType(
             {item.descriptor.key: item.adapter for item in self._activated}
         )
+        self._descriptors: Mapping[str, RuntimeAdapterDescriptor] = MappingProxyType(
+            {
+                item.descriptor.key: _copy_descriptor_metadata(item.descriptor)
+                for item in self._activated
+            }
+        )
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
         self._closed = False
 
@@ -170,6 +183,14 @@ class RuntimeCatalog:
         if adapter is None:
             raise RuntimeCatalogKeyError(f"No Runtime Adapter registered for key: {key}")
         return adapter
+
+    def descriptor(self, key: str) -> RuntimeAdapterDescriptor:
+        """Return a defensive metadata copy without exposing a live adapter instance."""
+
+        descriptor = self._descriptors.get(key)
+        if descriptor is None:
+            raise RuntimeCatalogKeyError(f"No Runtime Adapter registered for key: {key}")
+        return _copy_descriptor_metadata(descriptor)
 
     async def aclose(self) -> None:
         if self._closed:
@@ -336,6 +357,10 @@ def _validate_descriptors(
             raise RuntimeCatalogValidationError(
                 "Runtime Adapter cancellation capability is invalid"
             )
+        if not isinstance(descriptor.capability.v2_invocation, bool):
+            raise RuntimeCatalogValidationError(
+                "Runtime Adapter v2 invocation capability is invalid"
+            )
         if not callable(descriptor.factory):
             raise RuntimeCatalogValidationError("Runtime Adapter factory is required")
         if not callable(descriptor.health_check):
@@ -369,6 +394,33 @@ def _is_async_lifecycle_hook(hook: object) -> bool:
     return callable(hook) and (
         iscoroutinefunction(hook) or iscoroutinefunction(type(hook).__call__)
     )
+
+
+def _copy_descriptor_metadata(
+    descriptor: RuntimeAdapterDescriptor,
+) -> RuntimeAdapterDescriptor:
+    """Detach Catalog metadata from deployment-owned mutable schema structures."""
+
+    return RuntimeAdapterDescriptor(
+        key=descriptor.key,
+        contract_version=descriptor.contract_version,
+        implementation_version=descriptor.implementation_version,
+        config_schema=_deep_copy_schema(descriptor.config_schema),
+        capability=descriptor.capability,
+        factory=descriptor.factory,
+        health_check=descriptor.health_check,
+        lifecycle=descriptor.lifecycle,
+    )
+
+
+def _deep_copy_schema(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _deep_copy_schema(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_deep_copy_schema(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_deep_copy_schema(item) for item in value)
+    return deepcopy(value)
 
 
 Value = TypeVar("Value")
