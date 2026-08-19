@@ -2,6 +2,7 @@ import asyncio
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from inspect import isawaitable
 from uuid import uuid4
 
 from jsonschema import ValidationError as JsonSchemaValidationError
@@ -9,11 +10,9 @@ from jsonschema import validate as validate_json_schema
 
 from app.core.errors import AgentUnavailableError, InvocationError
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
-from app.invokers.http import HttpAgentInvoker
-from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
-from app.invokers.mock import MockAgentInvoker
+from app.invokers.local_function import LocalFunctionRegistry
 from app.invokers.registry import AgentInvokerRegistry
-from app.invokers.ui_handoff import UiHandoffInvoker
+from app.runtime.catalog import RuntimeAdapterContext, build_default_runtime_descriptors
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
 from app.schemas.agents import AgentDefinition
 from app.schemas.common import ErrorDetail
@@ -555,10 +554,12 @@ class InvocationService:
 
 def build_default_invoker_registry(settings, local_functions: LocalFunctionRegistry | None = None):
     registry = AgentInvokerRegistry()
-    registry.register("mock", MockAgentInvoker())
-    registry.register("http", HttpAgentInvoker(settings))
-    registry.register("local_function", LocalFunctionInvoker(local_functions))
-    registry.register("ui_handoff", UiHandoffInvoker())
+    context = RuntimeAdapterContext(settings=settings, local_functions=local_functions)
+    for descriptor in build_default_runtime_descriptors():
+        invoker = descriptor.factory(context)
+        if isawaitable(invoker):
+            raise RuntimeError("Default Runtime Adapter factory must be synchronous")
+        registry.register(descriptor.key, invoker)
     return registry
 
 

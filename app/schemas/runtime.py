@@ -1,6 +1,21 @@
+from typing import Literal
+
 from pydantic import Field
 
 from app.schemas.common import StrictBaseModel
+
+
+class ReadinessResponse(StrictBaseModel):
+    status: str
+    registry_status: str
+    active_source: str | None = None
+    message: str | None = None
+
+
+class RuntimeCatalogReadinessErrorResponse(StrictBaseModel):
+    status: Literal["error"]
+    runtime_status: Literal["error"]
+    runtime_reason: str
 
 
 class RuntimeConfigResponse(StrictBaseModel):

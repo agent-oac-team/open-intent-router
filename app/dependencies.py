@@ -1,11 +1,14 @@
 from functools import lru_cache
 from uuid import uuid4
 
+from fastapi import Request
+
 from app.adapters.knowledge_sys import (
     KnowledgeSysHttpProvider,
     load_signing_private_key,
 )
 from app.core.config import Settings, get_settings
+from app.core.errors import RuntimeCatalogUnavailableError
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.db.session import create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
@@ -77,6 +80,7 @@ from app.repositories.turn_route_completion import (
     MemoryRouteTurnCompletionStore,
 )
 from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
+from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogRuntime
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.agent_event_service import NativeAgentEventService
 from app.services.chat_history_service import ChatHistoryService
@@ -86,7 +90,7 @@ from app.services.delegated_run_timeout_runtime import DelegatedRunTimeoutRuntim
 from app.services.event_service import EventService
 from app.services.execution_ticket_service import ExecutionTicketService
 from app.services.execution_trace_service import ExecutionTraceService
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.knowledge_context_handle import KnowledgeContextHandleService
 from app.services.memory_candidate_hard_rules import MemoryCandidateHardRules
 from app.services.memory_candidate_policy import MemoryCandidatePolicy
@@ -606,14 +610,21 @@ def build_delegated_run_timeout_runtime() -> DelegatedRunTimeoutRuntime:
     )
 
 
-def get_invocation_service() -> InvocationService:
+async def get_runtime_catalog(request: Request) -> RuntimeCatalog:
+    runtime = getattr(request.app.state, "runtime_catalog_runtime", None)
+    if not isinstance(runtime, RuntimeCatalogRuntime):
+        raise RuntimeCatalogUnavailableError("Runtime Catalog is unavailable")
+    return await runtime.get_catalog()
+
+
+async def get_invocation_service(request: Request) -> InvocationService:
     settings = get_settings()
     repositories = get_repository_bundle()
     return InvocationService(
         registry=get_registry_service(),
         run_repository=repositories["runs"],
         result_repository=repositories["results"],
-        invokers=build_default_invoker_registry(settings),
+        invokers=await get_runtime_catalog(request),
         agent_context_service=get_agent_context_service(),
         plan_service=get_plan_service(),
         turn_capture=get_turn_capture_service(),
@@ -704,9 +715,9 @@ def get_task_memory_plan_resolver() -> TaskMemoryPlanResolver:
     )
 
 
-def get_plan_executor() -> PlanExecutor:
+async def get_plan_executor(request: Request) -> PlanExecutor:
     return PlanExecutor(
         plan_service=get_plan_service(),
         registry=get_registry_service(),
-        invocation_service=get_invocation_service(),
+        invocation_service=await get_invocation_service(request),
     )

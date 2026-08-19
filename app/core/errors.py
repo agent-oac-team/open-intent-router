@@ -61,6 +61,11 @@ class InvocationError(AppError):
     code = "invocation_error"
 
 
+class RuntimeCatalogUnavailableError(AppError):
+    status_code = 503
+    code = "runtime_catalog_unavailable"
+
+
 class AgentUnavailableError(AppError):
     status_code = 404
     code = "agent_not_available"

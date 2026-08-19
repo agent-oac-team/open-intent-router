@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     context_agent_token_budget: int = 3000
 
     agent_http_timeout_seconds: float = 30.0
+    runtime_catalog_shutdown_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
 
     memory_mode: MemoryMode = "off"
     memory_import_legacy_history_enabled: bool = False

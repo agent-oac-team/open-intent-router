@@ -27,8 +27,12 @@ Run、Plan 和 Session 的 Native 读写都以 Principal 的 `(tenant, subject)`
 
 ## 健康检查
 
-- `GET /health`：服务进程健康检查。
-- `GET /ready`：服务就绪检查，会校验关键依赖是否可用。
+- `GET /health`：仅表示服务进程存活；不触发 Registry、Runtime Adapter 或外部依赖探测。
+- `GET /ready`：服务就绪检查。Runtime Catalog 在应用 lifespan 中完成验证、激活与冻结；若
+  Catalog 启动失败，接口返回 `503` 和安全的 `runtime_reason`，但不暴露 Adapter 配置、端点、
+  凭据或原始异常。失败响应固定为
+  `{ "status": "error", "runtime_status": "error", "runtime_reason": "..." }`。Catalog
+  就绪后继续校验既有 Registry 状态。
 
 ## 路由
 
