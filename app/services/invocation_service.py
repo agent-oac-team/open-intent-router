@@ -1,6 +1,6 @@
 import asyncio
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from inspect import isawaitable
 from uuid import uuid4
@@ -8,18 +8,25 @@ from uuid import uuid4
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 
-from app.core.errors import AgentUnavailableError, InvocationError
+from app.core.errors import (
+    AgentUnavailableError,
+    InvocationBindingUnavailableError,
+    InvocationError,
+)
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.invokers.local_function import LocalFunctionRegistry
 from app.invokers.registry import AgentInvokerRegistry
 from app.runtime.catalog import RuntimeAdapterContext, build_default_runtime_descriptors
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinition, AgentDefinitionV2, AgentHandlingKind
 from app.schemas.common import ErrorDetail
+from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
-from app.schemas.logs import AgentResult, AgentRun
+from app.schemas.logs import AgentResult, AgentRun, InvocationBindingSnapshot
 from app.schemas.routing import RouteRequest, RouteResponse
 from app.schemas.turns import FormationEligibilitySnapshot
+from app.services.binding_resolution import BindingResolver, ResolvedInvocationBinding
+from app.services.execution_trace_service import ExecutionTraceService
 from app.services.memory_formation import formation_turn_id, request_prohibits_memory
 from app.services.memory_integration import (
     StructuredFormationSink,
@@ -27,6 +34,17 @@ from app.services.memory_integration import (
     publish_run_transitions,
 )
 from app.services.registry_service import AgentRegistryService
+from app.services.registry_snapshot import RegistrySnapshotRuntime
+
+_DIRECT_INVOKE_RESERVED_CONTEXT_KEYS = frozenset(
+    {
+        "plan_id",
+        "step_id",
+        "plan_status",
+        "plan_execution_claim_id",
+        "plan_execution_idempotency_key",
+    }
+)
 
 
 class InvocationService:
@@ -45,6 +63,9 @@ class InvocationService:
         canonical_invocation_store=None,
         runtime_policy: MemoryRuntimePolicy | None = None,
         memory_formation_policy_version: str = "formation-policy-v1",
+        snapshot_runtime: RegistrySnapshotRuntime | None = None,
+        binding_resolver: BindingResolver | None = None,
+        execution_traces: ExecutionTraceService | None = None,
     ) -> None:
         self.registry = registry
         self.run_repository = run_repository
@@ -65,8 +86,37 @@ class InvocationService:
         )
         self.automatic_formation_enabled = self.runtime_policy.effective_formation_mode != "off"
         self.memory_formation_policy_version = memory_formation_policy_version
+        self.snapshot_runtime = snapshot_runtime
+        self.binding_resolver = binding_resolver
+        self.execution_traces = execution_traces
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
+        snapshot_runtime = self.snapshot_runtime
+        if snapshot_runtime is not None and snapshot_runtime.snapshot is not None:
+            selection = snapshot_runtime.preflight_for_user(request.agent_id, request.user)
+            if selection is None:
+                raise AgentUnavailableError(f"Agent is not available: {request.agent_id}")
+            if self.binding_resolver is None:
+                raise InvocationBindingUnavailableError(
+                    "Invocation Binding is unavailable",
+                    details={"reason_code": "binding_resolver_unavailable"},
+                )
+            resolved = self.binding_resolver.resolve_direct_invocation(selection)
+            invocation = AgentInvocation(
+                run_id=f"run_{uuid4().hex}",
+                request_id=request.request_id,
+                session_id=request.session_id,
+                agent_id=request.agent_id,
+                user=request.user,
+                input=request.input,
+                context=_v2_direct_invocation_context(request.context),
+                memory_context=request.memory_context or MemoryContext(),
+                knowledge_context=request.knowledge_context or KnowledgeContext(),
+                knowledge_context_handle=request.knowledge_context_handle,
+                knowledge_context_trace_id=request.knowledge_context_trace_id,
+            )
+            return await self._invoke_resolved_binding(resolved, invocation)
+
         definitions = await self.registry.available_definitions(request.user)
         definition = next(
             (item for item in definitions if item.agent_id == request.agent_id),
@@ -180,6 +230,53 @@ class InvocationService:
         definition,
         invocation: AgentInvocation,
     ) -> AgentInvocationResult:
+        async def invoke(prepared_invocation: AgentInvocation) -> AgentInvocationResult:
+            invoker = self.invokers.get(definition.type)
+            return await self._invoke_with_claim_heartbeat(invoker, definition, prepared_invocation)
+
+        return await self._execute_accepted_invocation(
+            definition,
+            invocation,
+            invoker_type=definition.type,
+            execute=invoke,
+        )
+
+    async def _invoke_resolved_binding(
+        self,
+        resolved: ResolvedInvocationBinding,
+        invocation: AgentInvocation,
+    ) -> AgentInvocationResult:
+        definition = resolved.definition
+        binding_snapshot = resolved.persistence_snapshot
+        return await self._execute_accepted_invocation(
+            definition,
+            invocation,
+            invoker_type=resolved.adapter_key,
+            agent_revision=definition.revision,
+            handling_kind=definition.handling.kind,
+            binding_snapshot=binding_snapshot,
+            binding_trace_facts={
+                "agent_revision": definition.revision,
+                "handling_kind": definition.handling.kind,
+                "binding_schema_version": binding_snapshot.schema_version,
+                "adapter_contract_version": binding_snapshot.adapter_contract_version,
+                "adapter_implementation_version": binding_snapshot.adapter_implementation_version,
+            },
+            execute=resolved.invoke,
+        )
+
+    async def _execute_accepted_invocation(
+        self,
+        definition: AgentDefinition | AgentDefinitionV2,
+        invocation: AgentInvocation,
+        *,
+        invoker_type: str,
+        execute: Callable[[AgentInvocation], Awaitable[AgentInvocationResult]],
+        agent_revision: int | None = None,
+        handling_kind: AgentHandlingKind | None = None,
+        binding_snapshot: InvocationBindingSnapshot | None = None,
+        binding_trace_facts: dict[str, object] | None = None,
+    ) -> AgentInvocationResult:
         invocation = await self._with_agent_context(definition, invocation)
         request_suppressed = request_prohibits_memory(invocation)
         canonical_managed = bool(invocation.context.get("_canonical_turn_managed"))
@@ -200,7 +297,10 @@ class InvocationService:
             plan_id=_context_str(invocation.context, "plan_id"),
             step_id=_context_str(invocation.context, "step_id"),
             status="running",
-            invoker_type=definition.type,
+            invoker_type=invoker_type,
+            agent_revision=agent_revision,
+            handling_kind=handling_kind,
+            binding_snapshot=binding_snapshot,
             input=invocation.input,
             formation_suppressed=formation_suppressed,
             used_memory_ids=[item.memory_id for item in invocation.memory_context.items],
@@ -218,14 +318,21 @@ class InvocationService:
         if replay_result is not None:
             return _invocation_result_from_record(replay_result)
         await self._link_router_recall(invocation)
+        await self._record_binding_trace(
+            invocation=invocation,
+            run=run,
+            binding_trace_facts=binding_trace_facts,
+        )
         await self._publish_run(
             run,
             event_type="create",
             suppressed=formation_suppressed,
         )
-        invoker = self.invokers.get(definition.type)
         try:
-            result = await self._invoke_with_claim_heartbeat(invoker, definition, invocation)
+            result = await execute(invocation)
+            result = result.model_copy(
+                update={"run_id": invocation.run_id, "agent_id": definition.agent_id}
+            )
             result = _validate_output(definition, result)
         except Exception as exc:
             if isinstance(exc, InvocationError):
@@ -303,6 +410,52 @@ class InvocationService:
                 result_id=stored_result.result_id,
             )
         return result
+
+    async def _record_binding_trace(
+        self,
+        *,
+        invocation: AgentInvocation,
+        run: AgentRun,
+        binding_trace_facts: dict[str, object] | None,
+    ) -> None:
+        if (
+            self.execution_traces is None
+            or binding_trace_facts is None
+            or not invocation.user.tenant_id
+        ):
+            return
+        turn_id = run.turn_id or formation_turn_id(
+            tenant_id=invocation.user.tenant_id,
+            user_id=invocation.user.id,
+            session_id=invocation.session_id,
+            request_id=invocation.request_id or invocation.run_id,
+            run_id=invocation.run_id,
+        )
+        try:
+            await self.execution_traces.try_record(
+                ExecutionTraceEventDraft(
+                    trace_id=trace_id_for_turn(turn_id),
+                    tenant_id=invocation.user.tenant_id,
+                    user_id=invocation.user.id,
+                    session_id=invocation.session_id,
+                    turn_id=turn_id,
+                    run_id=run.run_id,
+                    event_type="agent_run",
+                    stage="binding_resolved",
+                    status="running",
+                    source="oir:binding_resolution",
+                    source_event_id=f"binding-resolution:{run.run_id}",
+                    facts={
+                        "agent_id": run.agent_id,
+                        "invoker_type": run.invoker_type,
+                        "delegated": False,
+                        **binding_trace_facts,
+                    },
+                    occurred_at=run.created_at or datetime.now(UTC),
+                )
+            )
+        except Exception:
+            return
 
     def _formation_eligibility(self, request_suppressed: bool) -> FormationEligibilitySnapshot:
         mode = self.runtime_policy.effective_formation_mode
@@ -596,6 +749,16 @@ def build_invocation_input(definition, text: str | None = None, values: dict | N
 
 def missing_required_inputs(definition, invocation_input: dict) -> list[str]:
     return [item for item in definition.input_schema.required if not invocation_input.get(item)]
+
+
+def _v2_direct_invocation_context(context: Mapping[str, object]) -> dict[str, object]:
+    """Keep v2 Direct Invoke out of Canonical Turn and Plan execution flows."""
+
+    return {
+        key: value
+        for key, value in context.items()
+        if key not in _DIRECT_INVOKE_RESERVED_CONTEXT_KEYS and not key.startswith("_canonical_")
+    }
 
 
 def _context_str(context: dict, key: str) -> str | None:

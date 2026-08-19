@@ -297,6 +297,9 @@ def _validate_run_identity(existing: AgentRun, incoming: AgentRun) -> None:
         "tenant_id",
         "plan_id",
         "step_id",
+        "agent_revision",
+        "handling_kind",
+        "binding_snapshot",
     )
     if any(getattr(existing, field) != getattr(incoming, field) for field in identity_fields):
         raise ValueError("Agent run identity cannot be changed")

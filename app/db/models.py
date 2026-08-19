@@ -270,6 +270,9 @@ class AgentRunModel(Base):
     step_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     invoker_type: Mapped[str] = mapped_column(String(64))
+    agent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    handling_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    binding_snapshot_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     delegated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     delegation_key: Mapped[str | None] = mapped_column(
         String(128), nullable=True, unique=True, index=True

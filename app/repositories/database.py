@@ -1209,6 +1209,11 @@ def _run_values(run: AgentRun) -> dict:
         "step_id": run.step_id,
         "status": run.status,
         "invoker_type": run.invoker_type,
+        "agent_revision": run.agent_revision,
+        "handling_kind": run.handling_kind,
+        "binding_snapshot_text": (
+            dumps(run.binding_snapshot.model_dump(mode="json")) if run.binding_snapshot else None
+        ),
         "delegated": run.delegated,
         "delegation_key": run.delegation_key,
         "state_version": run.state_version,
@@ -1241,6 +1246,9 @@ def _run_from_row(row: AgentRunModel) -> AgentRun:
         step_id=row.step_id,
         status=row.status,
         invoker_type=row.invoker_type,
+        agent_revision=row.agent_revision,
+        handling_kind=row.handling_kind,
+        binding_snapshot=loads(row.binding_snapshot_text, None),
         delegated=row.delegated,
         delegation_key=row.delegation_key,
         state_version=row.state_version,
@@ -1272,6 +1280,9 @@ def _validate_run_identity(existing: AgentRun, incoming: AgentRun) -> None:
         "turn_id",
         "plan_id",
         "step_id",
+        "agent_revision",
+        "handling_kind",
+        "binding_snapshot",
     )
     if any(getattr(existing, field) != getattr(incoming, field) for field in identity_fields):
         raise ValueError("Agent run identity cannot be changed")

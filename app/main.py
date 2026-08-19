@@ -35,6 +35,7 @@ from app.runtime.catalog import (
     build_default_runtime_descriptors,
 )
 from app.services.mem0_config import memory_infrastructure_metadata
+from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     timeout_started = False
     try:
         await runtime_catalog.start()
-        catalog_started = True
+        catalog = runtime_catalog.catalog
+        if catalog is not None:
+            catalog_started = True
+            _app.state.registry_snapshot_runtime = RegistrySnapshotRuntime(
+                RegistrySnapshotBuilder(catalog)
+            )
         if settings.storage_backend == "database":
             await create_all_tables(settings)
             memory_settings = get_memory_data_settings()
@@ -104,6 +110,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     if formation_started and formation_runtime is not None:
                         await formation_runtime.stop()
                 finally:
+                    _app.state.registry_snapshot_runtime = None
                     if catalog_started:
                         await runtime_catalog.stop()
 
@@ -125,6 +132,10 @@ def create_app(
         context=RuntimeAdapterContext(settings=settings),
         shutdown_timeout_seconds=settings.runtime_catalog_shutdown_timeout_seconds,
     )
+    # The v1 Registry remains authoritative until the offline v2 migration
+    # supplies a Snapshot.  Keeping this process-owned Runtime ready now lets
+    # Direct Invoke switch atomically once that authoritative source exists.
+    app.state.registry_snapshot_runtime: RegistrySnapshotRuntime | None = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[

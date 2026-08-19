@@ -194,6 +194,26 @@ class RegistrySnapshot:
             None,
         )
 
+    def preflight_for_user(
+        self,
+        agent_id: str,
+        user: UserContext,
+    ) -> RegistrySnapshotSelection | None:
+        """Return an authorized enabled target before its Handling is resolved.
+
+        Candidate selection remains limited to executable entries.  Direct Invoke
+        needs this narrower trusted lookup so it can distinguish an unavailable
+        Binding (503) from an invisible or disabled Definition (404), without
+        ever consulting the mutable Registry Source again.
+        """
+
+        entry = self._entries.get(agent_id)
+        if entry is None or not entry.enabled:
+            return None
+        if not entry.definition.access_policy.allows(user):
+            return None
+        return RegistrySnapshotSelection(snapshot_id=self.snapshot_id, entry=entry)
+
     def entry_for(self, agent_id: str) -> RegistrySnapshotEntry | None:
         """Return a compiled entry for internal diagnostics without consulting a source."""
 
@@ -261,6 +281,13 @@ class RegistrySnapshotRuntime:
         """Select once; downstream callers retain the returned exact Snapshot entry."""
 
         return self._require_snapshot().select_for_user(agent_id, user)
+
+    def preflight_for_user(
+        self,
+        agent_id: str,
+        user: UserContext,
+    ) -> RegistrySnapshotSelection | None:
+        return self._require_snapshot().preflight_for_user(agent_id, user)
 
     def _require_snapshot(self) -> RegistrySnapshot:
         snapshot = self._snapshot

@@ -224,6 +224,9 @@ async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp
 
     assert schema["agent_runs"] >= {
         "turn_id",
+        "agent_revision",
+        "handling_kind",
+        "binding_snapshot_text",
         "delegated",
         "state_version",
         "deadline_at",

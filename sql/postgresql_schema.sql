@@ -281,6 +281,9 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     step_id VARCHAR(128),
     status VARCHAR(32) NOT NULL,
     invoker_type VARCHAR(64) NOT NULL,
+    agent_revision INTEGER,
+    handling_kind VARCHAR(32),
+    binding_snapshot_text TEXT,
     delegated BOOLEAN DEFAULT FALSE NOT NULL,
     delegation_key VARCHAR(128),
     state_version INTEGER DEFAULT 1 NOT NULL,
@@ -306,6 +309,9 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS user_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS plan_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS step_id VARCHAR(128);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS agent_revision INTEGER;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS handling_kind VARCHAR(32);
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS binding_snapshot_text TEXT;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS turn_id VARCHAR(128);
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS delegated BOOLEAN DEFAULT FALSE NOT NULL;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS delegation_key VARCHAR(128);

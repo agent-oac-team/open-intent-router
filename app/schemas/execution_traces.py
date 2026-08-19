@@ -28,7 +28,19 @@ _FACT_KEYS: dict[str, frozenset[str]] = {
     "route_decision": frozenset(
         {"action", "target_agent_id", "reason", "candidate_count", "plan_id", "capability"}
     ),
-    "agent_run": frozenset({"agent_id", "capability", "invoker_type", "delegated"}),
+    "agent_run": frozenset(
+        {
+            "agent_id",
+            "capability",
+            "invoker_type",
+            "delegated",
+            "agent_revision",
+            "handling_kind",
+            "binding_schema_version",
+            "adapter_contract_version",
+            "adapter_implementation_version",
+        }
+    ),
     "agent_event": frozenset(
         {
             "agent_id",

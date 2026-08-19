@@ -19,6 +19,7 @@ from app.runtime.catalog import (
     RuntimeCatalogRuntime,
     RuntimeCatalogValidationError,
 )
+from app.services.registry_snapshot import RegistrySnapshotRuntime
 
 RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
@@ -331,11 +332,15 @@ def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure
         catalog = runtime.catalog
         assert catalog is not None
         assert catalog.get("test").key == "test"
+        snapshot_runtime = app.state.registry_snapshot_runtime
+        assert isinstance(snapshot_runtime, RegistrySnapshotRuntime)
+        assert snapshot_runtime.snapshot is None
         assert client.get("/health").json() == {"status": "ok"}
         assert client.get("/health").status_code == 200
         assert successful_events == ["activate:test", "health:test"]
 
     assert successful_events[-1] == "dispose:test"
+    assert app.state.registry_snapshot_runtime is None
 
     failed_events: list[str] = []
     failed_app = create_app(

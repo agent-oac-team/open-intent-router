@@ -8,7 +8,7 @@ from app.adapters.knowledge_sys import (
     load_signing_private_key,
 )
 from app.core.config import Settings, get_settings
-from app.core.errors import RuntimeCatalogUnavailableError
+from app.core.errors import RegistryUnavailableError, RuntimeCatalogUnavailableError
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.db.session import create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
@@ -83,6 +83,7 @@ from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
 from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogRuntime
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.agent_event_service import NativeAgentEventService
+from app.services.binding_resolution import BindingResolver
 from app.services.chat_history_service import ChatHistoryService
 from app.services.context_service import ContextService
 from app.services.delegated_run_service import DelegatedRunService
@@ -122,6 +123,7 @@ from app.services.memory_service import MemoryService
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
+from app.services.registry_snapshot import RegistrySnapshotRuntime
 from app.services.router_service import RouterService
 from app.services.task_continuation import TaskMemoryPlanResolver
 from app.services.turn_service import TurnService
@@ -617,14 +619,24 @@ async def get_runtime_catalog(request: Request) -> RuntimeCatalog:
     return await runtime.get_catalog()
 
 
+def get_registry_snapshot_runtime(request: Request) -> RegistrySnapshotRuntime | None:
+    runtime = getattr(request.app.state, "registry_snapshot_runtime", None)
+    if runtime is None:
+        return None
+    if not isinstance(runtime, RegistrySnapshotRuntime):
+        raise RegistryUnavailableError("Registry Snapshot Runtime is unavailable")
+    return runtime
+
+
 async def get_invocation_service(request: Request) -> InvocationService:
     settings = get_settings()
     repositories = get_repository_bundle()
+    catalog = await get_runtime_catalog(request)
     return InvocationService(
         registry=get_registry_service(),
         run_repository=repositories["runs"],
         result_repository=repositories["results"],
-        invokers=await get_runtime_catalog(request),
+        invokers=catalog,
         agent_context_service=get_agent_context_service(),
         plan_service=get_plan_service(),
         turn_capture=get_turn_capture_service(),
@@ -633,6 +645,9 @@ async def get_invocation_service(request: Request) -> InvocationService:
         canonical_invocation_store=get_canonical_invocation_store(),
         runtime_policy=get_memory_runtime_policy(),
         memory_formation_policy_version=settings.memory_formation_policy_version,
+        snapshot_runtime=get_registry_snapshot_runtime(request),
+        binding_resolver=BindingResolver(catalog),
+        execution_traces=get_execution_trace_service(),
     )
 
 

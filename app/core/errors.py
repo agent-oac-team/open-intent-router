@@ -61,6 +61,20 @@ class InvocationError(AppError):
     code = "invocation_error"
 
 
+class DirectInvocationUnsupportedError(AppError):
+    """A Direct Invoke target uses a non-Invocation Handling branch."""
+
+    status_code = 409
+    code = "direct_invocation_not_supported"
+
+
+class InvocationBindingUnavailableError(AppError):
+    """A selected Invocation Definition cannot bind in this deployment."""
+
+    status_code = 503
+    code = "invocation_binding_unavailable"
+
+
 class RuntimeCatalogUnavailableError(AppError):
     status_code = 503
     code = "runtime_catalog_unavailable"

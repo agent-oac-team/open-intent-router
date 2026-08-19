@@ -1,9 +1,70 @@
+import re
 from datetime import datetime
+from hashlib import sha256
+from typing import Literal
 
 from pydantic import Field, field_validator
 
 from app.schemas.common import JsonDict, StrictBaseModel
 from app.schemas.knowledge_persistence import sanitize_persisted_knowledge
+
+_BINDING_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,127}$")
+_BINDING_VERSION_FINGERPRINT_PREFIX = "oir-binding-version-sha256-"
+_BINDING_VERSION_FINGERPRINT_PATTERN = re.compile(
+    rf"^{_BINDING_VERSION_FINGERPRINT_PREFIX}[0-9a-f]{{64}}$"
+)
+_SECRET_LIKE_BINDING_VALUE_PATTERNS = (
+    re.compile(r"^AKIA[0-9A-Z]{16}$"),
+    re.compile(r"^AIza[A-Za-z0-9_-]{35}$"),
+    re.compile(r"^ghp_[A-Za-z0-9]{36}$"),
+    re.compile(r"^github_pat_[A-Za-z0-9_]{22,}$"),
+    re.compile(r"^glpat-[A-Za-z0-9_-]{20,}$"),
+    re.compile(r"^sk-(?:live|proj)-[A-Za-z0-9_-]{16,}$"),
+    re.compile(r"^sk_(?:live|test)_[A-Za-z0-9_-]{16,}$"),
+    re.compile(r"^xoxb-[0-9A-Za-z-]{20,}$"),
+)
+
+
+def _is_secret_like_binding_value(value: str) -> bool:
+    return any(pattern.fullmatch(value) for pattern in _SECRET_LIKE_BINDING_VALUE_PATTERNS)
+
+
+def _is_safe_binding_version(value: str) -> bool:
+    return bool(_BINDING_VERSION_FINGERPRINT_PATTERN.fullmatch(value))
+
+
+def binding_version_fingerprint(value: str) -> str:
+    """Project deployment descriptor metadata without persisting its raw value."""
+
+    digest = sha256(f"oir-binding-version-v1:{value}".encode()).hexdigest()
+    return f"{_BINDING_VERSION_FINGERPRINT_PREFIX}{digest}"
+
+
+class InvocationBindingSnapshot(StrictBaseModel):
+    """Bounded binding facts; version fields are opaque descriptor fingerprints."""
+
+    schema_version: Literal["oir-binding-v1"] = "oir-binding-v1"
+    kind: Literal["invocation"] = "invocation"
+    adapter_key: str
+    adapter_contract_version: str = Field(min_length=1, max_length=128)
+    adapter_implementation_version: str = Field(min_length=1, max_length=128)
+    connector_ref: str | None = None
+
+    @field_validator("adapter_key", "connector_ref")
+    @classmethod
+    def require_logical_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not _BINDING_IDENTIFIER_PATTERN.fullmatch(value) or _is_secret_like_binding_value(value):
+            raise ValueError("binding references must be logical identifiers")
+        return value
+
+    @field_validator("adapter_contract_version", "adapter_implementation_version")
+    @classmethod
+    def require_safe_version(cls, value: str) -> str:
+        if not _is_safe_binding_version(value):
+            raise ValueError("binding versions must be bounded safe identifiers")
+        return value
 
 
 class AgentRun(StrictBaseModel):
@@ -18,6 +79,9 @@ class AgentRun(StrictBaseModel):
     step_id: str | None = None
     status: str
     invoker_type: str
+    agent_revision: int | None = Field(default=None, ge=0)
+    handling_kind: Literal["invocation", "external_execution", "ui_handoff"] | None = None
+    binding_snapshot: InvocationBindingSnapshot | None = None
     delegated: bool = False
     delegation_key: str | None = None
     state_version: int = Field(default=1, ge=1)
