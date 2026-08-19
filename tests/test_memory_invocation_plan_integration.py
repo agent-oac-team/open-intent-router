@@ -1237,15 +1237,15 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
     )
     selected_definition = await registry_service.get_definition("summarizer")
     assert selected_definition is not None
-    routed = await service.invoke_from_route(
-        RouteRequest.model_validate(
-            {
-                "request_id": "request_route_capture",
-                "session_id": "s1",
-                "user": user,
-                "input": {"text": "route invocation"},
-            }
-        ),
+    route_request = RouteRequest.model_validate(
+        {
+            "request_id": "request_route_capture",
+            "session_id": "s1",
+            "user": user,
+            "input": {"text": "route invocation"},
+        }
+    )
+    route_response = (
         RouteResponse(
             request_id="request_route_capture",
             session_id="s1",
@@ -1259,7 +1259,13 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
                 agent_id="summarizer",
                 input={"text": "route invocation"},
             ),
-        ).bind_selected_definitions([selected_definition]),
+        )
+        .bind_selected_definitions([selected_definition])
+        .bind_routed_execution(route_request)
+    )
+    routed = await service.invoke_from_route(
+        route_request,
+        route_response,
     )
 
     assert direct.status == "completed"
@@ -1364,19 +1370,23 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
 
     selected_definition = await registry_service.get_definition("summarizer")
     assert selected_definition is not None
-    with_invocation = route_only.model_copy(
-        update={
-            "decision": RouteDecision(
-                action="open_agent",
-                target_agent_id="summarizer",
-                message="route",
-            ),
-            "invocation": InvocationPreview(
-                agent_id="summarizer",
-                input={"text": "now complete"},
-            ),
-        }
-    ).bind_selected_definitions([selected_definition])
+    with_invocation = (
+        route_only.model_copy(
+            update={
+                "decision": RouteDecision(
+                    action="open_agent",
+                    target_agent_id="summarizer",
+                    message="route",
+                ),
+                "invocation": InvocationPreview(
+                    agent_id="summarizer",
+                    input={"text": "now complete"},
+                ),
+            }
+        )
+        .bind_selected_definitions([selected_definition])
+        .bind_routed_execution(request)
+    )
     result = await service.invoke_from_route(request, with_invocation)
     assert result is not None and result.status == "completed"
     assert formation.turns == {}

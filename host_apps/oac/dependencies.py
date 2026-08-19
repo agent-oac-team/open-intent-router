@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request, status
 from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.dependencies import (
+    build_router_service,
     get_delegated_run_service,
     get_event_service,
     get_execution_trace_service,
@@ -12,7 +13,6 @@ from app.dependencies import (
     get_memory_management_service,
     get_plan_service,
     get_registry_service,
-    get_router_service,
     get_turn_service,
 )
 from app.dependencies import (
@@ -38,7 +38,7 @@ from host_apps.oac.config import get_oac_host_settings
 @lru_cache
 def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
     return OacAdapterApplicationPorts(
-        routing=get_router_service(),
+        routing=build_router_service(),
         registry=get_registry_service(),
         events=get_event_service(),
         plans=get_plan_service(),

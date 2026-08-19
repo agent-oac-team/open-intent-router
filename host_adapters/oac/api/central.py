@@ -203,7 +203,7 @@ async def central_route(
             and trace_complete
         )
         ticket = None
-        if native_response.decision.action in {"open_agent", "continue_agent"}:
+        if _requires_delegated_execution(native_response):
             deadline = datetime.now(UTC) + timedelta(seconds=settings.execution_ticket_ttl_seconds)
             started = await ports.delegated_runs.start(
                 DelegatedRunStartCommand(
@@ -268,6 +268,15 @@ async def central_route(
         return await primary()
     except Exception as exc:
         _raise_projected(exc)
+
+
+def _requires_delegated_execution(response) -> bool:
+    if response.decision.action not in {"open_agent", "continue_agent"}:
+        return False
+    next_action = response.next_action or (response.plan.next_action if response.plan else None)
+    return not (
+        response.invocation is None and next_action is not None and next_action.type == "open_ui"
+    )
 
 
 @router.post("/events/navigation", status_code=202, response_model=AcceptedResponse)

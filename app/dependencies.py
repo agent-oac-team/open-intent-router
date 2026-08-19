@@ -467,7 +467,10 @@ def get_memory_formation_processor():
     )
 
 
-def get_router_service() -> RouterService:
+def build_router_service(
+    *,
+    snapshot_runtime: RegistrySnapshotRuntime | None = None,
+) -> RouterService:
     settings = get_settings()
     repositories = get_repository_bundle()
     return RouterService(
@@ -488,7 +491,12 @@ def get_router_service() -> RouterService:
         plan_continuation_resolver=get_task_memory_plan_resolver(),
         turn_service=get_turn_service(),
         runtime_policy=get_memory_runtime_policy(),
+        snapshot_runtime=snapshot_runtime,
     )
+
+
+def get_router_service(request: Request) -> RouterService:
+    return build_router_service(snapshot_runtime=get_registry_snapshot_runtime(request))
 
 
 @lru_cache

@@ -34,7 +34,7 @@ from app.services.memory_integration import (
     publish_run_transitions,
 )
 from app.services.registry_service import AgentRegistryService
-from app.services.registry_snapshot import RegistrySnapshotRuntime
+from app.services.registry_snapshot import RegistrySnapshotRuntime, RegistrySnapshotSelection
 
 _DIRECT_INVOKE_RESERVED_CONTEXT_KEYS = frozenset(
     {
@@ -202,10 +202,9 @@ class InvocationService:
         preview = route_response.invocation
         if preview is None:
             return None
-        if preview.agent_id not in route_response.context.candidate_agent_ids:
+        if not route_response.has_trusted_invocation_for(route_request):
             raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
-        definition = route_response.selected_definition(preview.agent_id)
-        if definition is None:
+        if preview.agent_id not in route_response.context.candidate_agent_ids:
             raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
         invocation = AgentInvocation(
             run_id=f"run_{uuid4().hex}",
@@ -223,6 +222,27 @@ class InvocationService:
                 ),
             },
         )
+        selection = route_response.selected_binding(preview.agent_id)
+        if isinstance(selection, RegistrySnapshotSelection):
+            if selection.definition.agent_id != preview.agent_id:
+                raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
+            if self.binding_resolver is None:
+                raise InvocationBindingUnavailableError(
+                    "Invocation Binding is unavailable",
+                    details={"reason_code": "binding_resolver_unavailable"},
+                )
+            return await self._invoke_resolved_binding(
+                self.binding_resolver.resolve_direct_invocation(selection),
+                invocation,
+            )
+        definition = route_response.selected_definition(preview.agent_id)
+        if definition is None:
+            raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
+        if isinstance(definition, AgentDefinitionV2):
+            raise InvocationBindingUnavailableError(
+                "Invocation Binding is unavailable",
+                details={"reason_code": "route_binding_unavailable"},
+            )
         return await self._invoke_definition(definition, invocation)
 
     async def _invoke_definition(

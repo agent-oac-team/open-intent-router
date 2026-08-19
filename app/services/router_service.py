@@ -12,7 +12,13 @@ from app.core.redaction import redact_value
 from app.llm.client import LLMClient
 from app.llm.mock import MockLLMClient
 from app.llm.openai_compatible import OpenAICompatibleLLMClient
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import (
+    AgentDefinition,
+    AgentDefinitionV2,
+    CandidateAgent,
+    InvocationHandling,
+    UiHandoffHandling,
+)
 from app.schemas.common import JsonDict
 from app.schemas.plans import NextAction
 from app.schemas.routing import (
@@ -29,8 +35,23 @@ from app.services.invocation_service import build_invocation_input, missing_requ
 from app.services.plan_builder import build_ordered_plan_from_text
 from app.services.plan_service import PlanService, PlanStateConflict
 from app.services.registry_service import AgentRegistryService
+from app.services.registry_snapshot import RegistrySnapshotRuntime, RegistrySnapshotSelection
 from app.services.task_continuation import requests_plan_continuation
 from app.services.turn_service import TurnService
+
+RouteAgentDefinition = AgentDefinition | AgentDefinitionV2
+
+
+@dataclass(frozen=True)
+class _RouteCandidateSet:
+    definitions: tuple[RouteAgentDefinition, ...]
+    bindings: dict[str, RegistrySnapshotSelection]
+
+
+@dataclass(frozen=True)
+class _UiHandoff:
+    route: str | None
+    params: JsonDict
 
 
 class RouterService:
@@ -50,6 +71,7 @@ class RouterService:
         plan_continuation_resolver=None,
         turn_service: TurnService | None = None,
         runtime_policy: MemoryRuntimePolicy | None = None,
+        snapshot_runtime: RegistrySnapshotRuntime | None = None,
     ) -> None:
         self.settings = settings
         self.runtime_policy = runtime_policy or settings.memory_runtime_policy
@@ -65,17 +87,21 @@ class RouterService:
         self.agent_context_service = agent_context_service
         self.plan_continuation_resolver = plan_continuation_resolver
         self.turn_service = turn_service
+        self.snapshot_runtime = snapshot_runtime
 
     async def route(self, request: RouteRequest) -> RouteResponse:
+        source_request = request
         request_id = request.request_id or f"req_{uuid4().hex}"
         request = request.model_copy(update={"request_id": request_id})
         await self._start_turn(request)
-        available_agents = await self._available_agent_definitions(request)
+        candidate_set = await self._route_candidate_set(request)
+        available_agents = list(candidate_set.definitions)
         selected_definitions = {agent.agent_id: agent for agent in available_agents}
+        selected_bindings = candidate_set.bindings
         available_agent_ids = [agent.agent_id for agent in available_agents]
         tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
         candidate_ids = available_agent_ids
-        candidates = [agent.to_candidate() for agent in available_agents]
+        candidates = [_candidate_projection(agent) for agent in available_agents]
         if not available_agents:
             response = RouteResponse(
                 request_id=request_id,
@@ -102,7 +128,12 @@ class RouterService:
             )
             response = self._finalize_assistant_message(response)
             response = await self._after_route(request, response)
-            return response.bind_selected_definitions(selected_definitions)
+            return _bind_route_response(
+                response,
+                selected_definitions,
+                selected_bindings,
+                source_request=source_request,
+            )
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
@@ -126,7 +157,12 @@ class RouterService:
                 active_plan=active_plan,
                 candidate_agents=candidates,
             )
-            return response.bind_selected_definitions(selected_definitions)
+            return _bind_route_response(
+                response,
+                selected_definitions,
+                selected_bindings,
+                source_request=source_request,
+            )
         if evidence_result.route_override:
             response = await self._route_from_evidence_override(
                 request,
@@ -143,7 +179,12 @@ class RouterService:
                 candidate_agents=candidates,
                 selected_definitions=selected_definitions,
             )
-            return response.bind_selected_definitions(selected_definitions)
+            return _bind_route_response(
+                response,
+                selected_definitions,
+                selected_bindings,
+                source_request=source_request,
+            )
         (
             base_context,
             projection,
@@ -171,7 +212,12 @@ class RouterService:
             selected_definitions=selected_definitions,
         )
         if plan_route is not None:
-            return plan_route.bind_selected_definitions(selected_definitions)
+            return _bind_route_response(
+                plan_route,
+                selected_definitions,
+                selected_bindings,
+                source_request=source_request,
+            )
         knowledge_reply = base_context.metadata.get("knowledge_direct_reply")
         if isinstance(knowledge_reply, dict) and knowledge_reply.get("message"):
             message = str(knowledge_reply["message"])
@@ -190,7 +236,12 @@ class RouterService:
             )
             response = self._finalize_assistant_message(response)
             response = await self._after_route(request, response)
-            return response.bind_selected_definitions(selected_definitions)
+            return _bind_route_response(
+                response,
+                selected_definitions,
+                selected_bindings,
+                source_request=source_request,
+            )
 
         output = await self.llm_client.route(
             LLMRouteInput(
@@ -226,7 +277,12 @@ class RouterService:
         )
         response = self._finalize_assistant_message(response)
         response = await self._after_route(request, response)
-        return response.bind_selected_definitions(selected_definitions)
+        return _bind_route_response(
+            response,
+            selected_definitions,
+            selected_bindings,
+            source_request=source_request,
+        )
 
     async def _route_controlled_plan_step(
         self,
@@ -235,7 +291,7 @@ class RouterService:
         active_plan,
         base_context,
         assembly_session=None,
-        selected_definitions: dict[str, AgentDefinition],
+        selected_definitions: dict[str, RouteAgentDefinition],
     ) -> RouteResponse | None:
         if request.source not in {"plan_control", "agent_event"} or active_plan is None:
             return None
@@ -318,7 +374,7 @@ class RouterService:
         response: RouteResponse,
         *,
         request: RouteRequest,
-        agent: AgentDefinition,
+        agent: RouteAgentDefinition,
         step,
     ) -> RouteResponse:
         plan = response.plan
@@ -337,15 +393,15 @@ class RouterService:
                 params={"missing_inputs": missing},
                 metadata={"missing_inputs": missing, "target_agent_id": agent.agent_id},
             )
-        elif agent.type == "ui_handoff":
+        elif (handoff := _ui_handoff(agent)) is not None:
             next_action = NextAction(
                 type="open_ui",
                 message="需要打开对应页面继续执行。",
                 agent_id=agent.agent_id,
                 plan_id=plan.plan_id,
                 step_id=step.step_id,
-                route=agent.ui_handoff.route,
-                params=agent.ui_handoff.params,
+                route=handoff.route,
+                params=handoff.params,
             )
         else:
             next_action = NextAction(
@@ -397,8 +453,16 @@ class RouterService:
             ),
         )
 
-    async def _available_agent_definitions(self, request: RouteRequest) -> list[AgentDefinition]:
-        return await self.registry.available_definitions(request.user)
+    async def _route_candidate_set(self, request: RouteRequest) -> _RouteCandidateSet:
+        snapshot_runtime = self.snapshot_runtime
+        if snapshot_runtime is not None and snapshot_runtime.snapshot is not None:
+            selections = snapshot_runtime.selections_for_user(request.user)
+            return _RouteCandidateSet(
+                definitions=tuple(selection.definition for selection in selections),
+                bindings={selection.definition.agent_id: selection for selection in selections},
+            )
+        definitions = tuple(await self.registry.available_definitions(request.user))
+        return _RouteCandidateSet(definitions=definitions, bindings={})
 
     async def _post_validate(self, output: RouteResponse, request: RouteRequest) -> RouteResponse:
         candidate_ids = set(output.context.candidate_agent_ids)
@@ -569,11 +633,14 @@ class RouterService:
         *,
         active_plan=None,
         assembly_session=None,
-        selected_definitions: dict[str, AgentDefinition],
+        selected_definitions: dict[str, RouteAgentDefinition],
     ) -> RouteResponse:
         target = output.decision.target_agent_id
         if output.decision.action not in {"open_agent", "continue_agent"} or not target:
-            return output
+            updates: dict[str, object] = {"invocation": None}
+            if output.plan is None:
+                updates["next_action"] = None
+            return output.model_copy(update=updates)
         agent = selected_definitions.get(target)
         if agent is None:
             raise RoutingError("Selected Agent is outside the Candidate Set")
@@ -608,6 +675,25 @@ class RouterService:
                     "invocation": None,
                 }
             )
+        handoff = _ui_handoff(agent)
+        if handoff is not None:
+            return output.model_copy(
+                update={
+                    "next_action": NextAction(
+                        type="open_ui",
+                        message="需要打开对应页面继续执行。",
+                        agent_id=agent.agent_id,
+                        route=handoff.route,
+                        params=handoff.params,
+                        metadata={"handling_kind": "ui_handoff"},
+                    ),
+                    "invocation": None,
+                }
+            )
+        if isinstance(agent, AgentDefinitionV2) and not isinstance(
+            agent.handling, InvocationHandling
+        ):
+            raise RoutingError("Selected Agent Handling cannot be invoked by Route")
         metadata = {}
         context = output.context
         execution_plan = (
@@ -644,17 +730,18 @@ class RouterService:
                     }
                 }
             )
-        return output.model_copy(
-            update={
-                "context": context,
-                "invocation": InvocationPreview(
-                    mode="deferred",
-                    agent_id=agent.agent_id,
-                    input=invocation_input,
-                    metadata=metadata,
-                ),
-            }
-        )
+        updates: dict[str, object] = {
+            "context": context,
+            "invocation": InvocationPreview(
+                mode="invoke" if isinstance(agent, AgentDefinitionV2) else "deferred",
+                agent_id=agent.agent_id,
+                input=invocation_input,
+                metadata=metadata,
+            ),
+        }
+        if output.plan is None:
+            updates["next_action"] = None
+        return output.model_copy(update=updates)
 
     def _finalize_assistant_message(self, response: RouteResponse) -> RouteResponse:
         assistant_message = _clean_user_text(response.assistant_message)
@@ -775,7 +862,7 @@ class RouterService:
         recent_events: list[JsonDict] | None = None,
         active_plan=None,
         candidate_agents=None,
-        selected_definitions: dict[str, AgentDefinition],
+        selected_definitions: dict[str, RouteAgentDefinition],
     ) -> RouteResponse:
         override = evidence_result.route_override or {}
         target_agent_id = override.get("target_agent_id")
@@ -1159,7 +1246,7 @@ class RouterService:
     async def _apply_plan_policy(
         self,
         output: RouteResponse,
-        selected_definitions: dict[str, AgentDefinition],
+        selected_definitions: dict[str, RouteAgentDefinition],
     ) -> RouteResponse:
         if output.plan is None:
             return output
@@ -1205,29 +1292,67 @@ class RouterService:
     def _metadata_policy_for_plan(
         self,
         plan,
-        selected_definitions: dict[str, AgentDefinition],
+        selected_definitions: dict[str, RouteAgentDefinition],
     ) -> str | None:
         for step in plan.steps:
             definition = selected_definitions.get(step.agent_id)
             if not definition:
                 continue
-            execution = definition.metadata.get("execution")
+            metadata = getattr(definition, "metadata", {})
+            if not isinstance(metadata, dict):
+                continue
+            execution = metadata.get("execution")
             if isinstance(execution, dict) and execution.get("policy"):
                 return str(execution["policy"])
-            if definition.metadata.get("execution_policy"):
-                return str(definition.metadata["execution_policy"])
+            if metadata.get("execution_policy"):
+                return str(metadata["execution_policy"])
         return None
 
 
 @dataclass
 class TagFilterResult:
-    agents: list[AgentDefinition]
+    agents: list[RouteAgentDefinition]
     status: str
     matched_agent_ids: list[str]
     matches: dict[str, list[str]]
 
 
-def _filter_agents_by_tags(text: str, agents: list[AgentDefinition]) -> TagFilterResult:
+def _bind_route_response(
+    response: RouteResponse,
+    definitions: dict[str, RouteAgentDefinition],
+    bindings: dict[str, RegistrySnapshotSelection],
+    *,
+    source_request: RouteRequest,
+) -> RouteResponse:
+    return (
+        response.bind_selected_definitions(definitions)
+        .bind_selected_bindings(bindings)
+        .bind_routed_execution(source_request)
+    )
+
+
+def _candidate_projection(agent: RouteAgentDefinition) -> CandidateAgent:
+    """Keep deployment Binding facts out of the model-facing Candidate projection."""
+
+    payload = agent.to_candidate().model_dump(mode="json")
+    payload.pop("handling_kind", None)
+    return CandidateAgent.model_validate(payload)
+
+
+def _ui_handoff(agent: RouteAgentDefinition) -> _UiHandoff | None:
+    if isinstance(agent, AgentDefinitionV2):
+        if isinstance(agent.handling, UiHandoffHandling):
+            return _UiHandoff(
+                route=agent.handling.route,
+                params=agent.handling.params.model_dump(mode="json", exclude_none=True),
+            )
+        return None
+    if agent.type != "ui_handoff":
+        return None
+    return _UiHandoff(route=agent.ui_handoff.route, params=agent.ui_handoff.params)
+
+
+def _filter_agents_by_tags(text: str, agents: list[RouteAgentDefinition]) -> TagFilterResult:
     if not agents:
         return TagFilterResult(
             agents=[],
@@ -1265,14 +1390,16 @@ def _filter_agents_by_tags(text: str, agents: list[AgentDefinition]) -> TagFilte
     )
 
 
-def _agent_filter_terms(agent: AgentDefinition) -> list[str]:
+def _agent_filter_terms(agent: RouteAgentDefinition) -> list[str]:
     terms: list[str] = []
     terms.extend(agent.tags)
     terms.extend(agent.capabilities)
     terms.extend(agent.trigger.keywords)
     terms.extend(agent.trigger.positive_examples)
-    terms.extend(_metadata_terms(agent.metadata.get("intent_tags")))
-    terms.extend(_metadata_terms(agent.metadata.get("routing_tags")))
+    metadata = getattr(agent, "metadata", {})
+    if isinstance(metadata, dict):
+        terms.extend(_metadata_terms(metadata.get("intent_tags")))
+        terms.extend(_metadata_terms(metadata.get("routing_tags")))
     return [_normalize_text(term) for term in terms if _normalize_text(term)]
 
 
@@ -1391,12 +1518,12 @@ def _clean_user_text(value: object) -> str:
     return str(value).strip() if isinstance(value, str) else ""
 
 
-def _missing_required_inputs(agent: AgentDefinition, invocation_input: dict) -> list[str]:
+def _missing_required_inputs(agent: RouteAgentDefinition, invocation_input: dict) -> list[str]:
     return missing_required_inputs(agent, invocation_input)
 
 
 def _build_invocation_input(
-    agent: AgentDefinition,
+    agent: RouteAgentDefinition,
     output: RouteResponse,
     request: RouteRequest,
 ) -> dict:

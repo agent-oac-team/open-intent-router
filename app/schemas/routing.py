@@ -1,8 +1,9 @@
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import Field, PrivateAttr, model_validator
 
-from app.schemas.agents import AgentDefinition, CandidateAgent
+from app.schemas.agents import AgentDefinition, AgentDefinitionV2, CandidateAgent
 from app.schemas.common import (
     ArtifactRef,
     ContextRelation,
@@ -100,7 +101,17 @@ class InvocationPreview(StrictBaseModel):
 
 
 class RouteResponse(StrictBaseModel):
-    _selected_definitions: dict[str, AgentDefinition] = PrivateAttr(default_factory=dict)
+    _selected_definitions: dict[str, AgentDefinition | AgentDefinitionV2] = PrivateAttr(
+        default_factory=dict
+    )
+    _selected_bindings: dict[str, object] = PrivateAttr(default_factory=dict)
+    _routed_source_request: RouteRequest | None = PrivateAttr(default=None)
+    _routed_source_request_id: str | None = PrivateAttr(default=None)
+    _routed_user: UserContext | None = PrivateAttr(default=None)
+    _routed_session_id: str | None = PrivateAttr(default=None)
+    _routed_response_request_id: str | None = PrivateAttr(default=None)
+    _routed_invocation: InvocationPreview | None = PrivateAttr(default=None)
+    _routed_execution_bound: bool = PrivateAttr(default=False)
 
     request_id: str
     session_id: str
@@ -114,18 +125,69 @@ class RouteResponse(StrictBaseModel):
     error: ErrorDetail | None = None
 
     def bind_selected_definitions(
-        self, definitions: list[AgentDefinition] | dict[str, AgentDefinition]
+        self,
+        definitions: (
+            list[AgentDefinition | AgentDefinitionV2]
+            | dict[str, AgentDefinition | AgentDefinitionV2]
+        ),
     ) -> "RouteResponse":
+        self._ensure_execution_unbound()
         values = definitions.values() if isinstance(definitions, dict) else definitions
         self._selected_definitions = {item.agent_id: item for item in values}
         return self
 
+    def bind_selected_bindings(self, bindings: Mapping[str, object]) -> "RouteResponse":
+        """Retain trusted, request-scoped Binding selections outside the wire payload."""
+
+        self._ensure_execution_unbound()
+        self._selected_bindings = dict(bindings)
+        return self
+
+    def bind_routed_execution(self, request: RouteRequest) -> "RouteResponse":
+        """Freeze the trusted Route capability outside of the mutable wire response."""
+
+        self._ensure_execution_unbound()
+        self._routed_source_request = request
+        self._routed_source_request_id = request.request_id
+        self._routed_user = request.user.model_copy(deep=True)
+        self._routed_session_id = request.session_id
+        self._routed_response_request_id = self.request_id
+        self._routed_invocation = (
+            self.invocation.model_copy(deep=True) if self.invocation is not None else None
+        )
+        self._routed_execution_bound = True
+        return self
+
+    def _ensure_execution_unbound(self) -> None:
+        if self._routed_execution_bound:
+            raise RuntimeError("Routed execution capability is immutable")
+
     @property
-    def selected_definitions(self) -> dict[str, AgentDefinition]:
+    def selected_definitions(self) -> dict[str, AgentDefinition | AgentDefinitionV2]:
         return dict(self._selected_definitions)
 
-    def selected_definition(self, agent_id: str) -> AgentDefinition | None:
+    def selected_definition(self, agent_id: str) -> AgentDefinition | AgentDefinitionV2 | None:
         return self._selected_definitions.get(agent_id)
+
+    def selected_binding(self, agent_id: str) -> object | None:
+        return self._selected_bindings.get(agent_id)
+
+    def has_trusted_invocation_for(self, request: RouteRequest) -> bool:
+        """Whether this mutable response still represents its routed Invocation."""
+
+        trusted_invocation = self._routed_invocation
+        return (
+            self._routed_execution_bound
+            and trusted_invocation is not None
+            and self.invocation == trusted_invocation
+            and self.decision.action in {"open_agent", "continue_agent"}
+            and self.decision.target_agent_id == trusted_invocation.agent_id
+            and self._routed_source_request is request
+            and self._routed_source_request_id == request.request_id
+            and self._routed_user == request.user
+            and self._routed_session_id == request.session_id == self.session_id
+            and self._routed_response_request_id == self.request_id
+        )
 
     @model_validator(mode="before")
     @classmethod

@@ -180,6 +180,14 @@ class RegistrySnapshot:
     def candidates_for_user(self, user: UserContext) -> tuple[CandidateAgentV2, ...]:
         return tuple(entry.definition.to_candidate() for entry in self._visible_entries(user))
 
+    def selections_for_user(self, user: UserContext) -> tuple[RegistrySnapshotSelection, ...]:
+        """Select all executable Definitions once for a trusted request."""
+
+        return tuple(
+            RegistrySnapshotSelection(snapshot_id=self.snapshot_id, entry=entry)
+            for entry in self._visible_entries(user)
+        )
+
     def select_for_user(
         self,
         agent_id: str,
@@ -272,6 +280,9 @@ class RegistrySnapshotRuntime:
 
     def candidates_for_user(self, user: UserContext) -> tuple[CandidateAgentV2, ...]:
         return self._require_snapshot().candidates_for_user(user)
+
+    def selections_for_user(self, user: UserContext) -> tuple[RegistrySnapshotSelection, ...]:
+        return self._require_snapshot().selections_for_user(user)
 
     def select_for_user(
         self,

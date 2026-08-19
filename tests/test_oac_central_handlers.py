@@ -119,6 +119,21 @@ class ContextRoutingPort(RoutingPort):
         )
 
 
+class UiHandoffRoutingPort(RoutingPort):
+    async def route(self, request):
+        return (await super().route(request)).model_copy(
+            update={
+                "next_action": NextAction(
+                    type="open_ui",
+                    agent_id="agent-1",
+                    route="/workspace/continue",
+                    params={"tab": "continue"},
+                    metadata={"handling_kind": "ui_handoff"},
+                )
+            }
+        )
+
+
 class TurnPort:
     def __init__(self) -> None:
         now = datetime.now(UTC)
@@ -419,6 +434,41 @@ def test_route_issues_ticket_and_completed_event_consumes_it() -> None:
         "route_required": True,
     }
     assert delegated.completed.turn_id == "turn-1"
+
+
+def test_route_ui_handoff_does_not_start_delegated_run_or_issue_ticket() -> None:
+    client, delegated, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=UiHandoffRoutingPort(),
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-ui-handoff",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "open the workspace",
+        },
+    )
+
+    assert route.status_code == 200
+    assert route.json()["next_action"] == {
+        "type": "open_ui",
+        "message": "",
+        "agent_id": "agent-1",
+        "plan_id": None,
+        "step_id": None,
+        "route": "/workspace/continue",
+        "params": {"tab": "continue"},
+        "metadata": {"handling_kind": "ui_handoff"},
+    }
+    assert route.json()["execution_ticket"] is None
+    assert delegated.started is None
 
 
 def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace() -> None:
