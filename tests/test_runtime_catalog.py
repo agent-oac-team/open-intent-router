@@ -216,6 +216,56 @@ async def test_runtime_activates_once_when_lifespan_calls_start() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_waits_for_an_inflight_health_probe_before_disposal() -> None:
+    events: list[str] = []
+    health_started = asyncio.Event()
+    allow_health_finish = asyncio.Event()
+    health_calls = 0
+    source = descriptor("gated", events)
+
+    async def health(adapter: LifecycleProbe) -> bool:
+        nonlocal health_calls
+        health_calls += 1
+        if health_calls == 1:
+            return True
+        events.append("health:start")
+        health_started.set()
+        await allow_health_finish.wait()
+        events.append("health:end")
+        return True
+
+    async def dispose(adapter: LifecycleProbe) -> None:
+        events.append("dispose")
+
+    runtime = RuntimeCatalogRuntime(
+        [
+            replace(
+                source,
+                health_check=health,
+                lifecycle=RuntimeAdapterLifecycle(
+                    activate=source.lifecycle.activate,
+                    dispose=dispose,
+                ),
+            )
+        ],
+        RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
+        shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
+    )
+    await runtime.start()
+
+    refresh = asyncio.create_task(runtime.refresh_health())
+    await asyncio.wait_for(health_started.wait(), timeout=1)
+    stop = asyncio.create_task(runtime.stop())
+    await asyncio.sleep(0)
+
+    assert "dispose" not in events
+    allow_health_finish.set()
+    await asyncio.gather(refresh, stop)
+
+    assert events.index("health:end") < events.index("dispose")
+
+
+@pytest.mark.asyncio
 async def test_catalog_bounds_slow_disposal() -> None:
     events: list[str] = []
     source = descriptor("slow", events)
@@ -302,6 +352,22 @@ async def test_catalog_rejects_synchronous_lifecycle_hooks_before_activation() -
     assert events == []
 
 
+@pytest.mark.asyncio
+async def test_catalog_rejects_synchronous_health_checks_before_activation() -> None:
+    events: list[str] = []
+    source = descriptor("sync-health", events)
+    synchronous_health = replace(source, health_check=lambda _adapter: True)
+
+    with pytest.raises(RuntimeCatalogValidationError):
+        await RuntimeCatalog.activate(
+            [synchronous_health],
+            RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
+            shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+
+    assert events == []
+
+
 def _stub_background_runtimes(monkeypatch) -> None:
     monkeypatch.setattr(
         main_module,
@@ -350,14 +416,19 @@ def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure
         assert client.get("/health").json() == {"status": "ok"}
         ready = client.get("/ready")
 
-    assert ready.status_code == 503
+    assert ready.status_code == 200
     assert ready.json() == {
-        "status": "error",
-        "runtime_status": "error",
-        "runtime_reason": "runtime_catalog_activation_failed",
+        "status": "degraded",
+        "registry_status": "ok",
+        "active_source": "file",
+        "message": None,
+        "runtime_status": "degraded",
+        "reason_code": "runtime_adapter_unhealthy",
+        "impacted_definition_count": 0,
     }
     assert failed_events == [
         "activate:broken",
+        "health:broken",
         "health:broken",
         "dispose:broken",
     ]

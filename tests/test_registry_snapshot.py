@@ -15,6 +15,7 @@ from app.schemas.agents import AgentDefinitionV2, InvocationHandling
 from app.schemas.common import UserContext
 from app.services.registry_snapshot import (
     RegistryDefinitionValidationError,
+    RegistryQuarantineEntry,
     RegistrySnapshotBuilder,
     RegistrySnapshotRuntime,
 )
@@ -302,10 +303,39 @@ async def test_snapshot_quarantines_invalid_rows_and_excludes_unbindable_definit
     )
     assert snapshot.entry_for("disabled-agent").binding_status == "disabled"
     assert [(entry.agent_id, entry.reason_code) for entry in snapshot.quarantined] == [
-        (None, "definition_schema_invalid")
+        ("invalid-schema", "definition_schema_invalid")
     ]
 
     await catalog.aclose()
+
+
+@pytest.mark.parametrize(
+    "unsafe_agent_id",
+    [
+        "https://private.example/agent?token=secret-marker",
+        "sk_live_0123456789abcdef",
+    ],
+)
+def test_snapshot_quarantines_an_unsafe_definition_identifier_without_exposing_it(
+    unsafe_agent_id: str,
+) -> None:
+    runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(None))
+    definition = _definition(
+        unsafe_agent_id,
+        {"kind": "ui_handoff", "route": "/safe"},
+    )
+
+    runtime.load([definition], source="test")
+
+    assert runtime.admin_inventory() == ()
+    assert runtime.admin_quarantine_inventory() == (
+        RegistryQuarantineEntry(
+            source_index=0,
+            agent_id=None,
+            reason_code="definition_schema_invalid",
+        ),
+    )
+    assert unsafe_agent_id not in str(runtime.admin_quarantine_inventory())
 
 
 @pytest.mark.asyncio
@@ -451,7 +481,7 @@ async def test_snapshot_revalidates_an_internally_constructed_definition_before_
 
     assert snapshot.entries == {}
     assert [(entry.agent_id, entry.reason_code) for entry in snapshot.quarantined] == [
-        (None, "definition_schema_invalid")
+        ("summary-agent", "definition_schema_invalid")
     ]
 
     await catalog.aclose()

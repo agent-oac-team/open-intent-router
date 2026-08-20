@@ -10,6 +10,7 @@ from app.application import (
     PlanApplicationPort,
     PlanPreflightApplicationPort,
     RegistryApplicationPort,
+    RegistrySnapshotRefreshApplicationPort,
     RoutingApplicationPort,
     TurnApplicationPort,
 )
@@ -23,6 +24,7 @@ class OacAdapterApplicationPorts:
     plans: PlanApplicationPort
     delegated_runs: DelegatedRunApplicationPort
     turns: TurnApplicationPort
+    registry_snapshot_refresh: RegistrySnapshotRefreshApplicationPort | None = None
     plan_preflight: PlanPreflightApplicationPort | None = None
     external_execution: ExternalExecutionApplicationPort | None = None
     execution_traces: ExecutionTraceApplicationPort | None = None

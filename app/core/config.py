@@ -104,6 +104,8 @@ class Settings(BaseSettings):
 
     agent_http_timeout_seconds: float = 30.0
     runtime_catalog_shutdown_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    runtime_catalog_health_timeout_seconds: float = Field(default=2.0, gt=0, le=60)
+    runtime_required_adapter_keys: str = ""
 
     memory_mode: MemoryMode = "off"
     memory_import_legacy_history_enabled: bool = False
@@ -250,6 +252,12 @@ class Settings(BaseSettings):
     @property
     def memory_runtime_policy(self):
         return build_memory_runtime_policy(self.memory_mode)
+
+    @property
+    def runtime_required_adapter_key_set(self) -> frozenset[str]:
+        return frozenset(
+            key.strip() for key in self.runtime_required_adapter_keys.split(",") if key.strip()
+        )
 
     # Compatibility projections. These are deliberately not Pydantic fields and
     # therefore cannot be configured independently through environment variables.

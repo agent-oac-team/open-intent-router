@@ -2,6 +2,7 @@ from functools import lru_cache
 
 from fastapi import HTTPException, Request, status
 
+from app.application import RegistrySnapshotRefreshApplicationPort
 from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.dependencies import (
@@ -24,6 +25,7 @@ from app.repositories.registry_audit import (
     MemoryRegistryAuditStore,
     RegistryAuditStore,
 )
+from app.runtime.catalog import RuntimeCatalogRuntime
 from app.services.snapshot_routing_service import SnapshotRoutingService
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, FileCutoverAuditRepository
@@ -39,9 +41,11 @@ from host_adapters.oac.routing import OacLegacyRegistryRoutingAdapter
 from host_apps.oac.config import get_oac_host_settings
 
 
-@lru_cache
-def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
-    routing = get_oac_legacy_registry_routing()
+def get_oac_adapter_application_ports(request: Request = None) -> OacAdapterApplicationPorts:
+    """Compose request routing with the owning app's current health projection."""
+
+    runtime_catalog = _runtime_catalog_runtime(request)
+    routing = get_oac_legacy_registry_routing(runtime_catalog=runtime_catalog)
     return OacAdapterApplicationPorts(
         routing=routing,
         registry=get_registry_service(),
@@ -49,6 +53,7 @@ def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
         plans=get_plan_service(),
         delegated_runs=get_delegated_run_service(),
         turns=get_turn_service(),
+        registry_snapshot_refresh=_registry_snapshot_refresh(request),
         plan_preflight=routing,
         external_execution=get_oac_external_execution_service(),
         execution_traces=get_execution_trace_service(),
@@ -72,22 +77,49 @@ def get_oac_external_executor() -> OacExternalExecutor:
     )
 
 
-@lru_cache
-def get_oac_snapshot_routing() -> SnapshotRoutingService:
+def get_oac_snapshot_routing(
+    *,
+    runtime_catalog: RuntimeCatalogRuntime | None = None,
+) -> SnapshotRoutingService:
+    catalog = runtime_catalog.catalog if runtime_catalog is not None else None
     return SnapshotRoutingService(
         router_factory=lambda snapshot_runtime: build_router_service(
             snapshot_runtime=snapshot_runtime
         ),
+        runtime_catalog=catalog,
         external_executor=get_oac_external_executor(),
+        adapter_health_provider=(
+            (lambda: runtime_catalog.health.unhealthy_adapter_keys)
+            if runtime_catalog is not None
+            else None
+        ),
     )
 
 
-@lru_cache
-def get_oac_legacy_registry_routing() -> OacLegacyRegistryRoutingAdapter:
+def get_oac_legacy_registry_routing(
+    *,
+    runtime_catalog: RuntimeCatalogRuntime | None = None,
+) -> OacLegacyRegistryRoutingAdapter:
     return OacLegacyRegistryRoutingAdapter(
         registry=get_registry_service(),
-        snapshot_routing=get_oac_snapshot_routing(),
+        snapshot_routing=get_oac_snapshot_routing(runtime_catalog=runtime_catalog),
     )
+
+
+def _runtime_catalog_runtime(request: Request | None) -> RuntimeCatalogRuntime | None:
+    if request is None:
+        return None
+    runtime = getattr(request.app.state, "runtime_catalog_runtime", None)
+    return runtime if isinstance(runtime, RuntimeCatalogRuntime) else None
+
+
+def _registry_snapshot_refresh(
+    request: Request | None,
+) -> RegistrySnapshotRefreshApplicationPort | None:
+    if request is None:
+        return None
+    refresh = getattr(request.app.state, "runtime_readiness_runtime", None)
+    return refresh if isinstance(refresh, RegistrySnapshotRefreshApplicationPort) else None
 
 
 @lru_cache

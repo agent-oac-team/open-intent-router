@@ -2,20 +2,51 @@ from typing import Literal
 
 from pydantic import Field
 
-from app.schemas.common import StrictBaseModel
+from app.schemas.common import JsonDict, StrictBaseModel
 
 
 class ReadinessResponse(StrictBaseModel):
-    status: str
-    registry_status: str
+    status: Literal["ok", "degraded"]
+    registry_status: Literal["ok", "degraded"]
     active_source: str | None = None
-    message: str | None = None
+    message: None = None
+    runtime_status: Literal["ready", "degraded"] = "ready"
+    reason_code: str | None = None
+    impacted_definition_count: int = Field(default=0, ge=0)
 
 
 class RuntimeCatalogReadinessErrorResponse(StrictBaseModel):
     status: Literal["error"]
     runtime_status: Literal["error"]
     runtime_reason: str
+
+
+class RuntimeInventoryDefinition(StrictBaseModel):
+    agent_id: str
+    revision: int = Field(ge=0)
+    enabled: bool
+    handling_kind: Literal["invocation", "external_execution", "ui_handoff"]
+    handling: JsonDict
+    binding_status: Literal["ready", "isolated", "disabled"]
+    isolation_reason_code: str | None = None
+
+
+class RuntimeInventoryQuarantine(StrictBaseModel):
+    source_index: int = Field(ge=0)
+    agent_id: str | None = None
+    reason_code: str
+
+
+class RuntimeInventoryResponse(StrictBaseModel):
+    status: Literal["ok", "degraded", "error"]
+    runtime_status: Literal["ready", "degraded", "error"]
+    registry_status: Literal["ok", "degraded", "error"]
+    active_source: str | None = None
+    reason_code: str | None = None
+    impacted_definition_count: int = Field(default=0, ge=0)
+    quarantined_definition_count: int = Field(default=0, ge=0)
+    quarantined_definitions: list[RuntimeInventoryQuarantine] = Field(default_factory=list)
+    definitions: list[RuntimeInventoryDefinition] = Field(default_factory=list)
 
 
 class RuntimeConfigResponse(StrictBaseModel):

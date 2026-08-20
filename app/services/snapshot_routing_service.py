@@ -1,6 +1,6 @@
 """Route requests through a fresh immutable v2 Registry Snapshot."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 
 from app.application import (
     ExternalExecutorApplicationPort,
@@ -9,7 +9,7 @@ from app.application import (
 )
 from app.core.errors import InvocationBindingUnavailableError, PlanBindingUnavailableError
 from app.runtime.catalog import RuntimeCatalog
-from app.schemas.agents import AgentDefinitionV2, InvocationHandling
+from app.schemas.agents import InvocationHandling
 from app.schemas.common import UserContext
 from app.schemas.plans import Plan
 from app.schemas.routing import RouteRequest, RouteResponse
@@ -18,6 +18,7 @@ from app.services.plan_bindings import revalidate_plan_step_binding_against_snap
 from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
 
 SnapshotRouterFactory = Callable[[RegistrySnapshotRuntime], RoutingApplicationPort]
+AdapterHealthProvider = Callable[[], Collection[str]]
 
 
 class SnapshotRoutingService(SnapshotRoutingApplicationPort):
@@ -34,16 +35,18 @@ class SnapshotRoutingService(SnapshotRoutingApplicationPort):
         router_factory: SnapshotRouterFactory,
         runtime_catalog: RuntimeCatalog | None = None,
         external_executor: ExternalExecutorApplicationPort | None = None,
+        adapter_health_provider: AdapterHealthProvider | None = None,
     ) -> None:
         self._router_factory = router_factory
         self._runtime_catalog = runtime_catalog
         self._external_executor = external_executor
+        self._adapter_health_provider = adapter_health_provider
 
     async def route_with_snapshot(
         self,
         request: RouteRequest,
         *,
-        definitions: Sequence[AgentDefinitionV2],
+        definitions: Sequence[object],
         source: str,
     ) -> RouteResponse:
         snapshot_runtime = self._build_snapshot_runtime(definitions, source=source)
@@ -54,7 +57,7 @@ class SnapshotRoutingService(SnapshotRoutingApplicationPort):
         plan: Plan,
         *,
         user: UserContext,
-        definitions: Sequence[AgentDefinitionV2],
+        definitions: Sequence[object],
         source: str,
     ) -> None:
         """Check a delayed Plan without opening a Turn or changing its state."""
@@ -100,7 +103,7 @@ class SnapshotRoutingService(SnapshotRoutingApplicationPort):
 
     def _build_snapshot_runtime(
         self,
-        definitions: Sequence[AgentDefinitionV2],
+        definitions: Sequence[object],
         *,
         source: str,
     ) -> RegistrySnapshotRuntime:
@@ -111,4 +114,7 @@ class SnapshotRoutingService(SnapshotRoutingApplicationPort):
             )
         )
         snapshot_runtime.load(definitions, source=source)
+        health_provider = self._adapter_health_provider
+        if health_provider is not None:
+            snapshot_runtime.apply_adapter_health(health_provider())
         return snapshot_runtime

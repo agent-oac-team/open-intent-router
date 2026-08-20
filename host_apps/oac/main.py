@@ -11,6 +11,7 @@ from app.main import create_app as create_oir_app
 from host_adapters.oac.api import router as oac_adapter_router
 from host_adapters.oac.api.capabilities import build_capability_router
 from host_adapters.oac.fallback.policy import classify_operation, write_fence_blocked
+from host_adapters.oac.registry_snapshot import map_oac_legacy_registry_snapshot
 from host_apps.oac.capabilities import OacHostCapabilityProvider
 from host_apps.oac.config import build_oac_host_profile, memory_execution_plane_for_shadow
 from host_apps.oac.dependencies import (
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     host_app = create_oir_app(
         api_prefix=profile.host.native_mount_prefix,
         external_executor=get_oac_external_executor(),
+        registry_snapshot_mapper=map_oac_legacy_registry_snapshot,
     )
 
     @host_app.middleware("http")

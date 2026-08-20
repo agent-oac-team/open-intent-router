@@ -18,7 +18,7 @@ from app.api import (
     runtime,
     sessions,
 )
-from app.application import ExternalExecutorApplicationPort
+from app.application import ExternalExecutorApplicationPort, RegistrySnapshotSourceMapper
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import create_all_tables
@@ -28,6 +28,7 @@ from app.dependencies import (
     build_memory_maintenance_runtime,
     get_memory_data_settings,
     get_memory_runtime_policy,
+    get_registry_service,
 )
 from app.runtime.catalog import (
     RuntimeAdapterContext,
@@ -37,6 +38,7 @@ from app.runtime.catalog import (
 )
 from app.services.mem0_config import memory_infrastructure_metadata
 from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
+from app.services.runtime_readiness import RuntimeReadinessRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     runtime_catalog = _app.state.runtime_catalog_runtime
+    readiness_runtime = _app.state.runtime_readiness_runtime
     formation_runtime = None
     maintenance_runtime = None
     timeout_runtime = None
@@ -63,11 +66,38 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     external_executor=_app.state.external_executor,
                 )
             )
+        readiness_runtime.attach_snapshot_runtime(_app.state.registry_snapshot_runtime)
+        if runtime_catalog.catalog is None or runtime_catalog.health.status == "error":
+            yield
+            return
         if settings.storage_backend == "database":
-            await create_all_tables(settings)
-            memory_settings = get_memory_data_settings()
-            if memory_settings.database_url != settings.database_url:
-                await create_all_tables(memory_settings)
+            try:
+                await create_all_tables(settings)
+                memory_settings = get_memory_data_settings()
+                if memory_settings.database_url != settings.database_url:
+                    await create_all_tables(memory_settings)
+            except Exception:
+                # Startup exceptions may include a database DSN or credential.
+                # The stable readiness reason is the only diagnostic retained in
+                # process logs at this boundary.
+                logger.warning("core_runtime_initialization_failed")
+                readiness_runtime.mark_core_initialization_failed()
+                yield
+                return
+        try:
+            registry = get_registry_service()
+        except Exception:
+            # Registry construction is deployment code and must not export raw
+            # configuration failures into logs.
+            logger.warning("primary_registry_construction_failed")
+            readiness_runtime.mark_primary_registry_unavailable()
+        else:
+            if await readiness_runtime.initialize_primary_registry(registry) is None:
+                yield
+                return
+        if readiness_runtime.report().status == "error":
+            yield
+            return
         policy = get_memory_runtime_policy()
         memory_infrastructure = memory_infrastructure_metadata(settings)
         logger.info(
@@ -115,6 +145,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                         await formation_runtime.stop()
                 finally:
                     _app.state.registry_snapshot_runtime = None
+                    readiness_runtime.attach_snapshot_runtime(None)
                     if catalog_started:
                         await runtime_catalog.stop()
 
@@ -124,6 +155,7 @@ def create_app(
     api_prefix: str = "",
     runtime_descriptors: Sequence[RuntimeAdapterDescriptor] | None = None,
     external_executor: ExternalExecutorApplicationPort | None = None,
+    registry_snapshot_mapper: RegistrySnapshotSourceMapper | None = None,
 ) -> FastAPI:
     settings = get_settings()
     normalized_prefix = _normalize_api_prefix(api_prefix)
@@ -136,11 +168,17 @@ def create_app(
         ),
         context=RuntimeAdapterContext(settings=settings),
         shutdown_timeout_seconds=settings.runtime_catalog_shutdown_timeout_seconds,
+        health_check_timeout_seconds=settings.runtime_catalog_health_timeout_seconds,
+        required_adapter_keys=settings.runtime_required_adapter_key_set,
     )
-    # The v1 Registry remains authoritative until the offline v2 migration
-    # supplies a Snapshot.  Keeping this process-owned Runtime ready now lets
-    # Direct Invoke switch atomically once that authoritative source exists.
+    # Composition may supply a trusted source mapper while a Host is still
+    # migrating legacy Registry storage.  Core owns the live Runtime; it never
+    # imports Host field mappings or retains their raw source diagnostics.
     app.state.registry_snapshot_runtime: RegistrySnapshotRuntime | None = None
+    app.state.runtime_readiness_runtime = RuntimeReadinessRuntime(
+        app.state.runtime_catalog_runtime,
+        snapshot_mapper=registry_snapshot_mapper,
+    )
     app.state.external_executor = external_executor
     app.add_middleware(
         CORSMiddleware,

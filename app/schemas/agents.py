@@ -17,6 +17,7 @@ from app.schemas.common import (
 )
 
 _SYMBOLIC_REFERENCE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_AGENT_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,127}$")
 _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS = (
     re.compile(r"^AKIA[0-9A-Z]{16}$"),
     re.compile(r"^AIza[A-Za-z0-9_-]{35}$"),
@@ -63,6 +64,24 @@ def _validate_reference(value: str, *, label: str, pattern: re.Pattern[str]) -> 
     ):
         raise ValueError(f"{label} must be a logical identifier")
     return value
+
+
+def is_safe_agent_identifier(value: object) -> bool:
+    """Whether an Agent locator can be retained in an admin-facing projection.
+
+    Definition source parsing deliberately remains tolerant so a malformed row
+    can be quarantined rather than aborting an entire reload.  Snapshot/public
+    projections use this stricter logical-ID gate before retaining the value.
+    """
+
+    return (
+        isinstance(value, str)
+        and bool(_AGENT_IDENTIFIER_PATTERN.fullmatch(value))
+        and not any(
+            secret_pattern.fullmatch(value)
+            for secret_pattern in _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS
+        )
+    )
 
 
 def _redact_admin_handling_text(value: object) -> object:

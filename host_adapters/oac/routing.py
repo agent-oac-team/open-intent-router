@@ -8,7 +8,7 @@ from app.application import (
 from app.schemas.common import UserContext
 from app.schemas.plans import Plan
 from app.schemas.routing import RouteRequest, RouteResponse
-from host_adapters.oac.mappers.registry import registry_definition_to_native_v2
+from host_adapters.oac.mappers.registry import registry_definitions_to_snapshot_inputs
 
 
 class OacLegacyRegistryRoutingAdapter(RoutingApplicationPort):
@@ -30,12 +30,9 @@ class OacLegacyRegistryRoutingAdapter(RoutingApplicationPort):
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         definitions = await self._registry.available_definitions(request.user)
-        canonical_definitions = [
-            registry_definition_to_native_v2(definition) for definition in definitions
-        ]
         return await self._snapshot_routing.route_with_snapshot(
             request,
-            definitions=canonical_definitions,
+            definitions=registry_definitions_to_snapshot_inputs(definitions),
             source="oac_legacy_registry",
         )
 
@@ -43,12 +40,9 @@ class OacLegacyRegistryRoutingAdapter(RoutingApplicationPort):
         if plan.status in {"completed", "failed", "cancelled"}:
             return
         definitions = await self._registry.available_definitions(user)
-        canonical_definitions = [
-            registry_definition_to_native_v2(definition) for definition in definitions
-        ]
         await self._snapshot_routing.preflight_plan_with_snapshot(
             plan,
             user=user,
-            definitions=canonical_definitions,
+            definitions=registry_definitions_to_snapshot_inputs(definitions),
             source="oac_legacy_registry",
         )

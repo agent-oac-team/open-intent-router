@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.dependencies import get_registry_service
 from app.schemas.runtime import ReadinessResponse, RuntimeCatalogReadinessErrorResponse
+from app.services.runtime_readiness import RuntimeReadinessRuntime
 
 router = APIRouter(tags=["health"])
 
@@ -18,28 +18,38 @@ async def health() -> dict[str, str]:
     responses={
         503: {
             "model": RuntimeCatalogReadinessErrorResponse,
-            "description": "Runtime Catalog activation failed during application startup.",
+            "description": "Core, Runtime Catalog, required Adapter, or Primary Registry is unavailable.",
         }
     },
 )
 async def ready(request: Request) -> ReadinessResponse:
-    runtime = request.app.state.runtime_catalog_runtime
-    runtime_status = runtime.status
-    if runtime_status.status != "ready":
+    readiness_runtime = getattr(request.app.state, "runtime_readiness_runtime", None)
+    if not isinstance(readiness_runtime, RuntimeReadinessRuntime):
         payload = RuntimeCatalogReadinessErrorResponse(
             status="error",
             runtime_status="error",
-            runtime_reason=runtime_status.reason_code or "runtime_catalog_not_ready",
+            runtime_reason="core_runtime_unavailable",
         )
         return JSONResponse(
             status_code=503,
             content=payload.model_dump(),
         )
-    registry = get_registry_service()
-    state = await registry.load()
+    report = await readiness_runtime.refresh()
+    if report.status == "error":
+        payload = RuntimeCatalogReadinessErrorResponse(
+            status="error",
+            runtime_status="error",
+            runtime_reason=report.reason_code or "runtime_catalog_not_ready",
+        )
+        return JSONResponse(
+            status_code=503,
+            content=payload.model_dump(),
+        )
     return ReadinessResponse(
-        status=state.status,
-        registry_status=state.status,
-        active_source=state.active_source,
-        message=state.message,
+        status=report.status,
+        registry_status=report.registry_status,
+        active_source=report.active_source,
+        runtime_status=report.runtime_status,
+        reason_code=report.reason_code,
+        impacted_definition_count=report.impacted_definition_count,
     )

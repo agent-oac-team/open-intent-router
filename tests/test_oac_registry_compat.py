@@ -13,7 +13,11 @@ from app.schemas.external_execution import (
     ExternalExecutionPrincipal,
     ExternalExecutorAcceptanceRequest,
 )
-from app.services.registry_snapshot import RegistrySnapshotBuilder
+from app.services.registry_snapshot import (
+    RegistryQuarantineEntry,
+    RegistrySnapshotBuilder,
+    RegistrySnapshotRuntime,
+)
 from host_adapters.oac.api.registry import router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.external_executor import OacExternalExecutor
@@ -24,6 +28,7 @@ from host_adapters.oac.mappers.registry import (
     registry_agent_from_native_v2,
     registry_agent_to_native,
     registry_agent_to_native_v2,
+    registry_definitions_to_snapshot_inputs,
 )
 from host_adapters.oac.schemas.registry import RegistryAgent
 from host_apps.oac.dependencies import (
@@ -94,7 +99,22 @@ def _fixture(name: str) -> dict:
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
 
-def _client(*, credential_class="oac_admin", force_conflict=False) -> TestClient:
+class SnapshotRefreshProbe:
+    def __init__(self, *, succeeds: bool = True) -> None:
+        self.succeeds = succeeds
+        self.registries: list[RegistryPort] = []
+
+    async def refresh_registry_snapshot(self, registry: RegistryPort) -> bool:
+        self.registries.append(registry)
+        return self.succeeds
+
+
+def _client(
+    *,
+    credential_class="oac_admin",
+    force_conflict=False,
+    snapshot_refresh: SnapshotRefreshProbe | None = None,
+) -> TestClient:
     registry = RegistryPort()
     registry.force_conflict = force_conflict
     ports = OacAdapterApplicationPorts(
@@ -104,6 +124,7 @@ def _client(*, credential_class="oac_admin", force_conflict=False) -> TestClient
         plans=SimpleNamespace(),
         delegated_runs=SimpleNamespace(),
         turns=SimpleNamespace(),
+        registry_snapshot_refresh=snapshot_refresh,
     )
     identity = TrustedHostIdentity(
         key_id="admin-key",
@@ -316,6 +337,72 @@ def test_registry_crud_handlers_match_frozen_status_and_shapes() -> None:
     deleted = client.delete("/api/v1/admin/agent-registry/fixture_agent")
     assert deleted.status_code == 204
     assert client.get("/api/v1/admin/agent-registry").json() == []
+
+
+def test_registry_crud_refreshes_the_process_snapshot_after_each_committed_write() -> None:
+    refresh = SnapshotRefreshProbe()
+    client = _client(snapshot_refresh=refresh)
+    create_body = _fixture("registry-create")["request"]["body"]
+
+    assert client.post("/api/v1/admin/agent-registry", json=create_body).status_code == 200
+    assert (
+        client.put(
+            "/api/v1/admin/agent-registry/fixture_agent",
+            json=_fixture("registry-update")["request"]["body"],
+        ).status_code
+        == 200
+    )
+    assert (
+        client.patch(
+            "/api/v1/admin/agent-registry/fixture_agent/enabled",
+            json={"enabled": False},
+        ).status_code
+        == 200
+    )
+    assert client.delete("/api/v1/admin/agent-registry/fixture_agent").status_code == 204
+
+    assert refresh.registries == [client.app.state.registry] * 4
+
+
+def test_registry_write_returns_a_safe_error_when_snapshot_refresh_fails() -> None:
+    client = _client(snapshot_refresh=SnapshotRefreshProbe(succeeds=False))
+
+    response = client.post(
+        "/api/v1/admin/agent-registry",
+        json=_fixture("registry-create")["request"]["body"],
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "registry_snapshot_unavailable"}
+
+
+def test_oac_snapshot_mapper_quarantines_bad_legacy_rows_with_safe_repair_metadata() -> None:
+    incompatible = AgentDefinition(
+        agent_id="repairable-agent",
+        name="Unmappable",
+        description="legacy policy cannot be projected",
+        type="provider_platform",
+        access_policy=AccessPolicy(
+            allow_tenants=["oac"],
+            any_entitlements=["workspace.foreign.access"],
+        ),
+        invocation=InvocationSpec(
+            type="provider_platform",
+            provider_config={"bot_id": "registered_bot"},
+        ),
+    )
+
+    inputs = registry_definitions_to_snapshot_inputs([incompatible])
+    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(None))
+    snapshot_runtime.load(inputs, source="oac_legacy_registry")
+
+    assert snapshot_runtime.admin_quarantine_inventory() == (
+        RegistryQuarantineEntry(
+            source_index=0,
+            agent_id="repairable-agent",
+            reason_code="legacy_definition_unmappable",
+        ),
+    )
 
 
 def test_registry_writes_reject_non_admin_credentials() -> None:

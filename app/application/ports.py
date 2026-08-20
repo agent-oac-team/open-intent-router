@@ -1,8 +1,9 @@
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2
+from app.schemas.agents import AgentDefinition
 from app.schemas.common import UserContext
 from app.schemas.delegated_runs import (
     DelegatedRunCancelCommand,
@@ -43,6 +44,40 @@ from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.registry_service import RegistryState
 
 
+@dataclass(frozen=True, slots=True)
+class RegistrySnapshotQuarantineInput:
+    """A safe source-row diagnostic that Core retains only as quarantine metadata.
+
+    Source adapters use this instead of forwarding a malformed legacy row into
+    the v2 compiler.  It deliberately carries only a repair locator and one
+    bounded reason code; the Snapshot builder applies the final redaction.
+    """
+
+    agent_id: str | None
+    reason_code: str
+
+
+@runtime_checkable
+class RegistrySnapshotSourceState(Protocol):
+    """Minimal trusted Registry state visible to a Host source mapper."""
+
+    agents: Sequence[object]
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrySnapshotSourceInput:
+    """A Host mapper's safe candidate input for Core-owned Snapshot replacement."""
+
+    source: str
+    definitions: Sequence[object]
+
+
+RegistrySnapshotSourceMapper = Callable[
+    [RegistrySnapshotSourceState],
+    RegistrySnapshotSourceInput | Awaitable[RegistrySnapshotSourceInput],
+]
+
+
 @runtime_checkable
 class RoutingApplicationPort(Protocol):
     async def route(self, request: RouteRequest) -> RouteResponse: ...
@@ -56,7 +91,7 @@ class SnapshotRoutingApplicationPort(Protocol):
         self,
         request: RouteRequest,
         *,
-        definitions: Sequence[AgentDefinitionV2],
+        definitions: Sequence[object],
         source: str,
     ) -> RouteResponse: ...
 
@@ -65,7 +100,7 @@ class SnapshotRoutingApplicationPort(Protocol):
         plan: Plan,
         *,
         user: UserContext,
-        definitions: Sequence[AgentDefinitionV2],
+        definitions: Sequence[object],
         source: str,
     ) -> None: ...
 
@@ -75,6 +110,13 @@ class PlanPreflightApplicationPort(Protocol):
     """Validate a delayed Plan against a fresh trusted Candidate Set without mutation."""
 
     async def preflight_plan(self, plan: Plan, *, user: UserContext) -> None: ...
+
+
+@runtime_checkable
+class RegistrySnapshotRefreshApplicationPort(Protocol):
+    """Refresh the process-owned compiled Registry view after a committed write."""
+
+    async def refresh_registry_snapshot(self, registry: "RegistryApplicationPort") -> bool: ...
 
 
 @runtime_checkable

@@ -10,9 +10,11 @@ CapabilityProvider = Callable[[], Awaitable[HostCapabilityResponse]]
 def build_capability_router(provider: CapabilityProvider) -> APIRouter:
     router = APIRouter(tags=["host-capabilities"])
 
-    @router.get("/health", response_model=HostCapabilityResponse)
-    async def health() -> HostCapabilityResponse:
-        return await provider()
+    @router.get("/health")
+    async def health() -> dict[str, str]:
+        """Host liveness must not read the Registry or probe any dependency."""
+
+        return {"status": "ok"}
 
     @router.get("/capabilities", response_model=HostCapabilityResponse)
     async def capabilities() -> HostCapabilityResponse:

@@ -2,11 +2,13 @@ from dataclasses import dataclass
 from importlib import import_module
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.application import RoutingApplicationPort
 from app.core.config import Settings
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
+from host_adapters.oac.api.capabilities import build_capability_router
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_apps.oac.config import (
     OacHostProfile,
@@ -42,8 +44,26 @@ def test_oac_host_composition_root_includes_oir_core() -> None:
     assert app.state.host_runtime == "oac"
     assert app.state.identity_audience == "oac-oir-adapter-local"
     assert app.state.native_api_prefix == "/oir/api/v1"
-    assert client.get("/health").status_code == 200
+    assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/oir/health").json() == {"status": "ok"}
+
+
+def test_oac_root_liveness_never_calls_the_capability_provider() -> None:
+    calls = 0
+
+    async def unavailable_capabilities():
+        nonlocal calls
+        calls += 1
+        raise AssertionError("liveness must not read Registry capability state")
+
+    app = FastAPI()
+    app.include_router(build_capability_router(unavailable_capabilities))
+
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert calls == 0
 
 
 def test_oac_host_profile_keeps_host_configuration_out_of_core(monkeypatch) -> None:

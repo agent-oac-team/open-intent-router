@@ -14,7 +14,9 @@
 
 - Central：Route、Navigation Event、Agent Event、Active Plan Snapshot、Plan Confirm。
 - Registry：GET、POST、PUT、enabled PATCH、DELETE。
-- `GET /capabilities`：仅输出版本、模式、依赖健康、Write Fence 和脱敏签名门禁状态。
+- `GET /health`：仅表示 OAC Host 进程存活，不读取 Registry 或探测 Runtime/外部依赖。
+- `GET /capabilities`：仅输出版本、模式、依赖健康、Write Fence 和脱敏签名门禁状态；它可以读取
+  依赖状态，因此不能作为 liveness probe。
 - OIR Native API 挂载于 `/oir/api/v1`，Legacy `/api/v1` 不按 Body 猜测协议。
 
 ## Identity
@@ -41,10 +43,14 @@ Ticket Store、签名配置和 Service 由 Core 统一组装，OAC Adapter 与 N
 
 OAC Legacy Registry 的 v2 兼容转换只在 Adapter 边界进行：`bot_id` 映射为规范
 `external_execution.executor_ref`，`route_path` 映射为 `ui_handoff.route`；这些字段不会进入
-OIR Core 的公共运行模型。Host composition 将 Legacy Registry Definition 临时投影进每次请求独立的
-v2 Snapshot；随后只有 Core 的 Router 决定 Handling。对于已由可信 Snapshot 选中的 External
-Execution，Core 先通过宿主无关的 External Executor 端口确认该逻辑引用可由当前 Host 承接，再持久化
-Delegated Run 并签发既有不透明 Ticket。OAC 只承接通过
+OIR Core 的公共运行模型。Host composition 只注入 Adapter 的 source mapper；Core 在 lifespan、
+Native Admin reload 和已提交的 OAC Registry 写入后，在一个 source-refresh fence 内重新读取来源、
+编译候选并原子替换进程拥有的 v2 Snapshot。映射失败保留 last-known-good Snapshot；不合格的 Legacy
+行只以脱敏 locator 和固定 reason 出现在管理员 inventory。OAC 的每个路由请求仍使用独立的 v2
+Candidate Set，并叠加当前 Adapter 健康状态；这个请求期 Snapshot 不会替换进程 Snapshot，也不能使
+readiness/inventory 落后于 Registry。随后只有 Core 的 Router 决定 Handling。对于已由可信 Snapshot
+选中的 External Execution，Core 先通过宿主无关的 External Executor 端口确认该逻辑引用可由当前 Host
+承接，再持久化 Delegated Run 并签发既有不透明 Ticket。OAC 只承接通过
 `OAC_HOST_EXTERNAL_EXECUTOR_REFS` 显式声明的逻辑引用；未知 `bot_id` 在 Run/Ticket 前被拒绝。
 `acceptance_id` 对同一 Route/Turn 重试保持稳定，并由持久化的安全指纹记录跨 worker/process 去重；已有
 Run 会复用其已持久化的 canonical binding，而不是再次承接。拒绝、越权或不健康的引用不会创建 Delegated

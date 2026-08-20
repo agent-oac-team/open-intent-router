@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from inspect import isawaitable, iscoroutinefunction
@@ -26,7 +26,7 @@ _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _MAX_VERSION_LENGTH = 128
 
 AdapterFactory = Callable[["RuntimeAdapterContext"], object | Awaitable[object]]
-AdapterHealthCheck = Callable[[object], bool | Awaitable[bool]]
+AdapterHealthCheck = Callable[[object], Awaitable[bool]]
 AdapterLifecycleHook = Callable[[object], Awaitable[None]]
 
 
@@ -109,6 +109,24 @@ class RuntimeCatalogStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeAdapterHealth:
+    """One bounded health observation for an activated Runtime Adapter."""
+
+    status: Literal["healthy", "unhealthy"]
+    reason_code: Literal["runtime_adapter_unhealthy"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCatalogHealth:
+    """Safe aggregate health used by readiness, never by request-time binding."""
+
+    status: Literal["ready", "degraded", "error"]
+    reason_code: str | None = None
+    unhealthy_adapter_keys: frozenset[str] = frozenset()
+    unhealthy_adapter_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class _ActivatedAdapter:
     descriptor: RuntimeAdapterDescriptor
     adapter: object
@@ -118,7 +136,11 @@ class RuntimeCatalog:
     """A frozen, process-scoped mapping of activated Runtime Adapters."""
 
     def __init__(
-        self, activated: Sequence[_ActivatedAdapter], *, shutdown_timeout_seconds: float
+        self,
+        activated: Sequence[_ActivatedAdapter],
+        *,
+        shutdown_timeout_seconds: float,
+        initial_adapter_health: Mapping[str, RuntimeAdapterHealth],
     ) -> None:
         self._activated = tuple(activated)
         self._adapters: Mapping[str, object] = MappingProxyType(
@@ -131,6 +153,7 @@ class RuntimeCatalog:
             }
         )
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
+        self._initial_adapter_health = MappingProxyType(dict(initial_adapter_health))
         self._closed = False
 
     @classmethod
@@ -140,10 +163,14 @@ class RuntimeCatalog:
         context: RuntimeAdapterContext,
         *,
         shutdown_timeout_seconds: float,
+        health_check_timeout_seconds: float = 5.0,
+        allow_unhealthy: bool = False,
     ) -> RuntimeCatalog:
         activated: list[_ActivatedAdapter] = []
+        initial_adapter_health: dict[str, RuntimeAdapterHealth] = {}
         try:
             _validate_shutdown_timeout(shutdown_timeout_seconds)
+            _validate_health_check_timeout(health_check_timeout_seconds)
             validated = _validate_descriptors(descriptors)
             for descriptor in validated:
                 adapter = await _resolve(descriptor.factory(context))
@@ -154,8 +181,13 @@ class RuntimeCatalog:
                 entry = _ActivatedAdapter(descriptor=descriptor, adapter=adapter)
                 activated.append(entry)
                 await _run_lifecycle_hook(descriptor.lifecycle.activate, adapter)
-                healthy = await _resolve(descriptor.health_check(adapter))
-                if healthy is not True:
+                health = await _check_adapter_health(
+                    descriptor,
+                    adapter,
+                    timeout_seconds=health_check_timeout_seconds,
+                )
+                initial_adapter_health[descriptor.key] = health
+                if health.status != "healthy" and not allow_unhealthy:
                     raise RuntimeCatalogActivationError(
                         f"Runtime Adapter is unhealthy after activation: {descriptor.key}"
                     )
@@ -165,7 +197,11 @@ class RuntimeCatalog:
         except Exception as exc:
             await _dispose_reverse(activated, timeout_seconds=shutdown_timeout_seconds)
             raise RuntimeCatalogActivationError("Runtime Catalog activation failed") from exc
-        return cls(activated, shutdown_timeout_seconds=shutdown_timeout_seconds)
+        return cls(
+            activated,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+            initial_adapter_health=initial_adapter_health,
+        )
 
     @property
     def adapters(self) -> Mapping[str, object]:
@@ -192,6 +228,29 @@ class RuntimeCatalog:
             raise RuntimeCatalogKeyError(f"No Runtime Adapter registered for key: {key}")
         return _copy_descriptor_metadata(descriptor)
 
+    @property
+    def initial_adapter_health(self) -> Mapping[str, RuntimeAdapterHealth]:
+        """Health observed during atomic activation, detached from mutable adapters."""
+
+        return self._initial_adapter_health
+
+    async def check_health(
+        self,
+        *,
+        timeout_seconds: float,
+    ) -> Mapping[str, RuntimeAdapterHealth]:
+        """Probe activated adapters without exposing exceptions or adapter objects."""
+
+        _validate_health_check_timeout(timeout_seconds)
+        observations: dict[str, RuntimeAdapterHealth] = {}
+        for entry in self._activated:
+            observations[entry.descriptor.key] = await _check_adapter_health(
+                entry.descriptor,
+                entry.adapter,
+                timeout_seconds=timeout_seconds,
+            )
+        return MappingProxyType(observations)
+
     async def aclose(self) -> None:
         if self._closed:
             return
@@ -211,13 +270,19 @@ class RuntimeCatalogRuntime:
         context: RuntimeAdapterContext,
         *,
         shutdown_timeout_seconds: float,
+        required_adapter_keys: Collection[str] = (),
+        health_check_timeout_seconds: float = 5.0,
     ) -> None:
         self._descriptors = descriptors
         self._context = context
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
+        self._required_adapter_keys = frozenset(required_adapter_keys)
+        self._health_check_timeout_seconds = health_check_timeout_seconds
         self._catalog: RuntimeCatalog | None = None
         self._status = RuntimeCatalogStatus(status="not_started")
+        self._adapter_health: Mapping[str, RuntimeAdapterHealth] = MappingProxyType({})
         self._lock = asyncio.Lock()
+        self._health_lock = asyncio.Lock()
 
     @property
     def catalog(self) -> RuntimeCatalog | None:
@@ -226,6 +291,43 @@ class RuntimeCatalogRuntime:
     @property
     def status(self) -> RuntimeCatalogStatus:
         return self._status
+
+    @property
+    def health(self) -> RuntimeCatalogHealth:
+        """Return the most recent safe health state without starting a probe."""
+
+        if self._status.status != "ready" or self._catalog is None:
+            return RuntimeCatalogHealth(
+                status="error",
+                reason_code=self._status.reason_code or "runtime_catalog_not_ready",
+            )
+        keys = frozenset(self._catalog.keys())
+        missing_required = self._required_adapter_keys - keys
+        if missing_required:
+            return RuntimeCatalogHealth(
+                status="error",
+                reason_code="runtime_required_adapter_missing",
+            )
+        unhealthy = frozenset(
+            key
+            for key, observation in self._adapter_health.items()
+            if observation.status == "unhealthy"
+        )
+        if unhealthy & self._required_adapter_keys:
+            return RuntimeCatalogHealth(
+                status="error",
+                reason_code="runtime_required_adapter_unhealthy",
+                unhealthy_adapter_keys=unhealthy,
+                unhealthy_adapter_count=len(unhealthy),
+            )
+        if unhealthy:
+            return RuntimeCatalogHealth(
+                status="degraded",
+                reason_code="runtime_adapter_unhealthy",
+                unhealthy_adapter_keys=unhealthy,
+                unhealthy_adapter_count=len(unhealthy),
+            )
+        return RuntimeCatalogHealth(status="ready")
 
     async def start(self) -> None:
         async with self._lock:
@@ -239,16 +341,24 @@ class RuntimeCatalogRuntime:
                     self._descriptors,
                     self._context,
                     shutdown_timeout_seconds=self._shutdown_timeout_seconds,
+                    health_check_timeout_seconds=self._health_check_timeout_seconds,
+                    allow_unhealthy=True,
                 )
             except Exception:
-                logger.exception("runtime_catalog_activation_failed")
+                # Descriptor factories and lifecycle hooks are deployment code;
+                # their exceptions can contain connection strings or credentials.
+                # Readiness exposes the stable reason code below, and logs retain
+                # only that same safe diagnostic.
+                logger.warning("runtime_catalog_activation_failed")
                 self._catalog = None
+                self._adapter_health = MappingProxyType({})
                 self._status = RuntimeCatalogStatus(
                     status="error",
                     reason_code="runtime_catalog_activation_failed",
                 )
                 return
             self._catalog = catalog
+            self._adapter_health = catalog.initial_adapter_health
             self._status = RuntimeCatalogStatus(
                 status="ready",
                 adapter_count=len(catalog.keys()),
@@ -260,13 +370,35 @@ class RuntimeCatalogRuntime:
             raise RuntimeCatalogUnavailableError("Runtime Catalog is unavailable")
         return catalog
 
+    async def refresh_health(self) -> RuntimeCatalogHealth:
+        """Refresh Adapter health for readiness without affecting the frozen Catalog."""
+
+        async with self._health_lock:
+            async with self._lock:
+                catalog = self._catalog
+                if catalog is None or self._status.status != "ready":
+                    return self.health
+            observations = await catalog.check_health(
+                timeout_seconds=self._health_check_timeout_seconds,
+            )
+            async with self._lock:
+                if self._catalog is catalog and self._status.status == "ready":
+                    self._adapter_health = observations
+                return self.health
+
     async def stop(self) -> None:
-        async with self._lock:
-            catalog = self._catalog
-            self._catalog = None
-            if catalog is not None:
-                await catalog.aclose()
-            self._status = RuntimeCatalogStatus(status="stopped")
+        # A probe uses an Adapter instance.  Do not start disposal after the
+        # probe released the catalog lock but before it completes.  This gate is
+        # deliberately shared with ``refresh_health`` rather than relying on a
+        # best-effort closed flag in each Adapter.
+        async with self._health_lock:
+            async with self._lock:
+                catalog = self._catalog
+                self._catalog = None
+                self._adapter_health = MappingProxyType({})
+                if catalog is not None:
+                    await catalog.aclose()
+                self._status = RuntimeCatalogStatus(status="stopped")
 
 
 def build_default_runtime_descriptors() -> tuple[RuntimeAdapterDescriptor, ...]:
@@ -363,8 +495,8 @@ def _validate_descriptors(
             )
         if not callable(descriptor.factory):
             raise RuntimeCatalogValidationError("Runtime Adapter factory is required")
-        if not callable(descriptor.health_check):
-            raise RuntimeCatalogValidationError("Runtime Adapter health check is required")
+        if not _is_async_callable(descriptor.health_check):
+            raise RuntimeCatalogValidationError("Runtime Adapter health check must be async")
         if not isinstance(descriptor.lifecycle, RuntimeAdapterLifecycle):
             raise RuntimeCatalogValidationError("Runtime Adapter lifecycle is required")
         if not _is_async_lifecycle_hook(
@@ -390,9 +522,23 @@ def _validate_shutdown_timeout(timeout_seconds: float) -> None:
         raise RuntimeCatalogValidationError("Runtime Catalog shutdown timeout must be positive")
 
 
+def _validate_health_check_timeout(timeout_seconds: float) -> None:
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int | float)
+        or not isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise RuntimeCatalogValidationError("Runtime Catalog health timeout must be positive")
+
+
 def _is_async_lifecycle_hook(hook: object) -> bool:
-    return callable(hook) and (
-        iscoroutinefunction(hook) or iscoroutinefunction(type(hook).__call__)
+    return _is_async_callable(hook)
+
+
+def _is_async_callable(callback: object) -> bool:
+    return callable(callback) and (
+        iscoroutinefunction(callback) or iscoroutinefunction(type(callback).__call__)
     )
 
 
@@ -437,6 +583,39 @@ async def _run_lifecycle_hook(hook: AdapterLifecycleHook, adapter: object) -> No
     if not isawaitable(result):
         raise RuntimeCatalogActivationError("Runtime Adapter lifecycle hook must be async")
     await result
+
+
+async def _check_adapter_health(
+    descriptor: RuntimeAdapterDescriptor,
+    adapter: object,
+    *,
+    timeout_seconds: float,
+) -> RuntimeAdapterHealth:
+    """Normalize all adapter health outcomes to one non-leaking status."""
+
+    try:
+        healthy = await asyncio.wait_for(
+            descriptor.health_check(adapter),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning("runtime_catalog_adapter_health_timeout key=%s", descriptor.key)
+        return RuntimeAdapterHealth(
+            status="unhealthy",
+            reason_code="runtime_adapter_unhealthy",
+        )
+    except Exception:
+        logger.warning("runtime_catalog_adapter_health_failed key=%s", descriptor.key)
+        return RuntimeAdapterHealth(
+            status="unhealthy",
+            reason_code="runtime_adapter_unhealthy",
+        )
+    if healthy is True:
+        return RuntimeAdapterHealth(status="healthy")
+    return RuntimeAdapterHealth(
+        status="unhealthy",
+        reason_code="runtime_adapter_unhealthy",
+    )
 
 
 async def _dispose_reverse(

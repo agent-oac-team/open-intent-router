@@ -1,7 +1,8 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.core.errors import RegistryUnavailableError
 from app.core.security import AdminActor, require_admin_token
 from app.dependencies import (
     get_memory_governance_service,
@@ -18,6 +19,11 @@ from app.schemas.memory import (
     MemoryMetricsResponse,
     MemoryRuntimeHealth,
 )
+from app.schemas.runtime import (
+    RuntimeInventoryDefinition,
+    RuntimeInventoryQuarantine,
+    RuntimeInventoryResponse,
+)
 from app.services.memory_governance import MemoryGovernanceService
 from app.services.memory_management import (
     MemoryManagementConflict,
@@ -26,6 +32,7 @@ from app.services.memory_management import (
 )
 from app.services.memory_observability import MemoryObservabilityService
 from app.services.registry_service import AgentRegistryService
+from app.services.runtime_readiness import RuntimeReadinessRuntime
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -42,9 +49,12 @@ async def admin_list_agents(
 @router.post("/agents", response_model=AgentDefinition, dependencies=[Depends(require_admin_token)])
 async def upsert_agent(
     payload: AgentDefinition,
+    request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> AgentDefinition:
-    return await registry.upsert_definition(payload)
+    updated = await registry.upsert_definition(payload)
+    await _refresh_runtime_snapshot(request, registry)
+    return updated
 
 
 @router.put(
@@ -55,11 +65,14 @@ async def upsert_agent(
 async def update_agent(
     agent_id: str,
     payload: AgentDefinition,
+    request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> AgentDefinition:
     if payload.agent_id != agent_id:
         raise HTTPException(status_code=400, detail="agent_id in path and payload must match")
-    return await registry.upsert_definition(payload)
+    updated = await registry.upsert_definition(payload)
+    await _refresh_runtime_snapshot(request, registry)
+    return updated
 
 
 @router.patch(
@@ -70,35 +83,106 @@ async def update_agent(
 async def set_agent_enabled(
     agent_id: str,
     payload: AgentEnabledRequest,
+    request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> AgentPublic:
     updated = await registry.set_enabled(agent_id, payload.enabled)
     if updated is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    await _refresh_runtime_snapshot(request, registry)
     return updated.to_public()
 
 
 @router.delete("/agents/{agent_id}", dependencies=[Depends(require_admin_token)])
 async def delete_agent(
     agent_id: str,
+    request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> dict[str, bool]:
     deleted = await registry.delete_definition(agent_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found")
+    await _refresh_runtime_snapshot(request, registry)
     return {"deleted": True}
 
 
 @router.post("/registry/reload", dependencies=[Depends(require_admin_token)])
 async def reload_registry(
+    request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
 ) -> dict[str, str]:
-    state = await registry.reload()
+    readiness_runtime = getattr(request.app.state, "runtime_readiness_runtime", None)
+    if isinstance(readiness_runtime, RuntimeReadinessRuntime):
+        state = await readiness_runtime.reload_primary_registry(registry)
+        if state is None:
+            raise RegistryUnavailableError("Registry Snapshot is unavailable")
+    else:
+        state = await registry.reload()
     return {
         "status": state.status,
         "active_source": state.active_source,
-        "message": state.message,
+        "message": "",
     }
+
+
+async def _refresh_runtime_snapshot(request: Request, registry: AgentRegistryService) -> None:
+    """Keep the app-owned Snapshot coherent after a committed Native Registry write."""
+
+    readiness_runtime = getattr(request.app.state, "runtime_readiness_runtime", None)
+    if not isinstance(readiness_runtime, RuntimeReadinessRuntime):
+        return
+    if not await readiness_runtime.refresh_registry_snapshot(registry):
+        raise RegistryUnavailableError("Registry Snapshot is unavailable")
+
+
+@router.get(
+    "/runtime/inventory",
+    response_model=RuntimeInventoryResponse,
+    dependencies=[Depends(require_admin_token)],
+)
+async def runtime_inventory(request: Request) -> RuntimeInventoryResponse:
+    readiness_runtime = getattr(request.app.state, "runtime_readiness_runtime", None)
+    if not isinstance(readiness_runtime, RuntimeReadinessRuntime):
+        return RuntimeInventoryResponse(
+            status="error",
+            runtime_status="error",
+            registry_status="error",
+            reason_code="core_runtime_unavailable",
+        )
+    report = await readiness_runtime.refresh()
+    snapshot_runtime = getattr(request.app.state, "registry_snapshot_runtime", None)
+    snapshot_status = snapshot_runtime.status if snapshot_runtime is not None else None
+    return RuntimeInventoryResponse(
+        status=report.status,
+        runtime_status=report.runtime_status,
+        registry_status=report.registry_status,
+        active_source=report.active_source,
+        reason_code=report.reason_code,
+        impacted_definition_count=report.impacted_definition_count,
+        quarantined_definition_count=(
+            snapshot_status.quarantined_definition_count if snapshot_status is not None else 0
+        ),
+        quarantined_definitions=[
+            RuntimeInventoryQuarantine(
+                source_index=entry.source_index,
+                agent_id=entry.agent_id,
+                reason_code=entry.reason_code,
+            )
+            for entry in readiness_runtime.admin_quarantine_inventory()
+        ],
+        definitions=[
+            RuntimeInventoryDefinition(
+                agent_id=entry.agent_id,
+                revision=entry.revision,
+                enabled=entry.enabled,
+                handling_kind=entry.handling_kind,
+                handling=dict(entry.handling),
+                binding_status=entry.binding_status,
+                isolation_reason_code=entry.isolation_reason_code,
+            )
+            for entry in readiness_runtime.admin_inventory()
+        ],
+    )
 
 
 @router.get(

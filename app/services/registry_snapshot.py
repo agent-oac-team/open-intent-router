@@ -5,14 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from app.application.ports import ExternalExecutorApplicationPort
+from app.application.ports import (
+    ExternalExecutorApplicationPort,
+    RegistrySnapshotQuarantineInput,
+)
 from app.core.errors import RegistryError
 from app.runtime.catalog import RuntimeCatalog
 from app.schemas.agents import (
@@ -23,10 +26,30 @@ from app.schemas.agents import (
     ExternalExecutionHandling,
     InvocationHandling,
     UiHandoffHandling,
+    is_safe_agent_identifier,
 )
 from app.schemas.common import UserContext
 
 BindingStatus = Literal["ready", "isolated", "disabled"]
+RegistrySnapshotRuntimeState = Literal["not_loaded", "ready", "degraded", "error"]
+_SAFE_ISOLATION_REASON_CODES = frozenset(
+    {
+        "invocation_adapter_missing",
+        "invocation_adapter_unsupported",
+        "invocation_adapter_incompatible",
+        "invocation_adapter_unhealthy",
+        "invocation_config_invalid",
+        "external_executor_unsupported",
+    }
+)
+_SAFE_QUARANTINE_REASON_CODES = frozenset(
+    {
+        "definition_schema_invalid",
+        "definition_configuration_invalid",
+        "duplicate_agent_id",
+        "legacy_definition_unmappable",
+    }
+)
 
 
 class RegistryDefinitionValidationError(RegistryError):
@@ -144,6 +167,30 @@ class RegistryQuarantineEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistrySnapshotRuntimeStatus:
+    """Safe aggregate state for readiness and repair-oriented inventory."""
+
+    status: RegistrySnapshotRuntimeState
+    reason_code: str | None = None
+    isolated_definition_count: int = 0
+    quarantined_definition_count: int = 0
+    unhealthy_adapter_definition_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrySnapshotInventoryEntry:
+    """Redacted Definition state suitable for an administrator-only inventory."""
+
+    agent_id: str
+    revision: int
+    enabled: bool
+    handling_kind: AgentHandlingKind
+    handling: Mapping[str, object]
+    binding_status: BindingStatus
+    isolation_reason_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrySnapshotSelection:
     """An exact Definition selected from one immutable, trusted Snapshot."""
 
@@ -228,6 +275,34 @@ class RegistrySnapshot:
 
         return self._entries.get(agent_id)
 
+    def admin_inventory(self) -> tuple[RegistrySnapshotInventoryEntry, ...]:
+        """Project binding diagnostics without retaining Binding internals or secrets."""
+
+        return tuple(
+            RegistrySnapshotInventoryEntry(
+                agent_id=entry.agent_id,
+                revision=entry.revision,
+                enabled=entry.enabled,
+                handling_kind=entry.handling_kind,
+                handling=MappingProxyType(dict(entry.definition.to_admin().handling)),
+                binding_status=entry.binding_status,
+                isolation_reason_code=_safe_isolation_reason_code(entry.isolation_reason_code),
+            )
+            for entry in sorted(self._entries.values(), key=lambda entry: entry.agent_id)
+        )
+
+    def admin_quarantine_inventory(self) -> tuple[RegistryQuarantineEntry, ...]:
+        """Expose only safe locators and reason codes for rejected source rows."""
+
+        return tuple(
+            RegistryQuarantineEntry(
+                source_index=entry.source_index,
+                agent_id=_safe_quarantine_agent_id(entry.agent_id),
+                reason_code=_safe_quarantine_reason_code(entry.reason_code),
+            )
+            for entry in self.quarantined
+        )
+
     def _executable_entries(self) -> tuple[RegistrySnapshotEntry, ...]:
         return tuple(
             sorted(
@@ -255,11 +330,19 @@ class RegistrySnapshotRuntime:
 
     def __init__(self, builder: RegistrySnapshotBuilder) -> None:
         self._builder = builder
+        self._base_snapshot: RegistrySnapshot | None = None
         self._snapshot: RegistrySnapshot | None = None
+        self._unhealthy_adapter_keys: frozenset[str] = frozenset()
+        self._reload_failed = False
+        self._status = RegistrySnapshotRuntimeStatus(status="not_loaded")
 
     @property
     def snapshot(self) -> RegistrySnapshot | None:
         return self._snapshot
+
+    @property
+    def status(self) -> RegistrySnapshotRuntimeStatus:
+        return self._status
 
     def load(
         self,
@@ -267,14 +350,57 @@ class RegistrySnapshotRuntime:
         *,
         source: str,
     ) -> RegistrySnapshot:
-        candidate = self._builder.build(raw_definitions, source=source)
-        self._snapshot = candidate
-        return candidate
+        try:
+            candidate = self._builder.build(raw_definitions, source=source)
+        except Exception:
+            self._reload_failed = True
+            self._refresh_status()
+            raise
+        self._base_snapshot = candidate
+        self._reload_failed = False
+        self._snapshot = _apply_runtime_health(candidate, self._unhealthy_adapter_keys)
+        self._refresh_status()
+        return self._snapshot
+
+    def apply_adapter_health(self, unhealthy_adapter_keys: Collection[str]) -> None:
+        """Atomically overlay runtime Adapter health onto the active Snapshot.
+
+        The base Snapshot remains unchanged so a later healthy probe restores the
+        original validated binding without a source reread.
+        """
+
+        self._unhealthy_adapter_keys = frozenset(unhealthy_adapter_keys)
+        if self._base_snapshot is not None:
+            self._snapshot = _apply_runtime_health(
+                self._base_snapshot,
+                self._unhealthy_adapter_keys,
+            )
+        self._refresh_status()
+
+    def mark_reload_failed(self) -> None:
+        """Retain the current Snapshot after a source adapter fails before ``load``.
+
+        A host-owned source mapper can reject malformed legacy data before this
+        Runtime receives raw v2 Definitions.  It must get the same last-known-
+        good semantics as a failed builder reload, without retaining its raw
+        exception as state or inventory data.
+        """
+
+        self._reload_failed = True
+        self._refresh_status()
 
     def validate_definition_for_write(self, raw_definition: object) -> AgentDefinitionV2:
         """Validate a v2 Definition before a source persists it."""
 
         return self._builder.validate_definition_for_write(raw_definition)
+
+    def admin_inventory(self) -> tuple[RegistrySnapshotInventoryEntry, ...]:
+        snapshot = self._snapshot
+        return snapshot.admin_inventory() if snapshot is not None else ()
+
+    def admin_quarantine_inventory(self) -> tuple[RegistryQuarantineEntry, ...]:
+        snapshot = self._snapshot
+        return snapshot.admin_quarantine_inventory() if snapshot is not None else ()
 
     def public_definitions(self, user: UserContext) -> tuple[AgentPublicV2, ...]:
         return self._require_snapshot().public_definitions(user)
@@ -306,6 +432,43 @@ class RegistrySnapshotRuntime:
         if snapshot is None:
             raise RegistryError("Registry Snapshot is unavailable")
         return snapshot
+
+    def _refresh_status(self) -> None:
+        snapshot = self._snapshot
+        if snapshot is None:
+            self._status = RegistrySnapshotRuntimeStatus(
+                status="error" if self._reload_failed else "not_loaded",
+                reason_code="registry_snapshot_reload_failed" if self._reload_failed else None,
+            )
+            return
+        isolated_count = sum(
+            entry.binding_status == "isolated" for entry in snapshot.entries.values()
+        )
+        unhealthy_adapter_count = sum(
+            entry.isolation_reason_code == "invocation_adapter_unhealthy"
+            for entry in snapshot.entries.values()
+        )
+        quarantined_count = len(snapshot.quarantined)
+        if self._reload_failed:
+            reason_code = "registry_snapshot_reload_failed"
+        elif any(
+            entry.isolation_reason_code == "invocation_adapter_unhealthy"
+            for entry in snapshot.entries.values()
+        ):
+            reason_code = "runtime_adapter_unhealthy"
+        elif isolated_count:
+            reason_code = "registry_snapshot_definitions_isolated"
+        elif quarantined_count:
+            reason_code = "registry_snapshot_definitions_quarantined"
+        else:
+            reason_code = None
+        self._status = RegistrySnapshotRuntimeStatus(
+            status="degraded" if reason_code is not None else "ready",
+            reason_code=reason_code,
+            isolated_definition_count=isolated_count,
+            quarantined_definition_count=quarantined_count,
+            unhealthy_adapter_definition_count=unhealthy_adapter_count,
+        )
 
 
 class RegistrySnapshotBuilder:
@@ -352,12 +515,24 @@ class RegistrySnapshotBuilder:
         entries: dict[str, RegistrySnapshotEntry] = {}
         quarantined: list[RegistryQuarantineEntry] = []
         for source_index, raw_definition in enumerate(raw_definitions):
+            if isinstance(raw_definition, RegistrySnapshotQuarantineInput):
+                quarantined.append(
+                    RegistryQuarantineEntry(
+                        source_index=source_index,
+                        agent_id=_safe_quarantine_agent_id(raw_definition.agent_id),
+                        reason_code=_safe_quarantine_reason_code(raw_definition.reason_code),
+                    )
+                )
+                continue
             try:
                 definition = self._validate_definition(raw_definition)
             except RegistryDefinitionValidationError as exc:
                 quarantined.append(
                     RegistryQuarantineEntry(
                         source_index=source_index,
+                        agent_id=_safe_quarantine_agent_id(
+                            _raw_definition_agent_id(raw_definition)
+                        ),
                         reason_code=exc.reason_code,
                     )
                 )
@@ -423,7 +598,12 @@ class RegistrySnapshotBuilder:
                 if isinstance(raw_definition, AgentDefinitionV2)
                 else raw_definition
             )
-            return AgentDefinitionV2.model_validate(payload)
+            definition = AgentDefinitionV2.model_validate(payload)
+            if _safe_quarantine_agent_id(definition.agent_id) is None:
+                raise RegistryDefinitionValidationError("definition_schema_invalid")
+            return definition
+        except RegistryDefinitionValidationError:
+            raise
         except (TypeError, ValidationError, ValueError) as exc:
             raise RegistryDefinitionValidationError("definition_schema_invalid") from exc
 
@@ -503,6 +683,67 @@ def _frozen_configuration(encoded: str) -> Mapping[str, object]:
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    )
+
+
+def _safe_isolation_reason_code(reason_code: object) -> str | None:
+    if reason_code is None:
+        return None
+    if isinstance(reason_code, str) and reason_code in _SAFE_ISOLATION_REASON_CODES:
+        return reason_code
+    return "binding_unavailable"
+
+
+def _safe_quarantine_agent_id(agent_id: object) -> str | None:
+    return agent_id if is_safe_agent_identifier(agent_id) else None
+
+
+def _raw_definition_agent_id(raw_definition: object) -> object:
+    if isinstance(raw_definition, AgentDefinitionV2):
+        return raw_definition.agent_id
+    if isinstance(raw_definition, Mapping):
+        return raw_definition.get("agent_id")
+    return None
+
+
+def _safe_quarantine_reason_code(reason_code: object) -> str:
+    if isinstance(reason_code, str) and reason_code in _SAFE_QUARANTINE_REASON_CODES:
+        return reason_code
+    return "definition_schema_invalid"
+
+
+def _apply_runtime_health(
+    snapshot: RegistrySnapshot,
+    unhealthy_adapter_keys: Collection[str],
+) -> RegistrySnapshot:
+    """Create an immutable health overlay without mutating the last good source view."""
+
+    unhealthy = frozenset(unhealthy_adapter_keys)
+    entries: dict[str, RegistrySnapshotEntry] = {}
+    changed = False
+    for entry in snapshot.entries.values():
+        requirement = entry.binding_requirement
+        if (
+            entry.binding_status == "ready"
+            and isinstance(requirement, InvocationBindingRequirement)
+            and requirement.adapter_key in unhealthy
+        ):
+            entries[entry.agent_id] = replace(
+                entry,
+                binding_status="isolated",
+                isolation_reason_code="invocation_adapter_unhealthy",
+            )
+            changed = True
+        else:
+            entries[entry.agent_id] = entry
+    if not changed:
+        return snapshot
+    frozen_entries = MappingProxyType(entries)
+    return RegistrySnapshot(
+        snapshot_id=_snapshot_identity(snapshot.source, frozen_entries, snapshot.quarantined),
+        source=snapshot.source,
+        quarantined=snapshot.quarantined,
+        _entries=frozen_entries,
     )
 
 

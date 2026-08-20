@@ -1,5 +1,7 @@
+from collections.abc import Sequence
 from urllib.parse import urlsplit
 
+from app.application import RegistrySnapshotQuarantineInput
 from app.schemas.agents import (
     AccessPolicy,
     AgentDefinition,
@@ -142,6 +144,43 @@ def registry_definition_to_native_v2(
             "updated_at": agent.updated_at,
         }
     )
+
+
+def registry_definitions_to_snapshot_inputs(
+    definitions: Sequence[object],
+) -> list[AgentDefinitionV2 | RegistrySnapshotQuarantineInput]:
+    """Translate OAC source rows without letting one bad row abort a Snapshot.
+
+    Legacy field semantics stay in the Adapter.  The result is either a v2
+    Definition or a safe Core quarantine input; Core remains responsible for
+    compilation, atomic replacement, and inventory projection.
+    """
+
+    inputs: list[AgentDefinitionV2 | RegistrySnapshotQuarantineInput] = []
+    for definition in definitions:
+        if not isinstance(definition, (AgentDefinition, AgentDefinitionV2)):
+            inputs.append(
+                RegistrySnapshotQuarantineInput(
+                    agent_id=None,
+                    reason_code="legacy_definition_unmappable",
+                )
+            )
+            continue
+        try:
+            inputs.append(registry_definition_to_native_v2(definition))
+        except (
+            InvalidRoutePath,
+            RegistryPolicyProjectionError,
+            RegistryValidationError,
+            ValueError,
+        ):
+            inputs.append(
+                RegistrySnapshotQuarantineInput(
+                    agent_id=getattr(definition, "agent_id", None),
+                    reason_code="legacy_definition_unmappable",
+                )
+            )
+    return inputs
 
 
 def registry_agent_to_native_v2(

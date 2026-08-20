@@ -28,11 +28,16 @@ Run、Plan 和 Session 的 Native 读写都以 Principal 的 `(tenant, subject)`
 ## 健康检查
 
 - `GET /health`：仅表示服务进程存活；不触发 Registry、Runtime Adapter 或外部依赖探测。
-- `GET /ready`：服务就绪检查。Runtime Catalog 在应用 lifespan 中完成验证、激活与冻结；若
-  Catalog 启动失败，接口返回 `503` 和安全的 `runtime_reason`，但不暴露 Adapter 配置、端点、
-  凭据或原始异常。失败响应固定为
-  `{ "status": "error", "runtime_status": "error", "runtime_reason": "..." }`。Catalog
-  就绪后继续校验既有 Registry 状态。
+- `GET /ready`：服务就绪检查。Runtime Catalog 与 Primary Registry 都在应用 lifespan 中构建；
+  受信 source mapper 在 lifespan、Admin Registry reload 或已提交的受信 Registry 写入后，在同一
+  source-refresh fence 内原子加载/替换当前 Snapshot。请求仅刷新已激活 Adapter 的有界健康观察，
+  不重载 Registry。Catalog、Core、Primary Registry
+  或部署标记为 required 的 Adapter 失败时返回 `503`，失败响应固定为
+  `{ "status": "error", "runtime_status": "error", "runtime_reason": "..." }`。响应不暴露
+  Adapter 配置、endpoint、凭据或原始异常。可选 Adapter 失败时返回 `200` 和
+  `{ "status": "degraded", "runtime_status": "degraded", "reason_code":
+  "runtime_adapter_unhealthy", "impacted_definition_count": n }`；只有依赖该 Adapter 的 v2
+  Definition 会被当前 Snapshot 隔离。
 
 ## 路由
 
@@ -286,12 +291,20 @@ HTTP 入口，也不代理或回退这些请求。Agent Definition 中的
 - `PATCH /api/v1/admin/agents/{agent_id}/enabled`
 - `DELETE /api/v1/admin/agents/{agent_id}`
 - `POST /api/v1/admin/registry/reload`
+- `GET /api/v1/admin/runtime/inventory`
 
 说明：
 
 - `database` 模式支持完整 CRUD。
 - `file` 模式主要用于只读加载，不适合运行时变更。
 - `hybrid` 模式以数据库为主，数据库不可用时才使用本地文件兜底。
+- Runtime inventory 只向已认证管理员输出 v2 Definition 的 revision、enabled、Handling kind、
+  全量脱敏后的 Handling、binding 状态和安全隔离原因，以及聚合 quarantine/受影响计数。每个
+  `quarantined_definitions` 条目只包含 `source_index`、可选的已校验逻辑 `agent_id` 和封闭的
+  `reason_code`（当前为 `definition_schema_invalid`、`definition_configuration_invalid`、
+  `duplicate_agent_id` 或 `legacy_definition_unmappable`）；不能安全校验的 locator 返回 `null`。
+  不输出 Connector reference、Adapter key、executor/endpoint、Header、凭据或原始异常。公开 Catalog
+  和 Candidate 投影仍只输出安全的 `handling_kind`，不包含这些诊断字段。
 
 ## 事件
 
