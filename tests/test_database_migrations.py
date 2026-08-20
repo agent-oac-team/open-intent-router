@@ -53,6 +53,8 @@ def test_postgresql_memory_migration_is_rerunnable_and_plan_ownership_is_strict(
     assert "ALTER TABLE plans ALTER COLUMN user_id SET NOT NULL" in schema_sql
     assert "ALTER TABLE plans ALTER COLUMN tenant_id SET NOT NULL" in schema_sql
     assert "DELETE FROM plans" in schema_sql
+    assert "CONSTRAINT ck_plan_steps_binding_pair" in schema_sql
+    assert "UPDATE plan_steps" in schema_sql
 
 
 def test_postgresql_schema_contains_canonical_turn_and_outbox_contract() -> None:
@@ -298,6 +300,87 @@ async def test_create_all_tables_adds_scoped_canonical_ticket_fence_to_legacy_da
 
     assert "canonical_reuse" in schema["columns"]
     assert schema["indexes"]["uq_execution_tickets_reusable_active_run_purpose"]["unique"]
+
+
+async def test_create_all_tables_adds_v2_plan_binding_columns_to_legacy_steps(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-plan-steps.db'}"
+    settings = Settings(storage_backend="database", database_url=database_url)
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE plan_steps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    step_id VARCHAR(128) NOT NULL,
+                    plan_id VARCHAR(128) NOT NULL,
+                    agent_id VARCHAR(128) NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    description TEXT NOT NULL,
+                    depends_on_text TEXT NOT NULL,
+                    artifact_refs_text TEXT NOT NULL,
+                    agent_revision INTEGER,
+                    binding_requirement_text TEXT
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO plan_steps (
+                    step_id, plan_id, agent_id, status, description,
+                    depends_on_text, artifact_refs_text, agent_revision,
+                    binding_requirement_text
+                ) VALUES (
+                    'legacy-invalid-step', 'legacy-plan', 'legacy-agent', 'pending',
+                    'old partial binding', '[]', '[]', 9, NULL
+                )
+                """
+            )
+        )
+    await engine.dispose()
+
+    await create_all_tables(settings)
+    await create_all_tables(settings)
+
+    engine = create_engine(settings)
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: {
+                column["name"] for column in inspect(sync_conn).get_columns("plan_steps")
+            }
+        )
+        repaired = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT agent_revision, binding_requirement_text
+                    FROM plan_steps
+                    WHERE step_id = 'legacy-invalid-step'
+                    """
+                )
+            )
+        ).one()
+        with pytest.raises(IntegrityError):
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO plan_steps (
+                        step_id, plan_id, agent_id, status, description,
+                        depends_on_text, artifact_refs_text, agent_revision,
+                        binding_requirement_text
+                    ) VALUES (
+                        'invalid-new-step', 'legacy-plan', 'legacy-agent', 'pending',
+                        'partial binding must fail', '[]', '[]', NULL, '{}'
+                    )
+                    """
+                )
+            )
+    await engine.dispose()
+
+    assert {"agent_revision", "binding_requirement_text"} <= columns
+    assert repaired == (None, None)
 
 
 async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp_path) -> None:

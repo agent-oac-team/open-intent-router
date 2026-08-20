@@ -75,6 +75,8 @@ async def route_and_execute(
             },
             context={"route_reason": route_response.decision.reason},
             selected_definitions=route_response.selected_definitions,
+            selected_bindings=route_response.selected_bindings,
+            selected_legacy_definitions=route_response.selected_legacy_definitions,
         )
         return RouteAndExecuteResponse(
             route=route_response.model_copy(update={"plan": execution.plan}),

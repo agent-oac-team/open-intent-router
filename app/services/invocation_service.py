@@ -174,9 +174,26 @@ class InvocationService:
         request_id: str | None = None,
         knowledge_context_handle: str | None = None,
         knowledge_context_trace_id: str | None = None,
-        selected_definition: AgentDefinition | None = None,
+        selected_definition: AgentDefinition | AgentDefinitionV2 | None = None,
+        selected_binding: RegistrySnapshotSelection | None = None,
+        resolved_binding: ResolvedInvocationBinding | None = None,
     ) -> AgentInvocationResult:
-        definition = selected_definition or await self.registry.get_definition(agent_id)
+        if resolved_binding is not None:
+            definition = resolved_binding.definition
+            if (
+                selected_binding is not None
+                and selected_binding.definition.agent_id != definition.agent_id
+            ):
+                raise InvocationError("Resolved Binding does not match invocation target")
+        elif selected_binding is not None:
+            definition = selected_binding.definition
+            if (
+                selected_definition is not None
+                and selected_definition.agent_id != definition.agent_id
+            ):
+                raise InvocationError("Selected Binding does not match invocation target")
+        else:
+            definition = selected_definition or await self.registry.get_definition(agent_id)
         if definition is None:
             raise InvocationError(f"Agent not found: {agent_id}")
         if definition.agent_id != agent_id:
@@ -192,7 +209,32 @@ class InvocationService:
             knowledge_context_handle=knowledge_context_handle,
             knowledge_context_trace_id=knowledge_context_trace_id,
         )
+        if resolved_binding is not None:
+            return await self._invoke_resolved_binding(resolved_binding, invocation)
+        if selected_binding is not None:
+            return await self._invoke_resolved_binding(
+                self.resolve_direct_binding(selected_binding),
+                invocation,
+            )
+        if isinstance(definition, AgentDefinitionV2):
+            raise InvocationBindingUnavailableError(
+                "Invocation Binding is unavailable",
+                details={"reason_code": "plan_binding_unavailable"},
+            )
         return await self._invoke_definition(definition, invocation)
+
+    def resolve_direct_binding(
+        self,
+        selection: RegistrySnapshotSelection,
+    ) -> ResolvedInvocationBinding:
+        """Resolve a trusted v2 selection before accepting any execution state."""
+
+        if self.binding_resolver is None:
+            raise InvocationBindingUnavailableError(
+                "Invocation Binding is unavailable",
+                details={"reason_code": "binding_resolver_unavailable"},
+            )
+        return self.binding_resolver.resolve_direct_invocation(selection)
 
     async def invoke_from_route(
         self,

@@ -49,6 +49,14 @@ Outbox 与 `canonical_turns.turn_id` 使用 `ON DELETE RESTRICT` 外键关联。
 状态包括 `pending/claimed/retry/completed/dead_letter`。Worker 使用 owner + lease token 原子
 claim；lease 过期后可恢复。相同 `idempotency_key` 只产生一个逻辑事件，重复完成返回既有状态。
 
+## Plan Step 的 v2 Binding Fence
+
+`plan_steps` 对 v2 Step 额外保存可空的 `agent_revision` 与 `binding_requirement_text`。二者只记录
+经过 Schema 验证的声明式 Requirement，必须成对存在；旧 Plan 可为空以保持迁移期间可读。它们不保存
+历史 entitlement、已激活 Adapter/Client 或原始凭证。每个延迟执行、恢复或受控路由都以当前 Registry
+Snapshot 重新形成 Candidate Set 并比较这两个事实；不兼容时保持 Canonical Plan/Run/Turn 状态，不以
+新 Binding 覆盖原 Step。数据库的 Plan 重写与 Delegated Run 的 Turn 终态事务都必须保留该字段对。
+
 ## 事务不变量
 
 Route-only Turn 完成时，Turn 终态与 `turn.completed` Outbox 在同一事务提交。Canonical

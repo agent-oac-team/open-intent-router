@@ -60,6 +60,22 @@ class SnapshotRoutingApplicationPort(Protocol):
         source: str,
     ) -> RouteResponse: ...
 
+    async def preflight_plan_with_snapshot(
+        self,
+        plan: Plan,
+        *,
+        user: UserContext,
+        definitions: Sequence[AgentDefinitionV2],
+        source: str,
+    ) -> None: ...
+
+
+@runtime_checkable
+class PlanPreflightApplicationPort(Protocol):
+    """Validate a delayed Plan against a fresh trusted Candidate Set without mutation."""
+
+    async def preflight_plan(self, plan: Plan, *, user: UserContext) -> None: ...
+
 
 @runtime_checkable
 class TurnApplicationPort(Protocol):

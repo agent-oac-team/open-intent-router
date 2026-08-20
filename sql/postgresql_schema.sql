@@ -524,6 +524,12 @@ CREATE TABLE IF NOT EXISTS plan_steps (
     description TEXT NOT NULL,
     depends_on_text TEXT NOT NULL,
     artifact_refs_text TEXT NOT NULL,
+    agent_revision INTEGER,
+    binding_requirement_text TEXT,
+    CONSTRAINT ck_plan_steps_binding_pair CHECK (
+        (agent_revision IS NULL AND binding_requirement_text IS NULL)
+        OR (agent_revision IS NOT NULL AND binding_requirement_text IS NOT NULL)
+    ),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     PRIMARY KEY (id)
@@ -533,6 +539,27 @@ CREATE INDEX IF NOT EXISTS ix_plan_steps_plan_id ON plan_steps (plan_id);
 CREATE INDEX IF NOT EXISTS ix_plan_steps_status ON plan_steps (status);
 CREATE INDEX IF NOT EXISTS ix_plan_steps_step_id ON plan_steps (step_id);
 CREATE INDEX IF NOT EXISTS idx_plan_steps_plan_step ON plan_steps (plan_id, step_id);
+ALTER TABLE plan_steps ADD COLUMN IF NOT EXISTS agent_revision INTEGER;
+ALTER TABLE plan_steps ADD COLUMN IF NOT EXISTS binding_requirement_text TEXT;
+UPDATE plan_steps
+SET agent_revision = NULL, binding_requirement_text = NULL
+WHERE (agent_revision IS NULL AND binding_requirement_text IS NOT NULL)
+   OR (agent_revision IS NOT NULL AND binding_requirement_text IS NULL);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'ck_plan_steps_binding_pair'
+          AND conrelid = 'plan_steps'::regclass
+    ) THEN
+        ALTER TABLE plan_steps
+        ADD CONSTRAINT ck_plan_steps_binding_pair CHECK (
+            (agent_revision IS NULL AND binding_requirement_text IS NULL)
+            OR (agent_revision IS NOT NULL AND binding_requirement_text IS NOT NULL)
+        );
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS route_logs (
     id SERIAL NOT NULL,

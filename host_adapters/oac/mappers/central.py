@@ -23,6 +23,34 @@ SOURCE_TO_NATIVE = {
     "plan_control": "plan_control",
 }
 SOURCE_TO_LEGACY = {value: key for key, value in SOURCE_TO_NATIVE.items()}
+_SAFE_REASON_CODES = frozenset(
+    {
+        "binding_requirement_invalid",
+        "binding_resolver_unavailable",
+        "binding_snapshot_invalid",
+        "binding_unavailable",
+        "execution_ticket_compensation_failed",
+        "execution_ticket_unavailable",
+        "external_execution_binding_invalid",
+        "external_execution_handling_invalid",
+        "external_execution_unavailable",
+        "external_executor_unauthorized",
+        "external_executor_unhealthy",
+        "external_executor_unsupported",
+        "invocation_adapter_incompatible",
+        "invocation_adapter_missing",
+        "invocation_adapter_unsupported",
+        "invocation_config_invalid",
+        "plan_binding_agent_mismatch",
+        "plan_binding_incomplete",
+        "plan_binding_requirement_incompatible",
+        "plan_binding_revision_incompatible",
+        "plan_binding_unavailable",
+        "plan_preflight_unavailable",
+        "plan_snapshot_unavailable",
+        "route_binding_unavailable",
+    }
+)
 
 
 def route_request_to_native(request: CentralRouteRequest, *, user: UserContext) -> RouteRequest:
@@ -162,7 +190,11 @@ def plan_confirm_to_compat(response: PlanActionResponse, *, plan: Plan) -> PlanC
 
 def project_error(error: Exception) -> tuple[int, CompatErrorResponse]:
     if isinstance(error, AppError):
-        return error.status_code, CompatErrorResponse(code=error.code, message=error.message)
+        return error.status_code, CompatErrorResponse(
+            code=error.code,
+            message=error.message,
+            details=_safe_error_details(error.details),
+        )
     if isinstance(error, PermissionError):
         return 403, CompatErrorResponse(code="forbidden", message="Operation is not allowed")
     if isinstance(error, KeyError):
@@ -170,6 +202,17 @@ def project_error(error: Exception) -> tuple[int, CompatErrorResponse]:
     if isinstance(error, ValueError):
         return 409, CompatErrorResponse(code="conflict", message=str(error) or "Conflict")
     return 500, CompatErrorResponse(code="internal_error", message="Internal server error")
+
+
+def _safe_error_details(details: object) -> dict[str, str]:
+    """Expose only the bounded machine-readable reason used by compatibility clients."""
+
+    if not isinstance(details, dict):
+        return {}
+    reason_code = details.get("reason_code")
+    if isinstance(reason_code, str) and reason_code in _SAFE_REASON_CODES:
+        return {"reason_code": reason_code}
+    return {}
 
 
 def _control_input(request: CentralRouteRequest) -> str:

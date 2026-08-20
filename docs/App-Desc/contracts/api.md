@@ -78,6 +78,13 @@ Plan 的 confirm、execute、confirm-and-execute 和 resume 是不同请求，�
 Candidate Set，并在该请求的全部 Step 预检和执行中复用；任一非终态 Step 的 Agent 不可用时返回
 `404 agent_not_available`，Plan 保持不变。
 
+对于从 v2 Registry Snapshot 创建的 Plan，OIR 在每个 Step 的内部持久状态中冻结所选 Agent
+revision 与安全的声明式 Binding Requirement；它不保存历史权限结论、Adapter/Client 实例或凭证，且
+不会出现在 Plan API 或 OpenAPI 响应契约中。execute、resume，以及 `plan_control`/`agent_event`
+的受控路由均从当前 Snapshot 重新选择并比较该 Binding。revision、Requirement 或
+Runtime Binding 不兼容时，返回 `503 plan_binding_unavailable` 和安全 `reason_code`，不创建新的
+Run、Delegated Run 或 Execution Ticket，也不静默替换处理方式、Adapter 或 owner。
+
 - 权限过滤是硬边界。候选 Agent 会先按 enabled、角色、用户组、租户和属性过滤；后续 Evidence、固定问、标签或 LLM 都不能扩大到用户不可访问的 Agent。
 - 固定问强命中是强路由。当 Evidence Provider 返回可用 Agent 的强 `route_override` 时，本轮直接返回路由结果，不再调用 LLM。
 - 固定问强命中但目标 Agent 对当前用户不可用时，返回 `status=unsupported`、`action=unsupported` 和无权限提示，并在 `context.metadata.permission_denied=true` 中记录原因。

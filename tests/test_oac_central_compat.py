@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.errors import PlanBindingUnavailableError
 from app.schemas.common import ArtifactRef, UserContext
 from app.schemas.plans import NextAction, Plan, PlanActionResponse, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
@@ -176,3 +177,30 @@ def test_error_projection_hides_internal_failures() -> None:
     status, body = project_error(RuntimeError("database password leaked"))
     assert status == 500
     assert "password" not in body.message
+
+
+def test_error_projection_keeps_only_safe_reason_code() -> None:
+    status, body = project_error(
+        PlanBindingUnavailableError(
+            "Plan Binding is unavailable",
+            details={
+                "reason_code": "plan_binding_revision_incompatible",
+                "raw_exception": "adapter password=secret",
+            },
+        )
+    )
+
+    assert status == 503
+    assert body.details == {"reason_code": "plan_binding_revision_incompatible"}
+
+
+@pytest.mark.parametrize("reason_code", ["token_secret", "subject_alice"])
+def test_error_projection_rejects_unlisted_reason_codes(reason_code: str) -> None:
+    _status, body = project_error(
+        PlanBindingUnavailableError(
+            "Plan Binding is unavailable",
+            details={"reason_code": reason_code},
+        )
+    )
+
+    assert body.details == {}

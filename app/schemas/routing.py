@@ -110,6 +110,7 @@ class RouteResponse(StrictBaseModel):
         default_factory=dict
     )
     _selected_bindings: dict[str, object] = PrivateAttr(default_factory=dict)
+    _selected_legacy_definitions: dict[str, AgentDefinition] | None = PrivateAttr(default=None)
     _routed_source_request: RouteRequest | None = PrivateAttr(default=None)
     _routed_source_request_id: str | None = PrivateAttr(default=None)
     _routed_user: UserContext | None = PrivateAttr(default=None)
@@ -152,6 +153,16 @@ class RouteResponse(StrictBaseModel):
         self._selected_bindings = dict(bindings)
         return self
 
+    def bind_selected_legacy_definitions(
+        self,
+        definitions: Mapping[str, AgentDefinition],
+    ) -> "RouteResponse":
+        """Retain the legacy half of a mixed Candidate Set outside the wire payload."""
+
+        self._ensure_execution_unbound()
+        self._selected_legacy_definitions = dict(definitions)
+        return self
+
     def bind_routed_execution(self, request: RouteRequest) -> "RouteResponse":
         """Freeze the trusted Route capability outside of the mutable wire response."""
 
@@ -191,6 +202,20 @@ class RouteResponse(StrictBaseModel):
     @property
     def selected_definitions(self) -> dict[str, AgentDefinition | AgentDefinitionV2]:
         return dict(self._selected_definitions)
+
+    @property
+    def selected_bindings(self) -> dict[str, object]:
+        """Return request-scoped selections for immediate trusted execution only."""
+
+        return dict(self._selected_bindings)
+
+    @property
+    def selected_legacy_definitions(self) -> dict[str, AgentDefinition] | None:
+        """Return the private legacy Candidate Set for immediate Plan execution."""
+
+        if self._selected_legacy_definitions is None:
+            return None
+        return dict(self._selected_legacy_definitions)
 
     def selected_definition(self, agent_id: str) -> AgentDefinition | AgentDefinitionV2 | None:
         return self._selected_definitions.get(agent_id)

@@ -66,6 +66,8 @@ def _ensure_compatible_columns(sync_conn) -> None:
         _ensure_formation_turn_request_scope(sync_conn, inspector, dialect=dialect)
     if "plans" in tables:
         _ensure_plan_ownership(sync_conn, inspector, tables, dialect=dialect)
+    if "plan_steps" in tables:
+        _ensure_plan_step_binding_columns(sync_conn, inspector, dialect=dialect)
     _ensure_context_owner_columns(sync_conn, inspector, tables, dialect=dialect)
     _ensure_execution_ticket_columns(sync_conn, inspector, tables, dialect=dialect)
     _ensure_canonical_pipeline_indexes(sync_conn, tables)
@@ -481,6 +483,70 @@ def _ensure_plan_ownership(sync_conn, inspector, tables: set[str], *, dialect: s
             "ON plans (execution_claim_expires_at)"
         )
     )
+
+
+def _ensure_plan_step_binding_columns(sync_conn, inspector, *, dialect: str) -> None:
+    columns = _column_names(inspector, "plan_steps")
+    definitions = {
+        "agent_revision": "INTEGER",
+        "binding_requirement_text": "TEXT",
+    }
+    for name, column_type in definitions.items():
+        if name not in columns:
+            sync_conn.execute(text(f"ALTER TABLE plan_steps ADD COLUMN {name} {column_type}"))
+    # A half-written frozen Binding cannot be interpreted safely.  Old rows
+    # predate the fence, so repair a malformed historical pair into the legacy
+    # (both-null) form before enforcing the canonical invariant.
+    sync_conn.execute(
+        text(
+            """
+            UPDATE plan_steps
+            SET agent_revision = NULL, binding_requirement_text = NULL
+            WHERE (agent_revision IS NULL AND binding_requirement_text IS NOT NULL)
+               OR (agent_revision IS NOT NULL AND binding_requirement_text IS NULL)
+            """
+        )
+    )
+    pair_condition = (
+        "(agent_revision IS NULL AND binding_requirement_text IS NULL) "
+        "OR (agent_revision IS NOT NULL AND binding_requirement_text IS NOT NULL)"
+    )
+    if dialect == "postgresql":
+        constraints = inspector.get_check_constraints("plan_steps")
+        if "ck_plan_steps_binding_pair" not in {
+            constraint.get("name") for constraint in constraints
+        }:
+            sync_conn.execute(
+                text(
+                    "ALTER TABLE plan_steps ADD CONSTRAINT ck_plan_steps_binding_pair "
+                    f"CHECK ({pair_condition})"
+                )
+            )
+        return
+    if dialect == "sqlite":
+        for name, event in (
+            ("trg_plan_steps_binding_pair_insert", "INSERT"),
+            (
+                "trg_plan_steps_binding_pair_update",
+                "UPDATE OF agent_revision, binding_requirement_text",
+            ),
+        ):
+            sync_conn.execute(
+                text(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS {name}
+                    BEFORE {event} ON plan_steps
+                    FOR EACH ROW
+                    WHEN (NEW.agent_revision IS NULL AND NEW.binding_requirement_text IS NOT NULL)
+                      OR (NEW.agent_revision IS NOT NULL AND NEW.binding_requirement_text IS NULL)
+                    BEGIN
+                        SELECT RAISE(ABORT, 'plan step binding fields must be paired');
+                    END
+                    """
+                )
+            )
+        return
+    raise RuntimeError(f"Unsupported database dialect for Plan Step migration: {dialect}")
 
 
 def _rebuild_owned_plans_table(sync_conn) -> None:

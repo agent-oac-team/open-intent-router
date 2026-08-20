@@ -21,6 +21,7 @@ from app.db.models import (
 )
 from app.repositories.interfaces import PlanCancelTransition
 from app.repositories.json_utils import dumps, loads
+from app.repositories.plan_steps import plan_step_model
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
@@ -499,17 +500,7 @@ class DatabasePlanRepository:
                 delete(PlanStepModel).where(PlanStepModel.plan_id == plan.plan_id)
             )
             for step in plan.steps:
-                session.add(
-                    PlanStepModel(
-                        step_id=step.step_id,
-                        plan_id=plan.plan_id,
-                        agent_id=step.agent_id,
-                        status=step.status,
-                        description=step.description,
-                        depends_on_text=dumps(step.depends_on),
-                        artifact_refs_text=dumps([ref.model_dump() for ref in step.artifact_refs]),
-                    )
-                )
+                session.add(plan_step_model(plan_id=plan.plan_id, step=step))
             await session.commit()
             return plan
 
@@ -577,17 +568,7 @@ class DatabasePlanRepository:
                 delete(PlanStepModel).where(PlanStepModel.plan_id == plan.plan_id)
             )
             for step in plan.steps:
-                session.add(
-                    PlanStepModel(
-                        step_id=step.step_id,
-                        plan_id=plan.plan_id,
-                        agent_id=step.agent_id,
-                        status=step.status,
-                        description=step.description,
-                        depends_on_text=dumps(step.depends_on),
-                        artifact_refs_text=dumps([ref.model_dump() for ref in step.artifact_refs]),
-                    )
-                )
+                session.add(plan_step_model(plan_id=plan.plan_id, step=step))
             await session.commit()
             return plan
 
@@ -864,17 +845,7 @@ class DatabasePlanRepository:
                 delete(PlanStepModel).where(PlanStepModel.plan_id == plan.plan_id)
             )
             for step in plan.steps:
-                session.add(
-                    PlanStepModel(
-                        step_id=step.step_id,
-                        plan_id=plan.plan_id,
-                        agent_id=step.agent_id,
-                        status=step.status,
-                        description=step.description,
-                        depends_on_text=dumps(step.depends_on),
-                        artifact_refs_text=dumps([ref.model_dump() for ref in step.artifact_refs]),
-                    )
-                )
+                session.add(plan_step_model(plan_id=plan.plan_id, step=step))
             await session.commit()
         return await self.get(
             plan.plan_id,
@@ -1189,6 +1160,8 @@ def _plan_from_rows(row: PlanModel, steps: list[PlanStepModel]) -> Plan:
                 description=step.description,
                 depends_on=loads(step.depends_on_text, []),
                 artifact_refs=loads(step.artifact_refs_text, []),
+                agent_revision=step.agent_revision,
+                binding_requirement=loads(step.binding_requirement_text, None),
             )
             for step in steps
         ],

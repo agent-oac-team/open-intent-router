@@ -87,7 +87,7 @@ async def confirm_and_execute_plan(
 ) -> PlanExecutionResponse:
     try:
         user = bind_principal_user_context(payload.user, principal)
-        selected_definitions = await executor.preflight(plan_id, user=user)
+        candidate_set = await executor.preflight_candidate_set(plan_id, user=user)
         await plan_service.confirm(
             plan_id,
             tenant_id=principal.tenant_id,
@@ -100,7 +100,9 @@ async def confirm_and_execute_plan(
             input_values=payload.input,
             context=payload.context,
             max_steps=payload.max_steps,
-            selected_definitions=selected_definitions,
+            selected_definitions=candidate_set.definitions,
+            selected_bindings=candidate_set.bindings,
+            selected_legacy_definitions=candidate_set.legacy_definitions,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

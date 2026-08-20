@@ -135,6 +135,12 @@ class _OwnedPlanExecutor:
             raise ValueError("Plan not found")
         return {}
 
+    async def preflight_candidate_set(self, plan_id: str, *, user):
+        from app.services.plan_executor import PlanExecutionCandidateSet
+
+        await self.preflight(plan_id, user=user)
+        return PlanExecutionCandidateSet(definitions={}, bindings={}, legacy_definitions={})
+
     async def execute(self, plan_id: str, *, user, **_) -> PlanExecutionResponse:
         plan = await self.service.get_plan(
             plan_id,

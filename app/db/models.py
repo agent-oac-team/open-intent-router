@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Identity,
@@ -450,7 +451,14 @@ class PlanModel(Base):
 
 class PlanStepModel(Base):
     __tablename__ = "plan_steps"
-    __table_args__ = (Index("idx_plan_steps_plan_step", "plan_id", "step_id"),)
+    __table_args__ = (
+        Index("idx_plan_steps_plan_step", "plan_id", "step_id"),
+        CheckConstraint(
+            "(agent_revision IS NULL AND binding_requirement_text IS NULL) "
+            "OR (agent_revision IS NOT NULL AND binding_requirement_text IS NOT NULL)",
+            name="ck_plan_steps_binding_pair",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     step_id: Mapped[str] = mapped_column(String(128), index=True)
@@ -460,6 +468,8 @@ class PlanStepModel(Base):
     description: Mapped[str] = mapped_column(Text)
     depends_on_text: Mapped[str] = mapped_column(Text, default="[]")
     artifact_refs_text: Mapped[str] = mapped_column(Text, default="[]")
+    agent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    binding_requirement_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

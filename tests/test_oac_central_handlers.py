@@ -8,10 +8,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.core.errors import LLMError
+from app.core.errors import AgentUnavailableError, LLMError, PlanBindingUnavailableError
 from app.repositories.execution_tickets import MemoryExecutionTicketStore
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2, InvocationSpec
+from app.schemas.agents import AgentDefinition, AgentDefinitionV2, InvocationSpec, UiHandoffHandling
 from app.schemas.delegated_runs import (
     DelegatedRunCommandResult,
     DelegatedRunReference,
@@ -445,16 +445,36 @@ class PlanPort:
         )
 
 
+class PlanPreflightPort:
+    def __init__(self, registry: RegistryPort) -> None:
+        self.registry = registry
+        self.calls = []
+
+    async def preflight_plan(self, plan, *, user) -> None:
+        self.calls.append((plan.plan_id, user))
+        available = {
+            definition.agent_id for definition in await self.registry.available_definitions(user)
+        }
+        for step in plan.steps:
+            if (
+                step.status not in {"completed", "failed", "cancelled"}
+                and step.agent_id not in available
+            ):
+                raise AgentUnavailableError(f"Agent is not available: {step.agent_id}")
+
+
 def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
     delegated = DelegatedPort()
     events = EventPort()
+    registry = RegistryPort()
     ports = OacAdapterApplicationPorts(
         routing=RoutingPort(action),
-        registry=RegistryPort(),
+        registry=registry,
         events=events,
         plans=PlanPort(),
         delegated_runs=delegated,
         turns=TurnPort(),
+        plan_preflight=PlanPreflightPort(registry),
     )
     tickets = ExecutionTicketService(MemoryExecutionTicketStore(), secret="test-secret")
     identity = TrustedHostIdentity(
@@ -1286,6 +1306,150 @@ def test_plan_confirm_rejects_an_unavailable_agent_before_state_change() -> None
     assert len(ports.registry.available_users) == 1
     assert ports.registry.available_users[0].id == "trusted-user"
     assert ports.registry.available_users[0].tenant_id == "oac"
+
+
+def test_plan_confirm_rejects_binding_incompatibility_before_state_change() -> None:
+    client, _, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+
+    class _UnavailableBindingPreflight:
+        async def preflight_plan(self, _plan, *, user) -> None:
+            assert user.id == "trusted-user"
+            raise PlanBindingUnavailableError(
+                "Plan Binding is unavailable",
+                details={
+                    "reason_code": "plan_binding_revision_incompatible",
+                    "unsafe": "connector=https://private.example/?token=secret",
+                },
+            )
+
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        plan_preflight=_UnavailableBindingPreflight(),
+    )
+
+    response = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-binding-unavailable", "expected_state_version": 0},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "plan_binding_unavailable",
+        "message": "Plan Binding is unavailable",
+        "details": {"reason_code": "plan_binding_revision_incompatible"},
+    }
+    assert ports.plans.confirm_request_id is None
+    assert ports.plans.plan.status == "pending"
+    assert ports.plans.plan.state_version == 0
+
+
+def test_oac_plan_confirm_revalidates_frozen_v2_binding_before_state_change() -> None:
+    client, _, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    current_definition = AgentDefinitionV2.model_validate(
+        {
+            "schema_version": "oir-agent-v2",
+            "agent_id": "agent-1",
+            "name": "Agent 1",
+            "description": "Current UI Binding",
+            "revision": 2,
+            "access_policy": {
+                "allow_tenants": ["oac"],
+                "allow_roles": ["operator"],
+            },
+            "handling": {"kind": "ui_handoff", "route": "/current-ui"},
+        }
+    )
+    ports.registry.definitions = [current_definition]
+    ports.plans.plan = Plan(
+        plan_id="plan-1",
+        tenant_id="oac",
+        user_id="trusted-user",
+        session_id="session-1",
+        steps=[
+            PlanStep(
+                step_id="step-1",
+                agent_id="agent-1",
+                description="Run a frozen UI binding.",
+                agent_revision=1,
+                binding_requirement=UiHandoffHandling(route="/frozen-ui"),
+            )
+        ],
+    )
+    snapshot_routing = SnapshotRoutingService(
+        router_factory=lambda _snapshot_runtime: RoutingPort(),
+    )
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        plan_preflight=OacLegacyRegistryRoutingAdapter(
+            registry=ports.registry,
+            snapshot_routing=snapshot_routing,
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-stale-v2", "expected_state_version": 0},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "plan_binding_unavailable"
+    assert response.json()["detail"]["details"] == {
+        "reason_code": "plan_binding_revision_incompatible"
+    }
+    assert ports.plans.confirm_request_id is None
+    assert ports.plans.plan.status == "pending"
+
+
+def test_oac_plan_confirm_returns_terminal_plan_without_preflight() -> None:
+    client, _, _ = _client()
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    ports.registry.definitions = []
+    ports.plans.plan = Plan(
+        plan_id="plan-1",
+        tenant_id="oac",
+        user_id="trusted-user",
+        session_id="session-1",
+        status="failed",
+        steps=[
+            PlanStep(
+                step_id="failed-step",
+                agent_id="agent-1",
+                description="A completed failure.",
+                status="failed",
+            ),
+            PlanStep(
+                step_id="pending-successor",
+                agent_id="agent-1",
+                description="Must not be revalidated after terminal failure.",
+                depends_on=["failed-step"],
+                agent_revision=1,
+                binding_requirement=UiHandoffHandling(route="/historical-ui"),
+            ),
+        ],
+    )
+    snapshot_routing = SnapshotRoutingService(
+        router_factory=lambda _snapshot_runtime: RoutingPort(),
+    )
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        plan_preflight=OacLegacyRegistryRoutingAdapter(
+            registry=ports.registry,
+            snapshot_routing=snapshot_routing,
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-terminal", "expected_state_version": 0},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert ports.registry.available_users == []
+    assert ports.plans.plan.status == "failed"
+    assert ports.plans.plan.state_version == 0
 
 
 def test_active_plan_does_not_disclose_another_users_plan() -> None:

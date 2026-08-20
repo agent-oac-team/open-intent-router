@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
 
 from pydantic import Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
+from app.schemas.agents import AgentHandling
 from app.schemas.common import (
     ArtifactRef,
     ExecutionPolicy,
@@ -21,6 +23,18 @@ class PlanStep(StrictBaseModel):
     status: PlanStepStatus = "pending"
     depends_on: list[str] = Field(default_factory=list)
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+    # A v2 Plan freezes only declarative, safe Binding requirements.  It never
+    # retains a live Adapter, a Client, or an authorization decision.  This is
+    # internal persistence state, so route and Plan API payloads do not expose
+    # deployment binding details.
+    agent_revision: SkipJsonSchema[int | None] = Field(default=None, ge=0, exclude=True)
+    binding_requirement: SkipJsonSchema[AgentHandling | None] = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def validate_binding_requirement(self) -> "PlanStep":
+        if (self.agent_revision is None) != (self.binding_requirement is None):
+            raise ValueError("agent_revision and binding_requirement must be recorded together")
+        return self
 
 
 class NextAction(StrictBaseModel):

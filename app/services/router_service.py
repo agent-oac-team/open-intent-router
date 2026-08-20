@@ -6,7 +6,12 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.core.errors import RoutingError
+from app.core.errors import (
+    AgentUnavailableError,
+    InvocationBindingUnavailableError,
+    PlanBindingUnavailableError,
+    RoutingError,
+)
 from app.core.memory_runtime import MemoryRuntimePolicy
 from app.core.redaction import redact_value
 from app.llm.client import LLMClient
@@ -31,12 +36,21 @@ from app.schemas.routing import (
     RouteResponse,
 )
 from app.schemas.turns import TurnUserInput
+from app.services.binding_resolution import BindingResolver
 from app.services.context_service import ContextService
 from app.services.invocation_service import build_invocation_input, missing_required_inputs
+from app.services.plan_bindings import (
+    freeze_plan_step_binding,
+    revalidate_plan_step_binding_against_snapshot,
+)
 from app.services.plan_builder import build_ordered_plan_from_text
 from app.services.plan_service import PlanService, PlanStateConflict
 from app.services.registry_service import AgentRegistryService
-from app.services.registry_snapshot import RegistrySnapshotRuntime, RegistrySnapshotSelection
+from app.services.registry_snapshot import (
+    RegistrySnapshot,
+    RegistrySnapshotRuntime,
+    RegistrySnapshotSelection,
+)
 from app.services.task_continuation import requests_plan_continuation
 from app.services.turn_service import TurnService
 
@@ -47,6 +61,7 @@ RouteAgentDefinition = AgentDefinition | AgentDefinitionV2
 class _RouteCandidateSet:
     definitions: tuple[RouteAgentDefinition, ...]
     bindings: dict[str, RegistrySnapshotSelection]
+    legacy_definitions: dict[str, AgentDefinition]
 
 
 @dataclass(frozen=True)
@@ -73,6 +88,7 @@ class RouterService:
         turn_service: TurnService | None = None,
         runtime_policy: MemoryRuntimePolicy | None = None,
         snapshot_runtime: RegistrySnapshotRuntime | None = None,
+        binding_resolver: BindingResolver | None = None,
     ) -> None:
         self.settings = settings
         self.runtime_policy = runtime_policy or settings.memory_runtime_policy
@@ -89,16 +105,84 @@ class RouterService:
         self.plan_continuation_resolver = plan_continuation_resolver
         self.turn_service = turn_service
         self.snapshot_runtime = snapshot_runtime
+        self.binding_resolver = binding_resolver
 
     async def route(self, request: RouteRequest) -> RouteResponse:
         source_request = request
         request_id = request.request_id or f"req_{uuid4().hex}"
         request = request.model_copy(update={"request_id": request_id})
-        await self._start_turn(request)
-        candidate_set = await self._route_candidate_set(request)
+        # A delayed Plan has a stricter preflight fence than a new Route.  It
+        # must fail before creating a Canonical Turn, otherwise a rejected
+        # binding leaves a pending Turn that cannot be completed safely.
+        active_plan = await self._active_plan(request)
+        if (
+            active_plan is not None
+            and active_plan.status in {"completed", "failed", "cancelled"}
+            and request.source in {"plan_control", "agent_event"}
+        ):
+            # A terminal Plan is durable state, not a request to resume its
+            # leftover pending Steps.  Return it before forming a live
+            # Candidate Set, so a later Registry outage cannot hide a prior
+            # terminal outcome.
+            await self._start_turn(request)
+            terminal_response = await self._route_controlled_plan_step(
+                request,
+                active_plan=active_plan,
+                base_context=RouteContext(
+                    relation="continue_current",
+                    current_agent_id=None,
+                    candidate_agent_ids=[],
+                ),
+                selected_definitions={},
+            )
+            if terminal_response is None:  # pragma: no cover - guarded source/status above
+                raise RoutingError("Terminal Plan routing unexpectedly declined")
+            return _bind_route_response(
+                terminal_response,
+                {},
+                {},
+                source_request=source_request,
+                legacy_definitions={},
+            )
+        snapshot_runtime = self.snapshot_runtime
+        captured_snapshot = snapshot_runtime.snapshot if snapshot_runtime is not None else None
+        legacy_control_step = _controlled_legacy_plan_step(active_plan, request)
+        candidate_set = await self._route_candidate_set(
+            request,
+            snapshot=captured_snapshot,
+            include_legacy=_active_plan_has_legacy_steps(active_plan),
+        )
+        self._revalidate_active_plan_bindings(
+            active_plan,
+            request,
+            snapshot=captured_snapshot,
+        )
         available_agents = list(candidate_set.definitions)
         selected_definitions = {agent.agent_id: agent for agent in available_agents}
-        selected_bindings = candidate_set.bindings
+        selected_bindings = dict(candidate_set.bindings)
+        selected_legacy_definitions = dict(candidate_set.legacy_definitions)
+        if legacy_control_step is not None:
+            legacy_definition = candidate_set.legacy_definitions.get(legacy_control_step.agent_id)
+            if legacy_definition is None:
+                raise AgentUnavailableError(
+                    f"Agent is not available: {legacy_control_step.agent_id}",
+                    details={"agent_ids": [legacy_control_step.agent_id]},
+                )
+            # A legacy controlled Step must retain its legacy selection even if
+            # an unrelated v2 Snapshot happens to expose the same logical id.
+            selected_definitions[legacy_control_step.agent_id] = legacy_definition
+            selected_bindings.pop(legacy_control_step.agent_id, None)
+        self._preflight_active_plan_invocation_bindings(
+            active_plan,
+            request,
+            selected_bindings=selected_bindings,
+        )
+        self._validate_active_plan_candidates(
+            active_plan,
+            candidate_set,
+            controlled=request.source in {"plan_control", "agent_event"},
+        )
+        await self._start_turn(request)
         available_agent_ids = [agent.agent_id for agent in available_agents]
         tag_filter = _filter_agents_by_tags(request.input.text, available_agents)
         candidate_ids = available_agent_ids
@@ -134,14 +218,12 @@ class RouterService:
                 selected_definitions,
                 selected_bindings,
                 source_request=source_request,
+                legacy_definitions=selected_legacy_definitions,
             )
         host_history = await self._host_history(request)
         agent_history = await self._agent_history(request)
         recent_results = await self._recent_results(request)
         recent_events = await self._recent_events(request)
-        active_plan = await self._active_plan(request)
-        if active_plan is not None:
-            self._validate_plan_agents(active_plan, set(candidate_ids))
         evidence_result = await self._evidence(request, candidate_ids)
         if evidence_result.route_override_denied:
             response = await self._route_from_denied_evidence_override(
@@ -163,6 +245,7 @@ class RouterService:
                 selected_definitions,
                 selected_bindings,
                 source_request=source_request,
+                legacy_definitions=selected_legacy_definitions,
             )
         if evidence_result.route_override:
             response = await self._route_from_evidence_override(
@@ -185,6 +268,7 @@ class RouterService:
                 selected_definitions,
                 selected_bindings,
                 source_request=source_request,
+                legacy_definitions=selected_legacy_definitions,
             )
         (
             base_context,
@@ -218,6 +302,7 @@ class RouterService:
                 selected_definitions,
                 selected_bindings,
                 source_request=source_request,
+                legacy_definitions=selected_legacy_definitions,
             )
         knowledge_reply = base_context.metadata.get("knowledge_direct_reply")
         if isinstance(knowledge_reply, dict) and knowledge_reply.get("message"):
@@ -242,6 +327,7 @@ class RouterService:
                 selected_definitions,
                 selected_bindings,
                 source_request=source_request,
+                legacy_definitions=selected_legacy_definitions,
             )
 
         output = await self.llm_client.route(
@@ -266,6 +352,7 @@ class RouterService:
         output = self._collapse_single_step_plan(output, request)
         output = self._normalize_agent_continuation(output, request)
         output = await self._apply_plan_policy(output, selected_definitions)
+        output = self._bind_plan_step_bindings(output, selected_bindings)
         output = output.model_copy(update={"request_id": request_id})
         output = await self._post_validate(output, request)
         output = self._clarify_on_low_confidence(output)
@@ -283,6 +370,7 @@ class RouterService:
             selected_definitions,
             selected_bindings,
             source_request=source_request,
+            legacy_definitions=selected_legacy_definitions,
         )
 
     async def _route_controlled_plan_step(
@@ -454,16 +542,32 @@ class RouterService:
             ),
         )
 
-    async def _route_candidate_set(self, request: RouteRequest) -> _RouteCandidateSet:
-        snapshot_runtime = self.snapshot_runtime
-        if snapshot_runtime is not None and snapshot_runtime.snapshot is not None:
-            selections = snapshot_runtime.selections_for_user(request.user)
-            return _RouteCandidateSet(
-                definitions=tuple(selection.definition for selection in selections),
-                bindings={selection.definition.agent_id: selection for selection in selections},
+    async def _route_candidate_set(
+        self,
+        request: RouteRequest,
+        *,
+        snapshot: RegistrySnapshot | None,
+        include_legacy: bool = False,
+    ) -> _RouteCandidateSet:
+        selections = snapshot.selections_for_user(request.user) if snapshot is not None else ()
+        bindings = {selection.definition.agent_id: selection for selection in selections}
+        definitions: list[RouteAgentDefinition] = [selection.definition for selection in selections]
+        legacy_definitions: dict[str, AgentDefinition] = {}
+        if snapshot is None or include_legacy:
+            legacy_definitions = {
+                definition.agent_id: definition
+                for definition in await self.registry.available_definitions(request.user)
+            }
+            definitions.extend(
+                definition
+                for agent_id, definition in legacy_definitions.items()
+                if agent_id not in bindings
             )
-        definitions = tuple(await self.registry.available_definitions(request.user))
-        return _RouteCandidateSet(definitions=definitions, bindings={})
+        return _RouteCandidateSet(
+            definitions=tuple(definitions),
+            bindings=bindings,
+            legacy_definitions=legacy_definitions,
+        )
 
     async def _post_validate(self, output: RouteResponse, request: RouteRequest) -> RouteResponse:
         candidate_ids = set(output.context.candidate_agent_ids)
@@ -476,11 +580,14 @@ class RouterService:
         if output.plan is not None:
             self._validate_plan_agents(output.plan, candidate_ids)
         try:
-            return RouteResponse.model_validate(output.model_dump())
+            validated = RouteResponse.model_validate(output.model_dump())
         except ValidationError as exc:
             raise RoutingError(
                 "Router output validation failed", details={"errors": exc.errors()}
             ) from exc
+        # Step Binding requirements are intentionally excluded from wire dumps,
+        # but remain attached to the trusted Plan object that will be persisted.
+        return validated.model_copy(update={"plan": output.plan})
 
     @staticmethod
     def _validate_plan_agents(plan, candidate_ids: set[str]) -> None:
@@ -492,6 +599,104 @@ class RouterService:
                 "Plan contains an Agent outside the candidate set",
                 details={"unauthorized_agent_ids": unauthorized},
             )
+
+    def _revalidate_active_plan_bindings(
+        self,
+        plan,
+        request: RouteRequest,
+        *,
+        snapshot: RegistrySnapshot | None,
+    ) -> None:
+        """Check every unfinished frozen Step before a delayed Plan route proceeds."""
+
+        if plan is None or request.source not in {"plan_control", "agent_event"}:
+            return
+        frozen_steps = [
+            step
+            for step in plan.steps
+            if step.status not in {"completed", "failed", "cancelled"}
+            and (step.agent_revision is not None or step.binding_requirement is not None)
+        ]
+        if not frozen_steps:
+            return
+        if snapshot is None:
+            raise PlanBindingUnavailableError(
+                "Registry Snapshot is unavailable for Plan execution",
+                details={"reason_code": "plan_snapshot_unavailable"},
+            )
+        for step in frozen_steps:
+            revalidate_plan_step_binding_against_snapshot(
+                step,
+                snapshot=snapshot,
+                user=request.user,
+            )
+
+    def _preflight_active_plan_invocation_bindings(
+        self,
+        plan,
+        request: RouteRequest,
+        *,
+        selected_bindings: dict[str, RegistrySnapshotSelection],
+    ) -> None:
+        """Resolve v2 Invocation protocols before a controlled Plan creates a Turn."""
+
+        if plan is None or request.source not in {"plan_control", "agent_event"}:
+            return
+        for step in plan.steps:
+            if (
+                step.status in {"completed", "failed", "cancelled"}
+                or step.agent_revision is None
+                or step.binding_requirement is None
+            ):
+                continue
+            selection = selected_bindings.get(step.agent_id)
+            if selection is None:
+                raise PlanBindingUnavailableError(
+                    "Plan Binding is unavailable",
+                    details={"reason_code": "plan_binding_unavailable"},
+                )
+            if not isinstance(selection.definition.handling, InvocationHandling):
+                continue
+            if self.binding_resolver is None:
+                raise PlanBindingUnavailableError(
+                    "Plan Binding is unavailable",
+                    details={"reason_code": "binding_resolver_unavailable"},
+                )
+            try:
+                self.binding_resolver.resolve_direct_invocation(selection)
+            except InvocationBindingUnavailableError as exc:
+                raise PlanBindingUnavailableError(
+                    "Plan Binding is unavailable",
+                    details=exc.details,
+                ) from exc
+
+    @staticmethod
+    def _validate_active_plan_candidates(
+        plan,
+        candidate_set: _RouteCandidateSet,
+        *,
+        controlled: bool,
+    ) -> None:
+        if plan is None:
+            return
+        if controlled:
+            unavailable_legacy = [
+                step.agent_id
+                for step in plan.steps
+                if step.status not in {"completed", "failed", "cancelled"}
+                and step.agent_revision is None
+                and step.binding_requirement is None
+                and step.agent_id not in candidate_set.legacy_definitions
+            ]
+            if unavailable_legacy:
+                raise AgentUnavailableError(
+                    f"Agent is not available: {unavailable_legacy[0]}",
+                    details={"agent_ids": list(dict.fromkeys(unavailable_legacy))},
+                )
+        RouterService._validate_plan_agents(
+            plan,
+            {definition.agent_id for definition in candidate_set.definitions},
+        )
 
     def _normalize_candidate_context(
         self,
@@ -1191,6 +1396,32 @@ class RouterService:
             }
         )
 
+    @staticmethod
+    def _bind_plan_step_bindings(
+        output: RouteResponse,
+        selected_bindings: dict[str, RegistrySnapshotSelection],
+    ) -> RouteResponse:
+        """Freeze v2 Step Binding requirements before the Plan is persisted.
+
+        The Router is the only source for newly generated Plans, so it also
+        clears any model-produced internal binding fields when no trusted v2
+        selection exists.
+        """
+
+        plan = output.plan
+        if plan is None:
+            return output
+        steps = []
+        for step in plan.steps:
+            selection = selected_bindings.get(step.agent_id)
+            if selection is None:
+                steps.append(
+                    step.model_copy(update={"agent_revision": None, "binding_requirement": None})
+                )
+            else:
+                steps.append(freeze_plan_step_binding(step, selection))
+        return output.model_copy(update={"plan": plan.model_copy(update={"steps": steps})})
+
     def _collapse_single_step_plan(
         self,
         output: RouteResponse,
@@ -1341,11 +1572,37 @@ def _bind_route_response(
     bindings: dict[str, RegistrySnapshotSelection],
     *,
     source_request: RouteRequest,
+    legacy_definitions: dict[str, AgentDefinition],
 ) -> RouteResponse:
     return (
         response.bind_selected_definitions(definitions)
         .bind_selected_bindings(bindings)
+        .bind_selected_legacy_definitions(legacy_definitions)
         .bind_routed_execution(source_request)
+    )
+
+
+def _controlled_legacy_plan_step(plan, request: RouteRequest):
+    if (
+        plan is None
+        or request.source not in {"plan_control", "agent_event"}
+        or not plan.current_step_id
+    ):
+        return None
+    step = next((item for item in plan.steps if item.step_id == plan.current_step_id), None)
+    if step is None:
+        return None
+    if step.agent_revision is not None or step.binding_requirement is not None:
+        return None
+    return step
+
+
+def _active_plan_has_legacy_steps(plan) -> bool:
+    return plan is not None and any(
+        step.status not in {"completed", "failed", "cancelled"}
+        and step.agent_revision is None
+        and step.binding_requirement is None
+        for step in plan.steps
     )
 
 

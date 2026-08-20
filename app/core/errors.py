@@ -75,6 +75,13 @@ class InvocationBindingUnavailableError(AppError):
     code = "invocation_binding_unavailable"
 
 
+class PlanBindingUnavailableError(AppError):
+    """A delayed Plan Step no longer has its frozen, compatible Binding."""
+
+    status_code = 503
+    code = "plan_binding_unavailable"
+
+
 class ExternalExecutionBindingUnavailableError(AppError):
     """A selected External Execution Definition cannot be accepted by this Host."""
 

@@ -41,13 +41,15 @@ from host_apps.oac.config import get_oac_host_settings
 
 @lru_cache
 def get_oac_adapter_application_ports() -> OacAdapterApplicationPorts:
+    routing = get_oac_legacy_registry_routing()
     return OacAdapterApplicationPorts(
-        routing=get_oac_legacy_registry_routing(),
+        routing=routing,
         registry=get_registry_service(),
         events=get_event_service(),
         plans=get_plan_service(),
         delegated_runs=get_delegated_run_service(),
         turns=get_turn_service(),
+        plan_preflight=routing,
         external_execution=get_oac_external_execution_service(),
         execution_traces=get_execution_trace_service(),
         memory_management=get_memory_management_service(),

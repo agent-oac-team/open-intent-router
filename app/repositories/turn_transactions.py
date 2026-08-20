@@ -13,6 +13,7 @@ from app.db.models import (
     TurnOutboxModel,
 )
 from app.repositories.json_utils import dumps
+from app.repositories.plan_steps import plan_step_model
 from app.schemas.events import AgentEvent
 from app.schemas.logs import AgentResult, AgentRun
 from app.schemas.plans import Plan
@@ -185,19 +186,7 @@ async def _apply_plan(session: AsyncSession, plan: Plan) -> None:
     row.updated_at = plan.updated_at
     await session.execute(delete(PlanStepModel).where(PlanStepModel.plan_id == plan.plan_id))
     for step in plan.steps:
-        session.add(
-            PlanStepModel(
-                step_id=step.step_id,
-                plan_id=plan.plan_id,
-                agent_id=step.agent_id,
-                status=step.status,
-                description=step.description,
-                depends_on_text=dumps(step.depends_on),
-                artifact_refs_text=dumps(
-                    [reference.model_dump(mode="json") for reference in step.artifact_refs]
-                ),
-            )
-        )
+        session.add(plan_step_model(plan_id=plan.plan_id, step=step))
 
 
 def _apply_turn(row: CanonicalTurnModel, turn: CanonicalTurn) -> None:
