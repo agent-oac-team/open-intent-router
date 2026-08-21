@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.core.errors import AgentUnavailableError, LLMError, PlanBindingUnavailableError
@@ -463,7 +462,7 @@ class PlanPreflightPort:
                 raise AgentUnavailableError(f"Agent is not available: {step.agent_id}")
 
 
-def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
+def _client(non_lifespan_test_client, *, user_id: str = "trusted-user", action: str = "open_agent"):
     delegated = DelegatedPort()
     events = EventPort()
     registry = RegistryPort()
@@ -507,11 +506,13 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
         execution_ticket_ttl_seconds=300,
         execution_ticket_lease_seconds=30,
     )
-    return TestClient(app), delegated, events
+    return non_lifespan_test_client(app), delegated, events
 
 
-def test_route_projects_primary_error_without_external_fallback() -> None:
-    client, _, _ = _client()
+def test_route_projects_primary_error_without_external_fallback(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
         ports,
@@ -533,8 +534,10 @@ def test_route_projects_primary_error_without_external_fallback() -> None:
     assert response.json()["detail"]["code"] == "llm_error"
 
 
-def test_route_issues_ticket_and_completed_event_consumes_it() -> None:
-    client, delegated, _ = _client()
+def test_route_issues_ticket_and_completed_event_consumes_it(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     route = client.post(
         "/api/v1/central/route",
         json={
@@ -575,8 +578,10 @@ def test_route_issues_ticket_and_completed_event_consumes_it() -> None:
     assert delegated.completed.turn_id == "turn-1"
 
 
-def test_route_ui_handoff_does_not_start_delegated_run_or_issue_ticket() -> None:
-    client, delegated, _ = _client()
+def test_route_ui_handoff_does_not_start_delegated_run_or_issue_ticket(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
         ports,
@@ -610,8 +615,10 @@ def test_route_ui_handoff_does_not_start_delegated_run_or_issue_ticket() -> None
     assert delegated.started is None
 
 
-def _external_execution_client(*, accepted: bool, bind_selection: bool = True):
-    client, delegated, events = _client()
+def _external_execution_client(
+    non_lifespan_test_client, *, accepted: bool, bind_selection: bool = True
+):
+    client, delegated, events = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     tickets = client.app.dependency_overrides[get_execution_ticket_service]()
     executor = ExternalExecutor(accepted=accepted)
@@ -631,9 +638,11 @@ def _external_execution_client(*, accepted: bool, bind_selection: bool = True):
     return client, delegated, events, executor, tickets, trace_service
 
 
-def test_external_route_accepts_binding_before_run_then_issues_ticket_bound_to_it() -> None:
+def test_external_route_accepts_binding_before_run_then_issues_ticket_bound_to_it(
+    non_lifespan_test_client,
+) -> None:
     client, delegated, _, executor, tickets, trace_service = _external_execution_client(
-        accepted=True
+        non_lifespan_test_client, accepted=True
     )
 
     route = client.post(
@@ -714,8 +723,10 @@ def test_external_route_accepts_binding_before_run_then_issues_ticket_bound_to_i
     assert delegated.completed.turn_id == "turn-1"
 
 
-def test_legacy_oac_bot_uses_v2_snapshot_external_executor_path() -> None:
-    client, delegated, _ = _client()
+def test_legacy_oac_bot_uses_v2_snapshot_external_executor_path(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     executor = ExternalExecutor(accepted=True)
     legacy_registry = RegistryPort()
@@ -780,8 +791,12 @@ def test_legacy_oac_bot_uses_v2_snapshot_external_executor_path() -> None:
     assert executor.requests[0].executor_ref == "host_executor"
 
 
-def test_external_route_rejection_creates_no_delegated_run_or_ticket() -> None:
-    client, delegated, _, executor, tickets, _ = _external_execution_client(accepted=False)
+def test_external_route_rejection_creates_no_delegated_run_or_ticket(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _, executor, tickets, _ = _external_execution_client(
+        non_lifespan_test_client, accepted=False
+    )
 
     route = client.post(
         "/api/v1/central/route",
@@ -803,8 +818,11 @@ def test_external_route_rejection_creates_no_delegated_run_or_ticket() -> None:
     assert tickets.store.records == {}
 
 
-def test_untrusted_external_route_does_not_fall_back_to_legacy_delegation() -> None:
+def test_untrusted_external_route_does_not_fall_back_to_legacy_delegation(
+    non_lifespan_test_client,
+) -> None:
     client, delegated, _, executor, tickets, _ = _external_execution_client(
+        non_lifespan_test_client,
         accepted=True,
         bind_selection=False,
     )
@@ -828,8 +846,12 @@ def test_untrusted_external_route_does_not_fall_back_to_legacy_delegation() -> N
     assert tickets.store.records == {}
 
 
-def test_rewritten_external_handling_does_not_become_a_ui_handoff() -> None:
-    client, delegated, _, executor, tickets, _ = _external_execution_client(accepted=True)
+def test_rewritten_external_handling_does_not_become_a_ui_handoff(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _, executor, tickets, _ = _external_execution_client(
+        non_lifespan_test_client, accepted=True
+    )
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
         ports,
@@ -855,8 +877,10 @@ def test_rewritten_external_handling_does_not_become_a_ui_handoff() -> None:
     assert tickets.store.records == {}
 
 
-def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace() -> None:
-    client, delegated, _ = _client()
+def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
@@ -915,8 +939,10 @@ def test_agent_error_terminates_the_delegated_run_and_projects_a_redacted_trace(
     assert "secret upstream detail" not in snapshot.model_dump_json()
 
 
-def test_stale_plan_step_completion_returns_canonical_plan_without_claiming_a_ticket() -> None:
-    client, delegated, _ = _client()
+def test_stale_plan_step_completion_returns_canonical_plan_without_claiming_a_ticket(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports.plans.plan = Plan(
         plan_id="plan-1",
@@ -971,8 +997,10 @@ def test_stale_plan_step_completion_returns_canonical_plan_without_claiming_a_ti
     assert delegated.completed is None
 
 
-def test_current_plan_step_completion_without_restored_ticket_uses_unique_mapping() -> None:
-    client, delegated, _ = _client()
+def test_current_plan_step_completion_without_restored_ticket_uses_unique_mapping(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports.plans.plan = ports.plans.plan.model_copy(update={"status": "blocked", "state_version": 3})
     route = client.post(
@@ -1010,8 +1038,10 @@ def test_current_plan_step_completion_without_restored_ticket_uses_unique_mappin
     assert delegated.completed is not None
 
 
-def test_plan_step_completion_converges_when_plan_advances_after_precondition_check() -> None:
-    client, _, _ = _client()
+def test_plan_step_completion_converges_when_plan_advances_after_precondition_check(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports.plans.plan = ports.plans.plan.model_copy(update={"status": "blocked", "state_version": 3})
 
@@ -1074,8 +1104,10 @@ def test_plan_step_completion_converges_when_plan_advances_after_precondition_ch
     assert response.json()["plan"]["state_version"] == 4
 
 
-def test_agent_error_event_uses_failure_state_machine_even_with_a_nonterminal_status() -> None:
-    client, delegated, _ = _client()
+def test_agent_error_event_uses_failure_state_machine_even_with_a_nonterminal_status(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
 
     route = client.post(
         "/api/v1/central/route",
@@ -1107,8 +1139,10 @@ def test_agent_error_event_uses_failure_state_machine_even_with_a_nonterminal_st
     assert delegated.failed.error == {"code": "provider_execution_failed"}
 
 
-def test_central_route_and_agent_callback_project_one_execution_trace() -> None:
-    client, _, _ = _client()
+def test_central_route_and_agent_callback_project_one_execution_trace(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
@@ -1165,8 +1199,10 @@ def test_central_route_and_agent_callback_project_one_execution_trace() -> None:
     assert "provider result must not" not in snapshot.model_dump_json()
 
 
-def test_central_route_projects_bounded_context_and_memory_recall_facts() -> None:
-    client, _, _ = _client()
+def test_central_route_projects_bounded_context_and_memory_recall_facts(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
@@ -1216,8 +1252,10 @@ def test_central_route_projects_bounded_context_and_memory_recall_facts() -> Non
     assert "must never reach the trace" not in snapshot.model_dump_json()
 
 
-def test_pre_cutover_agent_event_is_quarantined_before_core_mutation() -> None:
-    client, delegated, _ = _client()
+def test_pre_cutover_agent_event_is_quarantined_before_core_mutation(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     repository = MemoryCutoverAuditRepository()
     watermark = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
     client.app.dependency_overrides[get_cutover_guard] = lambda: CutoverGuard(
@@ -1247,8 +1285,10 @@ def test_pre_cutover_agent_event_is_quarantined_before_core_mutation() -> None:
     assert "must not enter core" not in serialized
 
 
-def test_navigation_and_plan_confirm_keep_legacy_status_and_shape() -> None:
-    client, _, events = _client()
+def test_navigation_and_plan_confirm_keep_legacy_status_and_shape(
+    non_lifespan_test_client,
+) -> None:
+    client, _, events = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     navigation = client.post(
         "/api/v1/central/events/navigation",
@@ -1292,8 +1332,10 @@ def test_navigation_and_plan_confirm_keep_legacy_status_and_shape() -> None:
     assert active.json()["plan"]["state_version"] == confirm.json()["state_version"]
 
 
-def test_plan_confirm_rejects_an_unavailable_agent_before_state_change() -> None:
-    client, _, _ = _client()
+def test_plan_confirm_rejects_an_unavailable_agent_before_state_change(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports.registry.definitions = []
 
@@ -1312,8 +1354,10 @@ def test_plan_confirm_rejects_an_unavailable_agent_before_state_change() -> None
     assert ports.registry.available_users[0].tenant_id == "oac"
 
 
-def test_plan_confirm_rejects_binding_incompatibility_before_state_change() -> None:
-    client, _, _ = _client()
+def test_plan_confirm_rejects_binding_incompatibility_before_state_change(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
 
     class _UnavailableBindingPreflight:
@@ -1348,8 +1392,10 @@ def test_plan_confirm_rejects_binding_incompatibility_before_state_change() -> N
     assert ports.plans.plan.state_version == 0
 
 
-def test_oac_plan_confirm_revalidates_frozen_v2_binding_before_state_change() -> None:
-    client, _, _ = _client()
+def test_oac_plan_confirm_revalidates_frozen_v2_binding_before_state_change(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     current_definition = AgentDefinitionV2.model_validate(
         {
@@ -1406,8 +1452,10 @@ def test_oac_plan_confirm_revalidates_frozen_v2_binding_before_state_change() ->
     assert ports.plans.plan.status == "pending"
 
 
-def test_oac_plan_confirm_returns_terminal_plan_without_preflight() -> None:
-    client, _, _ = _client()
+def test_oac_plan_confirm_returns_terminal_plan_without_preflight(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports.registry.definitions = []
     ports.plans.plan = Plan(
@@ -1456,17 +1504,28 @@ def test_oac_plan_confirm_returns_terminal_plan_without_preflight() -> None:
     assert ports.plans.plan.state_version == 0
 
 
-def test_active_plan_does_not_disclose_another_users_plan() -> None:
-    client, _, _ = _client(user_id="other-user")
+def test_active_plan_does_not_disclose_another_users_plan(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client, user_id="other-user")
 
     active = client.get("/api/v1/central/active-plan?session_id=session-1")
 
     assert active.status_code == 200
     assert active.json() == {"plan": None}
 
+    other_client, _, _ = _client(non_lifespan_test_client, user_id="other-user")
+    rejected = other_client.post(
+        "/api/v1/central/plans/plan-1/confirm",
+        json={"request_id": "confirm-other", "expected_state_version": 0},
+    )
+    assert rejected.status_code == 404
 
-def test_route_failure_is_fail_closed_without_irs_runtime_dependency() -> None:
-    client, _, _ = _client(action="reply")
+
+def test_route_failure_is_fail_closed_without_irs_runtime_dependency(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client, action="reply")
     ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
     ports = replace(ports, routing=FailingRoutingPort())
     client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
@@ -1495,16 +1554,11 @@ class FailingRoutingPort:
     async def route(self, _request):
         raise TimeoutError("route timeout")
 
-    other_client, _, _ = _client(user_id="other-user")
-    rejected = other_client.post(
-        "/api/v1/central/plans/plan-1/confirm",
-        json={"request_id": "confirm-other", "expected_state_version": 0},
-    )
-    assert rejected.status_code == 404
 
-
-def test_legacy_agent_event_without_ticket_requires_unique_server_mapping() -> None:
-    client, delegated, _ = _client()
+def test_legacy_agent_event_without_ticket_requires_unique_server_mapping(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
     route = client.post(
         "/api/v1/central/route",
         json={
@@ -1545,8 +1599,10 @@ def test_legacy_agent_event_without_ticket_requires_unique_server_mapping() -> N
         ("silent", False),
     ],
 )
-def test_central_route_e2e_covers_all_legacy_actions(action, expects_ticket) -> None:
-    client, _, _ = _client(action=action)
+def test_central_route_e2e_covers_all_legacy_actions(
+    action, expects_ticket, non_lifespan_test_client
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client, action=action)
     body = {
         "request_id": "request-1",
         "session_id": "session-1",
@@ -1567,8 +1623,10 @@ def test_central_route_e2e_covers_all_legacy_actions(action, expects_ticket) -> 
         assert response.json()["next_action"]["type"] == "confirm_plan"
 
 
-def test_completed_agent_event_retry_returns_duplicate_without_second_effect() -> None:
-    client, _, _ = _client()
+def test_completed_agent_event_retry_returns_duplicate_without_second_effect(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     route = client.post(
         "/api/v1/central/route",
         json={
@@ -1594,8 +1652,10 @@ def test_completed_agent_event_retry_returns_duplicate_without_second_effect() -
     assert second.json()["duplicate"] is True
 
 
-def test_v2_route_projects_bundle_entitlement_and_rejects_body_mismatch() -> None:
-    client, _, _ = _client()
+def test_v2_route_projects_bundle_entitlement_and_rejects_body_mismatch(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     identity = TrustedHostIdentity(
         key_id="key-v2",
         audience="test",
@@ -1640,8 +1700,10 @@ def test_v2_route_projects_bundle_entitlement_and_rejects_body_mismatch() -> Non
     assert mismatch.json() == {"detail": "host_claims_mismatch"}
 
 
-def test_central_route_v2_gate_rejects_v1_identity() -> None:
-    client, _, _ = _client()
+def test_central_route_v2_gate_rejects_v1_identity(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
     client.app.dependency_overrides[get_trusted_host_identity] = lambda: TrustedHostIdentity(
         key_id="legacy-key",
         audience="test",

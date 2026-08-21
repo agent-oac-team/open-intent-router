@@ -7,7 +7,6 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi.testclient import TestClient
 
 from app.adapters.knowledge_sys import KnowledgeSysHttpProvider
 from app.core.config import Settings, get_settings
@@ -322,7 +321,9 @@ async def test_http_provider_rejects_missing_tenant_without_sending_request(
     assert result.error_code == "knowledge_identity_missing"
 
 
-def test_oir_jwks_exposes_only_public_rsa_material(rsa_signing_material) -> None:
+def test_oir_jwks_exposes_only_public_rsa_material(
+    rsa_signing_material, non_lifespan_test_client
+) -> None:
     private_key, _ = rsa_signing_material
     settings = Settings(
         _env_file=None,
@@ -334,7 +335,7 @@ def test_oir_jwks_exposes_only_public_rsa_material(rsa_signing_material) -> None
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
 
-    response = TestClient(app).get("/.well-known/jwks.json")
+    response = non_lifespan_test_client(app).get("/.well-known/jwks.json")
 
     assert response.status_code == 200
     assert response.json() == {

@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.memory_index_operations import (
     DatabaseMemoryIndexOutboxRepository,
     MemoryIndexOutboxRepository,
@@ -24,7 +23,9 @@ def _operation(**updates) -> MemoryIndexOperation:
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_index_outbox_claim_retry_complete_and_repair(backend, tmp_path) -> None:
+async def test_index_outbox_claim_retry_complete_and_repair(
+    backend, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         repository = MemoryIndexOutboxRepository()
     else:
@@ -32,8 +33,10 @@ async def test_index_outbox_claim_retry_complete_and_repair(backend, tmp_path) -
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'index-outbox.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabaseMemoryIndexOutboxRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabaseMemoryIndexOutboxRepository(
+            await managed_database.session_factory(settings)
+        )
     stored = await repository.add(_operation())
     duplicate = await repository.add(_operation(index_operation_id="duplicate"))
     assert duplicate.index_operation_id == stored.index_operation_id
@@ -72,13 +75,17 @@ async def test_index_outbox_claim_retry_complete_and_repair(backend, tmp_path) -
     assert completed.last_error_metadata == {"provider_status": "not_found"}
 
 
-async def test_database_index_claim_and_terminal_transitions_are_atomic(tmp_path) -> None:
+async def test_database_index_claim_and_terminal_transitions_are_atomic(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'index-outbox-race.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryIndexOutboxRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryIndexOutboxRepository(
+        await managed_database.session_factory(settings)
+    )
     stored = await repository.add(_operation())
     now = datetime(2026, 7, 13, 1, tzinfo=UTC)
     claims = await asyncio.gather(
@@ -109,13 +116,17 @@ async def test_database_index_claim_and_terminal_transitions_are_atomic(tmp_path
     assert len([value for value in terminal if isinstance(value, ValueError)]) == 1
 
 
-async def test_database_complete_without_external_id_preserves_mapping(tmp_path) -> None:
+async def test_database_complete_without_external_id_preserves_mapping(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'index-mapping.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryIndexOutboxRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryIndexOutboxRepository(
+        await managed_database.session_factory(settings)
+    )
     await repository.add(_operation(external_memory_id="mem0_existing"))
     now = datetime(2026, 7, 13, 1, tzinfo=UTC)
     claim = await repository.claim(owner="worker", now=now, lease_seconds=30)
@@ -130,7 +141,7 @@ async def test_database_complete_without_external_id_preserves_mapping(tmp_path)
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_index_claim_can_be_scoped_to_one_tenant(backend, tmp_path) -> None:
+async def test_index_claim_can_be_scoped_to_one_tenant(backend, tmp_path, managed_database) -> None:
     if backend == "memory":
         repository = MemoryIndexOutboxRepository()
     else:
@@ -138,8 +149,10 @@ async def test_index_claim_can_be_scoped_to_one_tenant(backend, tmp_path) -> Non
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'index-tenant-claim.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabaseMemoryIndexOutboxRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabaseMemoryIndexOutboxRepository(
+            await managed_database.session_factory(settings)
+        )
     await repository.add(
         _operation(
             index_operation_id="operation_tenant_2",

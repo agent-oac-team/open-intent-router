@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from dotenv import dotenv_values
 from sqlalchemy import delete, func, inspect, select, text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
 
 from app.core.config import Settings
 from app.db.models import (
@@ -22,7 +22,7 @@ from app.db.models import (
     MemoryRevisionModel,
     TurnOutboxModel,
 )
-from app.db.session import _ensure_compatible_columns, create_all_tables, create_session_factory
+from app.db.session import _ensure_compatible_columns
 from app.llm.conversation_formation import (
     ConversationFormationResponse,
     FakeConversationFormationModel,
@@ -85,13 +85,13 @@ async def test_real_postgresql_legacy_memory_migration_is_rollback_safe_and_idem
     database_url = _postgresql_url().replace("postgresql://", "postgresql+asyncpg://", 1)
     schema_name = f"oir_memory_migration_{uuid4().hex}"
     quoted_schema = f'"{schema_name}"'
-    admin_engine = create_async_engine(database_url)
+    admin_engine = _create_async_engine(database_url)
     scoped_engine = None
 
     try:
         async with admin_engine.begin() as conn:
             await conn.execute(text(f"CREATE SCHEMA {quoted_schema}"))
-        scoped_engine = create_async_engine(
+        scoped_engine = _create_async_engine(
             database_url,
             connect_args={"server_settings": {"search_path": schema_name}},
         )
@@ -303,7 +303,7 @@ class _ReadyDatabaseMemoryAdapter(RepositoryMemoryAdapter):
         )
 
 
-async def test_real_postgresql_route_turn_to_recall_pork_preference() -> None:
+async def test_real_postgresql_route_turn_to_recall_pork_preference(managed_database) -> None:
     suffix = uuid4().hex
     tenant_id = f"pg_route_memory_tenant_{suffix}"
     user_id = f"pg_route_memory_user_{suffix}"
@@ -317,8 +317,8 @@ async def test_real_postgresql_route_turn_to_recall_pork_preference() -> None:
         memory_formation_window_turns=1,
         memory_formation_model_timeout_seconds=1,
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     turns = DatabaseTurnRepository(factory)
     formation = DatabaseMemoryFormationTurnJobRepository(factory)
     memories = DatabaseMemoryItemRepository(factory)
@@ -479,10 +479,12 @@ async def test_real_postgresql_route_turn_to_recall_pork_preference() -> None:
         assert debug.request_trace.memory_ids == [formed[0].memory_id]
     finally:
         await _cleanup(factory, tenant_id=tenant_id)
-        await factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
-async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> None:
+async def test_real_postgresql_multi_worker_formation_revision_and_outbox(
+    managed_database,
+) -> None:
     suffix = uuid4().hex
     tenant_id = f"pg_acceptance_tenant_{suffix}"
     user_id = f"pg_acceptance_user_{suffix}"
@@ -496,9 +498,9 @@ async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> N
         memory_formation_model_timeout_seconds=1,
         memory_formation_lease_seconds=5,
     )
-    await create_all_tables(settings)
-    first_factory = create_session_factory(settings)
-    second_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    first_factory = await managed_database.session_factory(settings)
+    second_factory = await managed_database.session_factory(settings)
     first = DatabaseMemoryFormationTurnJobRepository(first_factory)
     second = DatabaseMemoryFormationTurnJobRepository(second_factory)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=first)
@@ -678,11 +680,12 @@ async def test_real_postgresql_multi_worker_formation_revision_and_outbox() -> N
         assert replay is True
     finally:
         await _cleanup(first_factory, tenant_id=tenant_id)
-        await first_factory.kw["bind"].dispose()
-        await second_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
-async def test_real_postgresql_request_trace_resolves_pending_update_and_delete() -> None:
+async def test_real_postgresql_request_trace_resolves_pending_update_and_delete(
+    managed_database,
+) -> None:
     suffix = uuid4().hex
     tenant_id = f"pg_decision_tenant_{suffix}"
     user_id = f"pg_decision_user_{suffix}"
@@ -694,8 +697,8 @@ async def test_real_postgresql_request_trace_resolves_pending_update_and_delete(
         memory_strategy_provider="memory",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     memory = MemoryService(settings=settings, repository=items)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
@@ -834,7 +837,7 @@ async def test_real_postgresql_request_trace_resolves_pending_update_and_delete(
         assert current.lifecycle_status == "active"
     finally:
         await _cleanup(session_factory, tenant_id=tenant_id)
-        await session_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
 def _turn(

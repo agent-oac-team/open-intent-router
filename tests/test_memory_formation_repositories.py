@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.memory_formation import (
     DatabaseMemoryFormationTurnJobRepository,
     MemoryFormationTurnJobRepository,
@@ -336,13 +335,17 @@ async def test_in_memory_formation_repository_does_not_expose_mutable_state() ->
     assert repository.turns["turn_1"].status == "formed"
 
 
-async def test_database_custom_retry_limit_round_trips_and_dead_letters(tmp_path) -> None:
+async def test_database_custom_retry_limit_round_trips_and_dead_letters(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-retries.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
     await repository.append_turn(_turn(1))
     job = await repository.create_job_for_pending(
         tenant_id="t1",
@@ -373,14 +376,14 @@ async def test_database_custom_retry_limit_round_trips_and_dead_letters(tmp_path
 
 
 async def test_database_repository_recovers_across_restart_and_isolates_tenants(
-    tmp_path,
+    tmp_path, managed_database
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-repository.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     repository = DatabaseMemoryFormationTurnJobRepository(session_factory)
     await repository.append_turn(_turn(1))
     await repository.append_turn(_turn(2))
@@ -430,13 +433,17 @@ async def test_database_repository_recovers_across_restart_and_isolates_tenants(
     ] == ["other_turn"]
 
 
-async def test_database_repository_rejects_stale_worker_after_lease_recovery(tmp_path) -> None:
+async def test_database_repository_rejects_stale_worker_after_lease_recovery(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-lease.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
     await repository.append_turn(_turn(1))
     job = await repository.create_job_for_pending(
         tenant_id="t1",
@@ -464,13 +471,13 @@ async def test_database_repository_rejects_stale_worker_after_lease_recovery(tmp
         )
 
 
-async def test_database_repository_claim_is_atomic_on_sqlite(tmp_path) -> None:
+async def test_database_repository_claim_is_atomic_on_sqlite(tmp_path, managed_database) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-claim-race.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     repository = DatabaseMemoryFormationTurnJobRepository(session_factory)
     await repository.append_turn(_turn(1))
     assert await repository.create_job_for_pending(
@@ -493,13 +500,17 @@ async def test_database_repository_claim_is_atomic_on_sqlite(tmp_path) -> None:
     assert winners[0].attempt_count == 1
 
 
-async def test_database_repository_terminal_transition_is_atomic_on_sqlite(tmp_path) -> None:
+async def test_database_repository_terminal_transition_is_atomic_on_sqlite(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-terminal-race.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
     await repository.append_turn(_turn(1))
     assert await repository.create_job_for_pending(
         tenant_id="t1",
@@ -535,13 +546,17 @@ async def test_database_repository_terminal_transition_is_atomic_on_sqlite(tmp_p
     assert len([result for result in results if isinstance(result, ValueError)]) == 1
 
 
-async def test_database_turn_collision_does_not_disclose_other_tenant_capsule(tmp_path) -> None:
+async def test_database_turn_collision_does_not_disclose_other_tenant_capsule(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-turn-collision.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
     original = _turn(1).model_copy(update={"user_text": "tenant-a-private"})
     await repository.append_turn(original)
     collision = original.model_copy(
@@ -557,13 +572,17 @@ async def test_database_turn_collision_does_not_disclose_other_tenant_capsule(tm
     assert "tenant-a-private" not in str(error.value)
 
 
-async def test_database_turn_round_trip_preserves_canonical_ref_types(tmp_path) -> None:
+async def test_database_turn_round_trip_preserves_canonical_ref_types(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-turn-refs.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
     stored = await repository.append_turn(
         _turn(1).model_copy(
             update={

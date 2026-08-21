@@ -4,7 +4,6 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository, MemoryItemRepository
 from app.schemas.memory import MemoryItem
 
@@ -25,7 +24,9 @@ def _memory(memory_id: str, **updates) -> MemoryItem:
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_memory_item_repository_enforces_canonical_active_boundary(backend, tmp_path) -> None:
+async def test_memory_item_repository_enforces_canonical_active_boundary(
+    backend, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         repository = MemoryItemRepository()
     else:
@@ -33,8 +34,8 @@ async def test_memory_item_repository_enforces_canonical_active_boundary(backend
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'memory-items.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabaseMemoryItemRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
     active = await repository.add(_memory("active"))
     await repository.add(_memory("deleting", lifecycle_status="deletion_pending"))
     await repository.add(
@@ -115,7 +116,7 @@ async def test_memory_item_repository_enforces_canonical_active_boundary(backend
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_memory_item_repository_does_not_expose_mutable_internal_state(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
     if backend == "memory":
         repository = MemoryItemRepository()
@@ -124,8 +125,8 @@ async def test_memory_item_repository_does_not_expose_mutable_internal_state(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'memory-item-alias.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabaseMemoryItemRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
     original = _memory("active", structured_value={"nested": {"value": "original"}})
     returned = await repository.add(original)
     original.tenant_id = "attacker-tenant"

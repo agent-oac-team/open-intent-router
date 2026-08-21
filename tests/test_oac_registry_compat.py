@@ -110,6 +110,7 @@ class SnapshotRefreshProbe:
 
 
 def _client(
+    non_lifespan_test_client,
     *,
     credential_class="oac_admin",
     force_conflict=False,
@@ -140,7 +141,7 @@ def _client(
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
     app.state.registry = registry
-    return TestClient(app)
+    return non_lifespan_test_client(app)
 
 
 def test_registry_fixtures_parse_and_mapper_round_trips_legacy_fields() -> None:
@@ -311,8 +312,10 @@ def test_registry_mapper_rejects_non_internal_route_paths(route) -> None:
         registry_agent_to_native(RegistryAgent.model_validate(body))
 
 
-def test_registry_crud_handlers_match_frozen_status_and_shapes() -> None:
-    client = _client()
+def test_registry_crud_handlers_match_frozen_status_and_shapes(
+    non_lifespan_test_client,
+) -> None:
+    client = _client(non_lifespan_test_client)
     create_body = _fixture("registry-create")["request"]["body"]
     created = client.post("/api/v1/admin/agent-registry", json=create_body)
     assert created.status_code == 200
@@ -339,9 +342,11 @@ def test_registry_crud_handlers_match_frozen_status_and_shapes() -> None:
     assert client.get("/api/v1/admin/agent-registry").json() == []
 
 
-def test_registry_crud_refreshes_the_process_snapshot_after_each_committed_write() -> None:
+def test_registry_crud_refreshes_the_process_snapshot_after_each_committed_write(
+    non_lifespan_test_client,
+) -> None:
     refresh = SnapshotRefreshProbe()
-    client = _client(snapshot_refresh=refresh)
+    client = _client(non_lifespan_test_client, snapshot_refresh=refresh)
     create_body = _fixture("registry-create")["request"]["body"]
 
     assert client.post("/api/v1/admin/agent-registry", json=create_body).status_code == 200
@@ -364,8 +369,12 @@ def test_registry_crud_refreshes_the_process_snapshot_after_each_committed_write
     assert refresh.registries == [client.app.state.registry] * 4
 
 
-def test_registry_write_returns_a_safe_error_when_snapshot_refresh_fails() -> None:
-    client = _client(snapshot_refresh=SnapshotRefreshProbe(succeeds=False))
+def test_registry_write_returns_a_safe_error_when_snapshot_refresh_fails(
+    non_lifespan_test_client,
+) -> None:
+    client = _client(
+        non_lifespan_test_client, snapshot_refresh=SnapshotRefreshProbe(succeeds=False)
+    )
 
     response = client.post(
         "/api/v1/admin/agent-registry",
@@ -405,16 +414,18 @@ def test_oac_snapshot_mapper_quarantines_bad_legacy_rows_with_safe_repair_metada
     )
 
 
-def test_registry_writes_reject_non_admin_credentials() -> None:
-    response = _client(credential_class="coze_workflow").post(
+def test_registry_writes_reject_non_admin_credentials(non_lifespan_test_client) -> None:
+    response = _client(non_lifespan_test_client, credential_class="coze_workflow").post(
         "/api/v1/admin/agent-registry",
         json=_fixture("registry-create")["request"]["body"],
     )
     assert response.status_code == 403
 
 
-def test_registry_concurrent_update_returns_stable_conflict_response() -> None:
-    client = _client(force_conflict=True)
+def test_registry_concurrent_update_returns_stable_conflict_response(
+    non_lifespan_test_client,
+) -> None:
+    client = _client(non_lifespan_test_client, force_conflict=True)
     create_body = _fixture("registry-create")["request"]["body"]
     assert client.post("/api/v1/admin/agent-registry", json=create_body).status_code == 200
     response = client.put(
@@ -482,15 +493,19 @@ def test_registry_compat_update_preserves_native_context_configuration() -> None
         {"route_path": "https://evil.example/agent"},
     ],
 )
-def test_registry_handler_returns_stable_validation_error(updates) -> None:
+def test_registry_handler_returns_stable_validation_error(
+    updates, non_lifespan_test_client
+) -> None:
     body = {**_fixture("registry-create")["request"]["body"], **updates}
-    response = _client().post("/api/v1/admin/agent-registry", json=body)
+    response = _client(non_lifespan_test_client).post("/api/v1/admin/agent-registry", json=body)
     assert response.status_code == 422
     assert response.json() == {"detail": "registry_validation_failed"}
 
 
-def test_registry_list_returns_conflict_for_unprojectable_policy() -> None:
-    client = _client()
+def test_registry_list_returns_conflict_for_unprojectable_policy(
+    non_lifespan_test_client,
+) -> None:
+    client = _client(non_lifespan_test_client)
     client.app.state.registry.agents["foreign-policy"] = AgentDefinition(
         agent_id="foreign-policy",
         name="Foreign",
@@ -506,12 +521,16 @@ def test_registry_list_returns_conflict_for_unprojectable_policy() -> None:
     assert response.json() == {"detail": "registry_policy_not_legacy_projectable"}
 
 
-def test_registry_token_only_request_fails_real_host_verifier() -> None:
+def test_registry_token_only_request_fails_real_host_verifier(
+    non_lifespan_test_client,
+) -> None:
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_oac_adapter_application_ports] = lambda: _client().app.state
+    app.dependency_overrides[get_oac_adapter_application_ports] = lambda: (
+        _client(non_lifespan_test_client).app.state
+    )
     app.dependency_overrides[get_host_identity_verifier] = _reject_host_identity
-    response = TestClient(app).get(
+    response = non_lifespan_test_client(app).get(
         "/api/v1/admin/agent-registry",
         headers={"X-Admin-Sync-Token": "legacy-token"},
     )

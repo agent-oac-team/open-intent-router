@@ -1,7 +1,5 @@
 import json
 
-from fastapi.testclient import TestClient
-
 from app.core.config import Settings, get_settings
 from app.dependencies import (
     get_memory_management_service,
@@ -22,7 +20,9 @@ from app.services.registry_service import AgentRegistryService
 from scripts.capture_memory_invariance import capture_memory_invariance
 
 
-def test_capture_memory_invariance_uses_public_crud_and_omits_memory_body() -> None:
+def test_capture_memory_invariance_uses_public_crud_and_omits_memory_body(
+    non_lifespan_test_client,
+) -> None:
     settings = Settings(
         _env_file=None,
         app_env="local",
@@ -62,7 +62,7 @@ def test_capture_memory_invariance_uses_public_crud_and_omits_memory_body() -> N
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
 
     report = capture_memory_invariance(
-        TestClient(app),
+        non_lifespan_test_client(app),
         tenant_id="tenant-baseline",
         user_id="user-baseline",
         recall_query="representative baseline query",

@@ -14,7 +14,6 @@ from uuid import uuid4
 
 from dotenv import dotenv_values
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -33,17 +32,18 @@ RUNTIME_TABLES = (
 
 
 async def table_counts(database_url: str) -> dict[str, int]:
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.connect() as connection:
+    from app.core.config import Settings
+    from app.db.managed import ManagedDatabase
+
+    settings = Settings(storage_backend="database", database_url=database_url)
+    async with ManagedDatabase.from_settings(settings) as database:
+        async with database.session_factory() as session:
             return {
                 table: int(
-                    (await connection.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar_one()
+                    (await session.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar_one()
                 )
                 for table in RUNTIME_TABLES
             }
-    finally:
-        await engine.dispose()
 
 
 async def run_rehearsal(

@@ -8,7 +8,6 @@ from app.core.errors import (
     DirectInvocationUnsupportedError,
     InvocationBindingUnavailableError,
 )
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseResultRepository, DatabaseRunRepository
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
@@ -600,10 +599,12 @@ async def test_accepted_v2_invocation_output_validation_still_records_a_terminal
     await catalog.aclose()
 
 
-async def test_direct_v2_invocation_persists_binding_facts_in_database(tmp_path) -> None:
+async def test_direct_v2_invocation_persists_binding_facts_in_database(
+    tmp_path, managed_database
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'binding.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
     adapter = _V2Adapter()
     catalog = await RuntimeCatalog.activate(
         [_descriptor(adapter)],
@@ -612,7 +613,7 @@ async def test_direct_v2_invocation_persists_binding_facts_in_database(tmp_path)
     )
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
-    factory = create_session_factory(settings)
+    factory = await managed_database.session_factory(settings)
     runs = DatabaseRunRepository(factory)
     service = _service(
         catalog=catalog,

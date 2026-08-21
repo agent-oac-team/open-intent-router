@@ -1,6 +1,5 @@
 from app.core.config import Settings
 from app.core.memory_runtime import build_memory_runtime_policy
-from app.db.session import create_all_tables, create_session_factory
 from app.plugins.evidence import EvidenceResult
 from app.repositories.database import DatabaseEventRepository, DatabasePlanRepository
 from app.repositories.memory import MemoryEventRepository, MemoryPlanRepository
@@ -134,13 +133,15 @@ async def test_router_loads_referenced_recent_event_and_session_active_plan(
     assert "current_plan" in included_sources
 
 
-async def test_database_event_and_plan_queries_match_memory_behavior(tmp_path) -> None:
+async def test_database_event_and_plan_queries_match_memory_behavior(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'context-state.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     event_service = EventService(DatabaseEventRepository(session_factory))
     plan_service = PlanService(DatabasePlanRepository(session_factory))
     for index in range(3):

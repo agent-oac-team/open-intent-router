@@ -6,7 +6,6 @@ from sqlalchemy import func, select
 
 from app.core.config import Settings
 from app.db.models import TurnOutboxModel
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseEventRepository, DatabasePlanRepository
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunCancelStore,
@@ -47,7 +46,7 @@ class CancelRuntime:
 
 
 @pytest.fixture(params=["memory", "database"])
-async def cancel_runtime(request, tmp_path) -> CancelRuntime:
+async def cancel_runtime(request, tmp_path, managed_database) -> CancelRuntime:
     if request.param == "memory":
         runs = MemoryRunRepository()
         events = MemoryEventRepository()
@@ -74,8 +73,8 @@ async def cancel_runtime(request, tmp_path) -> CancelRuntime:
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'delegated-cancel.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         events = DatabaseEventRepository(session_factory)
         turns = DatabaseTurnRepository(session_factory)
         plans = DatabasePlanRepository(session_factory)

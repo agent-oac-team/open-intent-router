@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.plugins.evidence import (
     EvidenceProviderScheduler,
     EvidenceResult,
@@ -507,13 +506,15 @@ async def test_plan_event_rejects_run_with_different_stored_owner() -> None:
     assert await events.get_event(payload.event_id, tenant_id=None, user_id=None) is None
 
 
-async def test_database_plan_event_round_trips_trusted_run_owner(tmp_path) -> None:
+async def test_database_plan_event_round_trips_trusted_run_owner(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'plan-event-owner.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     events = DatabaseEventRepository(session_factory)
     plans = DatabasePlanRepository(session_factory)
     runs = DatabaseRunRepository(session_factory)
@@ -567,7 +568,9 @@ async def test_database_plan_event_round_trips_trusted_run_owner(tmp_path) -> No
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_run_repository_preserves_trusted_execution_identity(backend, tmp_path) -> None:
+async def test_run_repository_preserves_trusted_execution_identity(
+    backend, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         runs = MemoryRunRepository()
     else:
@@ -575,8 +578,8 @@ async def test_run_repository_preserves_trusted_execution_identity(backend, tmp_
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'run-identity.db'}",
         )
-        await create_all_tables(settings)
-        runs = DatabaseRunRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        runs = DatabaseRunRepository(await managed_database.session_factory(settings))
     original = AgentRun(
         run_id="run_1",
         request_id="request_1",

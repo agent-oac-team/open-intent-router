@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseRunRepository
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunMaintenanceStore,
@@ -35,6 +34,7 @@ from app.services.turn_service import TurnService
 async def test_overdue_query_uses_deadline_only_and_batches_deterministically(
     backend: str,
     tmp_path,
+    managed_database,
 ) -> None:
     now = datetime.now(UTC)
     if backend == "memory":
@@ -50,8 +50,8 @@ async def test_overdue_query_uses_deadline_only_and_batches_deterministically(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'overdue-query.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         runs = DatabaseRunRepository(factory)
         store = DatabaseDelegatedRunMaintenanceStore(factory)
     values = [

@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
+)
+from sqlalchemy.ext.asyncio import (
+    create_async_engine as _create_async_engine,
 )
 
 from app.core.config import Settings
@@ -69,7 +71,7 @@ class ManagedDatabase:
             options: dict[str, bool] = {"future": self._spec.future}
             if self._spec.pool_pre_ping:
                 options["pool_pre_ping"] = True
-            engine = create_async_engine(self._spec.database_url, **options)
+            engine = _create_async_engine(self._spec.database_url, **options)
             self._engine = engine
             self._session_factory = async_sessionmaker(engine, expire_on_commit=False)
         except BaseException:

@@ -1,5 +1,3 @@
-from fastapi.testclient import TestClient
-
 from app.core.config import Settings, get_settings
 from app.core.security import memory_identity_signature
 from app.dependencies import get_router_service
@@ -21,7 +19,9 @@ def _principal_headers(**updates) -> dict[str, str]:
     )
 
 
-def test_signed_native_principal_is_the_only_authorization_source() -> None:
+def test_signed_native_principal_is_the_only_authorization_source(
+    non_lifespan_test_client,
+) -> None:
     service = _CapturingRouterService()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -30,7 +30,7 @@ def test_signed_native_principal_is_the_only_authorization_source() -> None:
     )
     app.dependency_overrides[get_router_service] = lambda: service
 
-    response = TestClient(app).post(
+    response = non_lifespan_test_client(app).post(
         "/api/v1/route",
         headers=_principal_headers(),
         json={
@@ -57,7 +57,9 @@ def test_signed_native_principal_is_the_only_authorization_source() -> None:
     }
 
 
-def test_legacy_signed_owner_cannot_inherit_body_permissions() -> None:
+def test_legacy_signed_owner_cannot_inherit_body_permissions(
+    non_lifespan_test_client,
+) -> None:
     service = _CapturingRouterService()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -75,7 +77,7 @@ def test_legacy_signed_owner_cannot_inherit_body_permissions() -> None:
         ),
     }
 
-    response = TestClient(app).post(
+    response = non_lifespan_test_client(app).post(
         "/api/v1/route",
         headers=headers,
         json={
@@ -102,7 +104,9 @@ def test_legacy_signed_owner_cannot_inherit_body_permissions() -> None:
     }
 
 
-def test_non_local_native_principal_fails_closed_before_routing() -> None:
+def test_non_local_native_principal_fails_closed_before_routing(
+    non_lifespan_test_client,
+) -> None:
     service = _CapturingRouterService()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -110,7 +114,7 @@ def test_non_local_native_principal_fails_closed_before_routing() -> None:
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_router_service] = lambda: service
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     body = _route_body()
     unsigned = _principal_headers()
     unsigned.pop("X-OIR-Principal-Signature")
@@ -126,7 +130,9 @@ def test_non_local_native_principal_fails_closed_before_routing() -> None:
     assert service.calls == 0
 
 
-def test_local_loopback_accepts_unsigned_canonical_principal() -> None:
+def test_local_loopback_accepts_unsigned_canonical_principal(
+    non_lifespan_test_client,
+) -> None:
     service = _CapturingRouterService()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(app_env="local")
@@ -134,7 +140,7 @@ def test_local_loopback_accepts_unsigned_canonical_principal() -> None:
     headers = _principal_headers()
     headers.pop("X-OIR-Principal-Signature")
 
-    response = TestClient(app).post(
+    response = non_lifespan_test_client(app).post(
         "/api/v1/route",
         headers=headers,
         json=_route_body(),
@@ -144,7 +150,9 @@ def test_local_loopback_accepts_unsigned_canonical_principal() -> None:
     assert service.calls == 1
 
 
-def test_body_owner_conflict_is_rejected_before_routing() -> None:
+def test_body_owner_conflict_is_rejected_before_routing(
+    non_lifespan_test_client,
+) -> None:
     service = _CapturingRouterService()
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -152,7 +160,7 @@ def test_body_owner_conflict_is_rejected_before_routing() -> None:
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_router_service] = lambda: service
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     wrong_subject = _route_body()
     wrong_subject["user"]["id"] = "other-user"

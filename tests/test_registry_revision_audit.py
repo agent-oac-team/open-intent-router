@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import (
     DatabaseAgentDefinitionRepository,
 )
@@ -35,7 +34,7 @@ def _agent(description: str = "description") -> AgentDefinition:
 
 
 @pytest.fixture(params=["memory", "database"])
-async def registry_repositories(request, tmp_path):
+async def registry_repositories(request, tmp_path, managed_database):
     if request.param == "memory":
         return (
             MemoryAgentDefinitionRepository(),
@@ -46,8 +45,8 @@ async def registry_repositories(request, tmp_path):
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'registry-revision.db'}",
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     return (
         DatabaseAgentDefinitionRepository(factory),
         DatabaseRegistryAuditStore(factory),

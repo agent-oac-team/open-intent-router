@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.memory_index_operations import MemoryIndexOutboxRepository
@@ -244,7 +243,9 @@ async def test_governance_batches_index_lookups_for_large_queues() -> None:
     assert outbox.single_calls == 0
 
 
-def test_oac_governance_query_forwards_status_filter_to_authoritative_service() -> None:
+def test_oac_governance_query_forwards_status_filter_to_authoritative_service(
+    non_lifespan_test_client,
+) -> None:
     class GovernancePort:
         seen_status = None
 
@@ -282,7 +283,7 @@ def test_oac_governance_query_forwards_status_filter_to_authoritative_service() 
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
 
-    response = TestClient(app).get(
+    response = non_lifespan_test_client(app).get(
         "/api/v1/admin/memories/governance?tenant_id=tenant-1&status=repairing&page=1&page_size=20"
     )
 
@@ -293,6 +294,7 @@ def test_oac_governance_query_forwards_status_filter_to_authoritative_service() 
 @pytest.mark.parametrize("credential_class", ["oac_user", "coze_workflow"])
 def test_oac_governance_query_rejects_non_admin_host_credentials(
     credential_class: str,
+    non_lifespan_test_client,
 ) -> None:
     class GovernancePort:
         async def query(self, **_kwargs):
@@ -329,7 +331,9 @@ def test_oac_governance_query_rejects_non_admin_host_credentials(
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
 
-    response = TestClient(app).get("/api/v1/admin/memories/governance?tenant_id=tenant-1")
+    response = non_lifespan_test_client(app).get(
+        "/api/v1/admin/memories/governance?tenant_id=tenant-1"
+    )
 
     assert response.status_code == 403
 

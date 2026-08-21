@@ -3,7 +3,8 @@
 本目录保存面向本地开发和联调的 PostgreSQL 建库/建表快照。
 
 - 权威数据模型仍是 `app/db/models.py`。
-- 应用启动和 smoke test 仍可通过 `app.db.session.create_all_tables()` 自动建表。
+- 数据库模式由应用生命周期内的 `ManagedDatabase.initialize_schema()` 初始化；应用外的
+  bootstrap 请使用本目录的 SQL 快照或受控迁移脚本。
 - 当 SQLAlchemy model 新增或修改表结构时，需要同步更新 `postgresql_schema.sql`。
 - `postgresql_schema.sql` 默认创建 `oir` role 和 `oir` database，再在该专属库中创建 OIR 表结构。
 - 本文件只保存 bootstrap、表结构和索引，不保存真实密钥、业务数据或测试用户数据。

@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.turns import (
     DatabaseTurnRepository,
     MemoryTurnRepository,
@@ -32,15 +31,15 @@ def _turn(**updates) -> CanonicalTurn:
 
 
 @pytest.fixture(params=["memory", "database"])
-async def turn_repository(request, tmp_path):
+async def turn_repository(request, tmp_path, managed_database):
     if request.param == "memory":
         return MemoryTurnRepository()
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'turn-repository.db'}",
     )
-    await create_all_tables(settings)
-    return DatabaseTurnRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    return DatabaseTurnRepository(await managed_database.session_factory(settings))
 
 
 async def test_turn_repository_idempotent_create_and_owned_reads(turn_repository) -> None:

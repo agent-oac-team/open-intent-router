@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabasePlanRepository
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunCompletionStore,
@@ -28,7 +27,7 @@ from app.services.turn_service import TurnService
 
 
 @pytest.fixture(params=["memory", "database"])
-async def delegated_completion(request, tmp_path):
+async def delegated_completion(request, tmp_path, managed_database):
     if request.param == "memory":
         runs = MemoryRunRepository()
         results = MemoryResultRepository()
@@ -52,8 +51,8 @@ async def delegated_completion(request, tmp_path):
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'delegated-completion.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         turns_repo = DatabaseTurnRepository(factory)
         service = DelegatedRunService(
             DatabaseDelegatedRunStartStore(factory),
@@ -156,6 +155,7 @@ async def test_final_event_replay_requires_identical_canonical_payload(
 async def test_plan_completion_selects_first_dependency_ready_step(
     backend: str,
     tmp_path,
+    managed_database,
 ) -> None:
     plan = Plan(
         plan_id=f"plan-ready-{backend}",
@@ -194,6 +194,7 @@ async def test_plan_completion_selects_first_dependency_ready_step(
         backend,
         tmp_path,
         plan,
+        managed_database,
         step_id="current",
     )
 
@@ -217,6 +218,7 @@ async def test_plan_completion_does_not_complete_with_active_sibling(
     backend: str,
     sibling_status: str,
     tmp_path,
+    managed_database,
 ) -> None:
     next_action = (
         NextAction(
@@ -256,6 +258,7 @@ async def test_plan_completion_does_not_complete_with_active_sibling(
         backend,
         tmp_path,
         plan,
+        managed_database,
         step_id="current",
     )
 
@@ -274,6 +277,7 @@ async def _delegated_plan_completion_runtime(
     backend: str,
     tmp_path,
     plan: Plan,
+    managed_database,
     *,
     step_id: str,
 ):
@@ -303,8 +307,8 @@ async def _delegated_plan_completion_runtime(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / f'{plan.plan_id}.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         turns_repo = DatabaseTurnRepository(factory)
         plans = DatabasePlanRepository(factory)
         service = DelegatedRunService(

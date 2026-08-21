@@ -25,12 +25,12 @@ def test_health_endpoint() -> None:
     assert response.json()["status"] == "ok"
 
 
-def test_append_session_message_endpoint_stores_agent_reply() -> None:
+def test_append_session_message_endpoint_stores_agent_reply(non_lifespan_test_client) -> None:
     repository = MemoryMessageRepository()
     service = ChatHistoryService(repository, host_limit=20, agent_limit=12)
     app = create_app()
     app.dependency_overrides[get_chat_history_service] = lambda: service
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     response = client.post(
         "/api/v1/sessions/s1/messages",
@@ -56,14 +56,16 @@ def test_append_session_message_endpoint_stores_agent_reply() -> None:
     assert body["agent_session_id"] == "child_session"
 
 
-def test_append_session_message_endpoint_validates_agent_chat_agent_id() -> None:
+def test_append_session_message_endpoint_validates_agent_chat_agent_id(
+    non_lifespan_test_client,
+) -> None:
     app = create_app()
     app.dependency_overrides[get_chat_history_service] = lambda: ChatHistoryService(
         MemoryMessageRepository(),
         host_limit=20,
         agent_limit=12,
     )
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     response = client.post(
         "/api/v1/sessions/s1/messages",
@@ -76,7 +78,7 @@ def test_append_session_message_endpoint_validates_agent_chat_agent_id() -> None
     assert response.status_code == 422
 
 
-def test_route_endpoint_preserves_response_contract_shape() -> None:
+def test_route_endpoint_preserves_response_contract_shape(non_lifespan_test_client) -> None:
     app = create_app()
     service = ContractRouterService()
     app.dependency_overrides[get_router_service] = lambda: service
@@ -84,7 +86,7 @@ def test_route_endpoint_preserves_response_contract_shape() -> None:
         app_env="production",
         memory_identity_secret="route-test-secret",
     )
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     headers = {
         "X-User-ID": "trusted-user",
@@ -146,7 +148,7 @@ def test_route_endpoint_preserves_response_contract_shape() -> None:
     assert unsigned.status_code == 401
 
 
-async def test_memory_debug_endpoint_returns_admin_state() -> None:
+async def test_memory_debug_endpoint_returns_admin_state(non_lifespan_test_client) -> None:
     memory_repository = MemoryItemRepository()
     await memory_repository.add(
         MemoryItem(
@@ -159,7 +161,7 @@ async def test_memory_debug_endpoint_returns_admin_state() -> None:
         repository=memory_repository,
     )
     app.dependency_overrides[get_memory_observability_service] = object
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     memory_response = client.get("/api/v1/memories/debug?user_id=u1")
 

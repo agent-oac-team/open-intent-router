@@ -6,12 +6,12 @@ from threading import Event as ThreadEvent
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import delete, event, select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings, get_settings
+from app.db.managed import ManagedDatabase
 from app.db.models import AgentRunModel, PlanModel, PlanStepModel
-from app.db.session import create_all_tables, create_session_factory
 from app.dependencies import get_plan_executor, get_plan_service
 from app.main import create_app
 from app.repositories.database import (
@@ -33,6 +33,7 @@ from app.services.delegated_run_service import DelegatedRunService
 from app.services.plan_service import PlanService
 from app.services.turn_service import TurnService
 from tests.fakes.native_principal import native_principal_headers
+from tests.support.database import raw_engine_scope
 
 _PRINCIPAL_SECRET = "plan-cancel-principal-secret"
 
@@ -42,7 +43,7 @@ class _UnusedExecutor:
         raise AssertionError("cancel must not form a Candidate Set")
 
 
-async def _client_for(plan: Plan, *, run: AgentRun | None = None):
+async def _client_for(non_lifespan_test_client, plan: Plan, *, run: AgentRun | None = None):
     plans = MemoryPlanRepository()
     runs = MemoryRunRepository()
     await plans.save(plan)
@@ -56,7 +57,7 @@ async def _client_for(plan: Plan, *, run: AgentRun | None = None):
     )
     app.dependency_overrides[get_plan_service] = lambda: service
     app.dependency_overrides[get_plan_executor] = lambda: _UnusedExecutor()
-    return TestClient(app), service
+    return non_lifespan_test_client(app), service
 
 
 def _headers(*, subject: str = "user-1") -> dict[str, str]:
@@ -74,7 +75,9 @@ def _body(*, subject: str = "user-1") -> dict:
     }
 
 
-async def test_active_delegated_run_returns_truthful_control_unsupported_repeatedly() -> None:
+async def test_active_delegated_run_returns_truthful_control_unsupported_repeatedly(
+    non_lifespan_test_client,
+) -> None:
     plan = Plan(
         plan_id="plan-active",
         tenant_id="tenant-1",
@@ -92,6 +95,7 @@ async def test_active_delegated_run_returns_truthful_control_unsupported_repeate
         ],
     )
     client, service = await _client_for(
+        non_lifespan_test_client,
         plan,
         run=AgentRun(
             run_id="run-active",
@@ -138,6 +142,7 @@ async def test_active_delegated_run_returns_truthful_control_unsupported_repeate
 async def test_plan_without_active_execution_cancels_only_unstarted_work(
     status: str,
     step_status: str,
+    non_lifespan_test_client,
 ) -> None:
     plan = Plan(
         plan_id=f"plan-{status}",
@@ -155,7 +160,7 @@ async def test_plan_without_active_execution_cancels_only_unstarted_work(
             )
         ],
     )
-    client, service = await _client_for(plan)
+    client, service = await _client_for(non_lifespan_test_client, plan)
 
     response = client.post(
         f"/api/v1/plans/{plan.plan_id}/actions",
@@ -172,7 +177,7 @@ async def test_plan_without_active_execution_cancels_only_unstarted_work(
     assert stored.state_version == 4
 
 
-async def test_plan_cancel_is_owner_isolated() -> None:
+async def test_plan_cancel_is_owner_isolated(non_lifespan_test_client) -> None:
     plan = Plan(
         plan_id="plan-owned",
         tenant_id="tenant-1",
@@ -180,7 +185,7 @@ async def test_plan_cancel_is_owner_isolated() -> None:
         status="pending",
         steps=[PlanStep(step_id="step-1", agent_id="agent-1", description="owned")],
     )
-    client, service = await _client_for(plan)
+    client, service = await _client_for(non_lifespan_test_client, plan)
 
     response = client.post(
         "/api/v1/plans/plan-owned/actions",
@@ -199,6 +204,7 @@ async def test_plan_cancel_and_delegated_start_have_only_serializable_outcomes(
     backend: str,
     start_first: bool,
     tmp_path,
+    managed_database,
 ) -> None:
     if backend == "memory":
         plans = MemoryPlanRepository()
@@ -214,8 +220,8 @@ async def test_plan_cancel_and_delegated_start_have_only_serializable_outcomes(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'plan-cancel-start-race.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         plans = DatabasePlanRepository(factory)
         runs = DatabaseRunRepository(factory)
         turns_repository = DatabaseTurnRepository(factory)
@@ -525,24 +531,22 @@ async def test_real_postgresql_cancel_observes_start_committed_while_waiting_for
 @asynccontextmanager
 async def _postgresql_lock_scope(label: str):
     settings = Settings(storage_backend="database", database_url=_postgresql_url())
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
-    engine = factory.kw["bind"]
-    suffix = uuid4().hex
-    plan_id = f"plan-{label}-{suffix}"
-    run_id = f"run-{label}-{suffix}"
-    plans = DatabasePlanRepository(factory)
-    runs = DatabaseRunRepository(factory)
-    try:
-        yield factory, engine, plans, runs, suffix, plan_id, run_id
-    finally:
+    async with ManagedDatabase.from_settings(settings) as database:
+        await database.initialize_schema()
+    async with raw_engine_scope(settings.database_url) as engine:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        suffix = uuid4().hex
+        plan_id = f"plan-{label}-{suffix}"
+        run_id = f"run-{label}-{suffix}"
+        plans = DatabasePlanRepository(factory)
+        runs = DatabaseRunRepository(factory)
         try:
+            yield factory, engine, plans, runs, suffix, plan_id, run_id
+        finally:
             async with factory() as cleanup, cleanup.begin():
                 await cleanup.execute(delete(AgentRunModel).where(AgentRunModel.run_id == run_id))
                 await cleanup.execute(delete(PlanStepModel).where(PlanStepModel.plan_id == plan_id))
                 await cleanup.execute(delete(PlanModel).where(PlanModel.plan_id == plan_id))
-        finally:
-            await engine.dispose()
 
 
 def _postgresql_url() -> str:

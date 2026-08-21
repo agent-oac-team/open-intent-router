@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.turns import (
     DatabaseTurnRepository,
     MemoryTurnRepository,
@@ -14,15 +13,15 @@ from app.services.turn_service import TurnIdempotencyConflict, TurnService
 
 
 @pytest.fixture(params=["memory", "database"])
-async def turn_service(request, tmp_path):
+async def turn_service(request, tmp_path, managed_database):
     if request.param == "memory":
         return TurnService(MemoryTurnRepository())
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'turn-service.db'}",
     )
-    await create_all_tables(settings)
-    return TurnService(DatabaseTurnRepository(create_session_factory(settings)))
+    await managed_database.initialize_schema(settings)
+    return TurnService(DatabaseTurnRepository(await managed_database.session_factory(settings)))
 
 
 async def test_turn_service_returns_same_turn_for_identical_retry(turn_service) -> None:

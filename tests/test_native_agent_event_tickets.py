@@ -100,7 +100,7 @@ def test_native_event_http_module_is_adapter_only() -> None:
 
 
 @pytest.fixture
-async def native_event_runtime() -> NativeEventRuntime:
+async def native_event_runtime(non_lifespan_test_client) -> NativeEventRuntime:
     runs = MemoryRunRepository()
     events = MemoryEventRepository()
     results = MemoryResultRepository()
@@ -200,7 +200,7 @@ async def native_event_runtime() -> NativeEventRuntime:
         ticket_lease_seconds=30,
     )
     return NativeEventRuntime(
-        client=TestClient(app),
+        client=non_lifespan_test_client(app),
         run_id=started.run.run_id,
         turn_id=started.run.turn_id,
         ticket=issued.ticket,

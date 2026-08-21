@@ -128,6 +128,7 @@ class MemoryManagementPort:
 
 
 def _client(
+    non_lifespan_test_client,
     trace_service: ExecutionTraceService,
     *,
     user_id: str,
@@ -162,10 +163,12 @@ def _client(
     app.include_router(router)
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
-    return TestClient(app)
+    return non_lifespan_test_client(app)
 
 
-def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owned_trace() -> None:
+def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owned_trace(
+    non_lifespan_test_client,
+) -> None:
     first = ExecutionTraceEvent(**_event().model_dump(), event_offset=1)
     legacy_decision = ExecutionTraceEvent(
         event_offset=2,
@@ -193,7 +196,9 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
     )
     trace_service = ExecutionTraceService(LegacyMemoryTraceRepository(first, legacy_decision))
     memory = MemoryManagementPort()
-    client = _client(trace_service, user_id="user-1", memory_management=memory)
+    client = _client(
+        non_lifespan_test_client, trace_service, user_id="user-1", memory_management=memory
+    )
     evidence_path = (
         "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/"
         "memory-decisions/decision-1/evidence"
@@ -206,7 +211,12 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
         "proposed_value": "新偏好",
     }
     assert (
-        _client(trace_service, user_id="user-2", memory_management=memory)
+        _client(
+            non_lifespan_test_client,
+            trace_service,
+            user_id="user-2",
+            memory_management=memory,
+        )
         .get(evidence_path)
         .status_code
         == 404
@@ -259,11 +269,13 @@ def test_runtime_observation_resolves_only_a_pending_memory_decision_in_the_owne
     assert len(memory.calls) == 1
 
 
-def test_runtime_observation_snapshot_is_scoped_to_the_trusted_host_identity() -> None:
+def test_runtime_observation_snapshot_is_scoped_to_the_trusted_host_identity(
+    non_lifespan_test_client,
+) -> None:
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     asyncio.run(trace_service.record(_event()))
 
-    owner = _client(trace_service, user_id="user-1")
+    owner = _client(non_lifespan_test_client, trace_service, user_id="user-1")
     owner_response = owner.get("/api/v1/runtime-observation/sessions/session-1/turns/turn-1")
 
     assert owner_response.status_code == 200
@@ -271,17 +283,19 @@ def test_runtime_observation_snapshot_is_scoped_to_the_trusted_host_identity() -
     assert owner_response.json()["events"][0]["tenant_id"] == "oac"
     assert owner_response.json()["events"][0]["user_id"] == "user-1"
 
-    other_user = _client(trace_service, user_id="user-2")
+    other_user = _client(non_lifespan_test_client, trace_service, user_id="user-2")
     other_response = other_user.get("/api/v1/runtime-observation/sessions/session-1/turns/turn-1")
 
     assert other_response.status_code == 404
     assert other_response.json() == {"detail": "execution_trace_not_found"}
 
 
-def test_ui_handoff_projects_idempotent_requested_and_confirmed_path() -> None:
+def test_ui_handoff_projects_idempotent_requested_and_confirmed_path(
+    non_lifespan_test_client,
+) -> None:
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     asyncio.run(trace_service.record(_event()))
-    client = _client(trace_service, user_id="user-1")
+    client = _client(non_lifespan_test_client, trace_service, user_id="user-1")
     path = "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/handoffs"
 
     requested = {
@@ -323,12 +337,14 @@ def test_ui_handoff_projects_idempotent_requested_and_confirmed_path() -> None:
     assert all(event.facts["target_route"] == "/production" for event in handoffs)
 
 
-def test_ui_handoff_reports_trace_degradation_without_reclassifying_acceptance() -> None:
+def test_ui_handoff_reports_trace_degradation_without_reclassifying_acceptance(
+    non_lifespan_test_client,
+) -> None:
     repository = ToggleFailTraceRepository()
     trace_service = ExecutionTraceService(repository)
     asyncio.run(trace_service.record(_event()))
     repository.fail_appends = True
-    client = _client(trace_service, user_id="user-1")
+    client = _client(non_lifespan_test_client, trace_service, user_id="user-1")
 
     response = client.post(
         "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/handoffs",
@@ -350,10 +366,12 @@ def test_ui_handoff_reports_trace_degradation_without_reclassifying_acceptance()
     }
 
 
-def test_ui_handoff_rejects_unowned_turn_and_conflicting_source_identity() -> None:
+def test_ui_handoff_rejects_unowned_turn_and_conflicting_source_identity(
+    non_lifespan_test_client,
+) -> None:
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     asyncio.run(trace_service.record(_event()))
-    client = _client(trace_service, user_id="user-1")
+    client = _client(non_lifespan_test_client, trace_service, user_id="user-1")
     path = "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/handoffs"
     requested = {
         "handoff_id": "handoff-1",
@@ -388,10 +406,12 @@ def test_ui_handoff_rejects_unowned_turn_and_conflicting_source_identity() -> No
     assert len([event for event in snapshot.events if event.event_type == "ui_handoff"]) == 1
 
 
-def test_page_workflow_projects_started_provider_stage_and_terminal_result() -> None:
+def test_page_workflow_projects_started_provider_stage_and_terminal_result(
+    non_lifespan_test_client,
+) -> None:
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     asyncio.run(trace_service.record(_event()))
-    client = _client(trace_service, user_id="user-1")
+    client = _client(non_lifespan_test_client, trace_service, user_id="user-1")
     path = "/api/v1/runtime-observation/sessions/session-1/turns/turn-1/page-workflows"
     base = {
         "event_id": "started",
@@ -444,10 +464,12 @@ def test_page_workflow_projects_started_provider_stage_and_terminal_result() -> 
     assert all(event.evidence_refs[0].reference_id == base["workflow_id"] for event in events)
 
 
-def test_page_workflow_rejects_unowned_turn_and_invalid_lifecycle_payload() -> None:
+def test_page_workflow_rejects_unowned_turn_and_invalid_lifecycle_payload(
+    non_lifespan_test_client,
+) -> None:
     trace_service = ExecutionTraceService(MemoryExecutionTraceRepository())
     asyncio.run(trace_service.record(_event()))
-    client = _client(trace_service, user_id="user-1")
+    client = _client(non_lifespan_test_client, trace_service, user_id="user-1")
     payload = {
         "event_id": "failed",
         "run_id": "analysis-run-1",

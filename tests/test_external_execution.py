@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import ExternalExecutionBindingUnavailableError
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.delegated_runs import (
     MemoryDelegatedRunCancelStore,
     MemoryDelegatedRunCompletionStore,
@@ -711,19 +710,25 @@ async def test_independent_external_services_share_acceptance_idempotency_and_on
     assert len(active_records) == 1
 
 
-async def test_database_external_acceptance_is_durable_across_store_instances(tmp_path) -> None:
+async def test_database_external_acceptance_is_durable_across_store_instances(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'external-acceptances.db'}",
     )
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
     reservation = ExternalExecutionAcceptanceReservation(
         acceptance_id="external_acceptance_restart",
         request_fingerprint="a" * 64,
         executor_ref="host_executor",
     )
-    first_store = DatabaseExternalExecutionAcceptanceStore(create_session_factory(settings))
-    restarted_store = DatabaseExternalExecutionAcceptanceStore(create_session_factory(settings))
+    first_store = DatabaseExternalExecutionAcceptanceStore(
+        await managed_database.session_factory(settings)
+    )
+    restarted_store = DatabaseExternalExecutionAcceptanceStore(
+        await managed_database.session_factory(settings)
+    )
 
     assert await first_store.record_accepted(reservation) is True
     assert await restarted_store.record_accepted(reservation) is False

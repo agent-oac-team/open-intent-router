@@ -1,5 +1,3 @@
-from fastapi.testclient import TestClient
-
 from app.core.config import Settings, get_settings
 from app.dependencies import (
     get_memory_observability_service,
@@ -602,7 +600,9 @@ async def test_explicit_mem0_write_preserves_agent_source_and_safe_metadata() ->
     assert agent_b.context.items == []
 
 
-def test_mem0_runtime_and_debug_metadata_do_not_expose_secrets() -> None:
+def test_mem0_runtime_and_debug_metadata_do_not_expose_secrets(
+    non_lifespan_test_client,
+) -> None:
     settings = Settings(
         storage_backend="memory",
         registry_backend="database",
@@ -640,7 +640,7 @@ def test_mem0_runtime_and_debug_metadata_do_not_expose_secrets() -> None:
     app.dependency_overrides[get_memory_service] = lambda: service
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
 
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     runtime = client.get("/api/v1/runtime/config").json()
     debug = client.get("/api/v1/memories/debug").json()
     serialized = f"{runtime} {debug}"

@@ -1,6 +1,7 @@
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.repositories.memory import (
@@ -14,6 +15,7 @@ from app.repositories.memory import (
 )
 from app.schemas.agents import AgentDefinition
 from app.services.registry_service import AgentRegistryService
+from tests.support.database import ManagedTestDatabases
 
 TEST_ENV_DEFAULTS = {
     "APP_ENV": "local",
@@ -55,6 +57,35 @@ def settings() -> Settings:
         router_llm_provider="mock",
         admin_api_token="test-token",
     )
+
+
+@pytest.fixture
+async def managed_database() -> ManagedTestDatabases:
+    """Provide explicit fixture-owned database scopes to a test."""
+
+    databases = ManagedTestDatabases()
+    try:
+        yield databases
+    finally:
+        await databases.aclose()
+
+
+@pytest.fixture
+def non_lifespan_test_client():
+    """Create clients whose transport is closed without starting app lifespan."""
+
+    clients: list[TestClient] = []
+
+    def create(*args, **kwargs) -> TestClient:
+        client = TestClient(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    try:
+        yield create
+    finally:
+        for client in reversed(clients):
+            client.close()
 
 
 @pytest.fixture

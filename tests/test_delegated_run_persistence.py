@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import (
     DatabaseEventRepository,
     DatabaseResultRepository,
@@ -16,13 +15,15 @@ from app.schemas.logs import (
 )
 
 
-async def test_delegated_run_result_event_fields_round_trip_database(tmp_path) -> None:
+async def test_delegated_run_result_event_fields_round_trip_database(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'delegated-fields.db'}",
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     now = datetime.now(UTC)
     run = AgentRun(
         run_id="run-1",

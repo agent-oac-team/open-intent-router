@@ -3,13 +3,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository, MemoryItemRepository
 from app.schemas.memory import MemoryEvent
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_memory_event_filters_are_composed_inside_repository(backend, tmp_path) -> None:
+async def test_memory_event_filters_are_composed_inside_repository(
+    backend, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         repository = MemoryItemRepository()
     else:
@@ -17,8 +18,8 @@ async def test_memory_event_filters_are_composed_inside_repository(backend, tmp_
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'memory-events.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabaseMemoryItemRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
     target = MemoryEvent(
         event_type="memory_decision_pending",
         memory_id="mem_1",
@@ -63,7 +64,9 @@ async def test_memory_event_filters_are_composed_inside_repository(backend, tmp_
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_effective_pending_event_filter_is_applied_before_limit(backend, tmp_path) -> None:
+async def test_effective_pending_event_filter_is_applied_before_limit(
+    backend, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         repository = MemoryItemRepository()
     else:
@@ -71,8 +74,8 @@ async def test_effective_pending_event_filter_is_applied_before_limit(backend, t
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'effective-pending-events.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabaseMemoryItemRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
     now = datetime(2026, 7, 14, tzinfo=UTC)
     active_id = "decision_0"
     for index in range(4):

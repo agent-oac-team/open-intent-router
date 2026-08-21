@@ -7,7 +7,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.core.errors import RegistryVersionConflict
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseAgentDefinitionRepository
 from app.repositories.memory import MemoryAgentDefinitionRepository
 from app.repositories.registry_audit import DatabaseRegistryAuditStore
@@ -39,7 +38,7 @@ def _command(operation, revision, definition=None, revision_id="revision-1"):
 
 
 @pytest.fixture(params=["memory", "database"])
-async def atomic_repository(request, tmp_path):
+async def atomic_repository(request, tmp_path, managed_database):
     if request.param == "memory":
         repository = MemoryAgentDefinitionRepository()
         return repository, lambda: repository.registry_audit
@@ -47,8 +46,8 @@ async def atomic_repository(request, tmp_path):
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'atomic-registry.db'}",
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     repository = DatabaseAgentDefinitionRepository(factory)
     audit = DatabaseRegistryAuditStore(factory)
     return repository, lambda: audit.list_for_agent("agent-1")
@@ -87,13 +86,15 @@ async def test_revision_conflict_has_no_partial_definition_or_audit(atomic_repos
     assert len(records) == 1
 
 
-async def test_database_audit_insert_failure_rolls_back_definition(tmp_path) -> None:
+async def test_database_audit_insert_failure_rolls_back_definition(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'audit-rollback.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabaseAgentDefinitionRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseAgentDefinitionRepository(await managed_database.session_factory(settings))
     await repository.mutate(_command("create", 0, _agent(), revision_id="duplicate"))
 
     with pytest.raises(IntegrityError):
@@ -108,13 +109,13 @@ async def test_database_audit_insert_failure_rolls_back_definition(tmp_path) -> 
     not os.getenv("OIR_TEST_POSTGRESQL_URL"),
     reason="OIR_TEST_POSTGRESQL_URL is required for PostgreSQL locking semantics",
 )
-async def test_postgresql_concurrent_revision_update_has_one_winner() -> None:
+async def test_postgresql_concurrent_revision_update_has_one_winner(managed_database) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=os.environ["OIR_TEST_POSTGRESQL_URL"],
     )
-    await create_all_tables(settings)
-    repository = DatabaseAgentDefinitionRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabaseAgentDefinitionRepository(await managed_database.session_factory(settings))
     agent_id = f"concurrency-{uuid4().hex}"
     agent = _agent().model_copy(update={"agent_id": agent_id})
     created = await repository.mutate(

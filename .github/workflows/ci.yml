@@ -70,6 +70,9 @@ jobs:
       - name: Run ruff format check
         run: uv run --locked --extra ci ruff format --check .
 
+      - name: Validate database ownership boundaries
+        run: uv run --locked --extra ci python scripts/check_database_ownership.py
+
       - name: Validate Host Adapter boundary
         run: uv run --locked --extra ci python scripts/validate_host_adapter_boundaries.py
 

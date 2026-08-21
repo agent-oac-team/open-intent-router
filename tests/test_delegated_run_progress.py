@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabasePlanRepository
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunProgressStore,
@@ -22,7 +21,7 @@ from app.services.turn_service import TurnService
 
 
 @pytest.fixture(params=["memory", "database"])
-async def delegated_progress(request, tmp_path):
+async def delegated_progress(request, tmp_path, managed_database):
     if request.param == "memory":
         runs = MemoryRunRepository()
         events = MemoryEventRepository()
@@ -42,8 +41,8 @@ async def delegated_progress(request, tmp_path):
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'delegated-progress.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         turn_repo = DatabaseTurnRepository(factory)
         service = DelegatedRunService(
             DatabaseDelegatedRunStartStore(factory),
@@ -127,6 +126,7 @@ async def test_progress_rejects_cross_owner_or_agent(delegated_progress) -> None
 async def test_agent_clarify_atomically_blocks_associated_plan_step(
     backend: str,
     tmp_path,
+    managed_database,
 ) -> None:
     plan_id = f"plan-clarify-{backend}"
     next_action = NextAction(
@@ -157,6 +157,7 @@ async def test_agent_clarify_atomically_blocks_associated_plan_step(
         backend,
         tmp_path,
         plan,
+        managed_database,
     )
     command = DelegatedRunProgressCommand(
         event_id=f"event-clarify-{backend}",
@@ -194,6 +195,7 @@ async def _delegated_plan_progress_runtime(
     backend: str,
     tmp_path,
     plan: Plan,
+    managed_database,
 ):
     if backend == "memory":
         runs = MemoryRunRepository()
@@ -217,8 +219,8 @@ async def _delegated_plan_progress_runtime(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / f'{plan.plan_id}.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         turns_repo = DatabaseTurnRepository(factory)
         plans = DatabasePlanRepository(factory)
         service = DelegatedRunService(

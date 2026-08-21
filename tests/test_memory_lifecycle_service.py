@@ -14,7 +14,6 @@ from app.db.models import (
     MemoryItemModel,
     MemoryRevisionModel,
 )
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository, MemoryItemRepository
 from app.repositories.json_utils import dumps, loads
 from app.repositories.memory_formation import (
@@ -50,17 +49,8 @@ from app.services.memory_lifecycle import (
 )
 from app.services.memory_service import MemoryService
 
-_TEST_ENGINES = []
 
-
-@pytest.fixture(autouse=True)
-async def _dispose_test_engines():
-    yield
-    while _TEST_ENGINES:
-        await _TEST_ENGINES.pop().dispose()
-
-
-async def _backend(tmp_path, backend: str, *, invalidations=None):
+async def _backend(tmp_path, backend: str, managed_database=None, *, invalidations=None):
     settings = Settings(storage_backend="memory")
     if backend == "memory":
         items = MemoryItemRepository()
@@ -78,9 +68,9 @@ async def _backend(tmp_path, backend: str, *, invalidations=None):
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / f'lifecycle-{backend}.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
-        _TEST_ENGINES.append(session_factory.kw["bind"])
+        assert managed_database is not None
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         items = DatabaseMemoryItemRepository(session_factory)
         revisions = None
         index = None
@@ -155,8 +145,10 @@ def _result(operation: MemoryLifecycleOperation, candidate=None) -> CandidatePol
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_lifecycle_add_update_revision_and_idempotency(backend, tmp_path) -> None:
-    service, store, items, revisions, index, _ = await _backend(tmp_path, backend)
+async def test_lifecycle_add_update_revision_and_idempotency(
+    backend, tmp_path, managed_database
+) -> None:
+    service, store, items, revisions, index, _ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(_result(_operation("add")))
     replay = await service.apply(_result(_operation("add")))
 
@@ -199,8 +191,10 @@ async def test_lifecycle_add_update_revision_and_idempotency(backend, tmp_path) 
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_concurrent_update_keeps_one_current_revision(backend, tmp_path) -> None:
-    service, store, *_ = await _backend(tmp_path, backend)
+async def test_concurrent_update_keeps_one_current_revision(
+    backend, tmp_path, managed_database
+) -> None:
+    service, store, *_ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(_result(_operation("add")))
     base = _operation(
         "update",
@@ -228,9 +222,9 @@ async def test_concurrent_update_keeps_one_current_revision(backend, tmp_path) -
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_non_mutating_decisions_persist_without_provider_side_effects(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
-    service, _, items, _, index, _ = await _backend(tmp_path, backend)
+    service, _, items, _, index, _ = await _backend(tmp_path, backend, managed_database)
     results = [
         await service.apply(_result(_operation(kind))) for kind in ("noop", "reject", "pending")
     ]
@@ -246,10 +240,12 @@ async def test_non_mutating_decisions_persist_without_provider_side_effects(
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_delete_is_fail_closed_then_hard_deletes_content(backend, tmp_path) -> None:
+async def test_delete_is_fail_closed_then_hard_deletes_content(
+    backend, tmp_path, managed_database
+) -> None:
     invalidations = []
     service, store, items, revisions, index, _ = await _backend(
-        tmp_path, backend, invalidations=invalidations
+        tmp_path, backend, managed_database, invalidations=invalidations
     )
     added = await service.apply(_result(_operation("add")))
     delete = _operation(
@@ -310,9 +306,9 @@ async def test_delete_is_fail_closed_then_hard_deletes_content(backend, tmp_path
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_delete_failure_never_reactivates_and_dead_letter_scrubs_ledger(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
-    service, store, *_ = await _backend(tmp_path, backend)
+    service, store, *_ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(_result(_operation("add")))
     delete = _operation(
         "delete",
@@ -337,8 +333,8 @@ async def test_delete_failure_never_reactivates_and_dead_letter_scrubs_ledger(
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_ttl_sweeper_uses_same_deletion_path(backend, tmp_path) -> None:
-    service, store, *_ = await _backend(tmp_path, backend)
+async def test_ttl_sweeper_uses_same_deletion_path(backend, tmp_path, managed_database) -> None:
+    service, store, *_ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(
         _result(
             _operation("add"),
@@ -421,8 +417,10 @@ async def test_delete_scrubs_directly_associated_pending_capsules() -> None:
     assert formation.jobs["pending_job"].trace_summary["content"] == "[redacted]"
 
 
-async def test_database_delete_scrubs_associated_capsule_and_job_payload(tmp_path) -> None:
-    service, store, *_ = await _backend(tmp_path, "database")
+async def test_database_delete_scrubs_associated_capsule_and_job_payload(
+    tmp_path, managed_database
+) -> None:
+    service, store, *_ = await _backend(tmp_path, "database", managed_database)
     added = await service.apply(_result(_operation("add")))
     formation = DatabaseMemoryFormationTurnJobRepository(store.session_factory)
     await formation.append_turn(
@@ -473,8 +471,10 @@ async def test_database_delete_scrubs_associated_capsule_and_job_payload(tmp_pat
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_concurrent_ttl_sweepers_create_one_delete_operation(backend, tmp_path) -> None:
-    service, store, *_ = await _backend(tmp_path, backend)
+async def test_concurrent_ttl_sweepers_create_one_delete_operation(
+    backend, tmp_path, managed_database
+) -> None:
+    service, store, *_ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(_result(_operation("add")))
     if backend == "memory":
         store.item_repository.items[added.item.memory_id] = added.item.model_copy(
@@ -514,8 +514,10 @@ async def test_concurrent_ttl_sweepers_create_one_delete_operation(backend, tmp_
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_replay_rejects_reused_operation_id_from_another_owner(backend, tmp_path) -> None:
-    service, *_ = await _backend(tmp_path, backend)
+async def test_replay_rejects_reused_operation_id_from_another_owner(
+    backend, tmp_path, managed_database
+) -> None:
+    service, *_ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(_result(_operation("add")))
     forged_add = _operation(
         "add",
@@ -546,8 +548,10 @@ async def test_replay_rejects_reused_operation_id_from_another_owner(backend, tm
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_concurrent_hard_delete_converges_to_same_tombstone(backend, tmp_path) -> None:
-    service, store, *_, index, _ = await _backend(tmp_path, backend)
+async def test_concurrent_hard_delete_converges_to_same_tombstone(
+    backend, tmp_path, managed_database
+) -> None:
+    service, store, *_, index, _ = await _backend(tmp_path, backend, managed_database)
     added = await service.apply(_result(_operation("add")))
     delete = _operation(
         "delete",
@@ -799,8 +803,9 @@ async def test_consolidation_summary_cannot_be_promoted_to_stable_fact(
 
 async def test_database_add_rolls_back_every_canonical_write_on_outbox_conflict(
     tmp_path,
+    managed_database,
 ) -> None:
-    service, store, *_ = await _backend(tmp_path, "database")
+    service, store, *_ = await _backend(tmp_path, "database", managed_database)
     revision_id = "mrev_" + hashlib.sha256(b"operation_add:revision:1").hexdigest()[:32]
     identity = f"operation_add:add:{revision_id}"
     idempotency_key = f"lifecycle:{hashlib.sha256(identity.encode()).hexdigest()}"

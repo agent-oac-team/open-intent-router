@@ -2,7 +2,6 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.config import Settings
 from app.db.models import MemoryFormationJobModel
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.memory_formation import (
     DatabaseMemoryFormationTurnJobRepository,
@@ -53,13 +52,15 @@ async def test_in_memory_trace_repository_does_not_expose_mutable_state() -> Non
     assert len(second_read) == 1
 
 
-async def test_database_trace_filters_compose_on_durable_columns(tmp_path) -> None:
+async def test_database_trace_filters_compose_on_durable_columns(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-traces.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
     await formation.append_turn(
         MemoryFormationTurn(
@@ -138,13 +139,15 @@ async def test_database_trace_filters_compose_on_durable_columns(tmp_path) -> No
     assert await traces.list_traces(tenant_id="t2", formation_job_id=job.job_id) == []
 
 
-async def test_database_trace_filters_structured_event_job_without_turns(tmp_path) -> None:
+async def test_database_trace_filters_structured_event_job_without_turns(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'structured-traces.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     job = MemoryFormationJob(
         trigger="structured_event",
         mode="observe",
@@ -191,13 +194,15 @@ async def test_database_trace_filters_structured_event_job_without_turns(tmp_pat
     assert result[0].agent_ids == ["agent_1"]
 
 
-async def test_database_effective_pending_filter_is_applied_before_limit(tmp_path) -> None:
+async def test_database_effective_pending_filter_is_applied_before_limit(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'effective-pending-limit.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
     events = DatabaseMemoryItemRepository(session_factory)
     now = datetime(2026, 7, 13, tzinfo=UTC)

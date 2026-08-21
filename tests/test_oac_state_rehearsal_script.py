@@ -1,16 +1,18 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 from app.core.config import Settings
-from app.db.session import create_all_tables
 
 
-async def test_state_rehearsal_writes_only_isolated_database(tmp_path) -> None:
+async def test_state_rehearsal_writes_only_isolated_database(tmp_path, managed_database) -> None:
     primary_url = f"sqlite+aiosqlite:///{tmp_path / 'primary.db'}"
     rehearsal_url = f"sqlite+aiosqlite:///{tmp_path / 'rehearsal.db'}"
-    await create_all_tables(Settings(database_url=primary_url, storage_backend="database"))
+    await managed_database.initialize_schema(
+        Settings(database_url=primary_url, storage_backend="database")
+    )
     env_file = tmp_path / ".env"
     report_path = tmp_path / "report.json"
     env_file.write_text(
@@ -18,6 +20,12 @@ async def test_state_rehearsal_writes_only_isolated_database(tmp_path) -> None:
         encoding="utf-8",
     )
 
+    root = Path(__file__).parents[1]
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(value for value in (str(root), existing_pythonpath) if value),
+    }
     subprocess.run(
         [
             sys.executable,
@@ -27,9 +35,10 @@ async def test_state_rehearsal_writes_only_isolated_database(tmp_path) -> None:
             "--report",
             str(report_path),
         ],
-        cwd=Path(__file__).parents[1],
+        cwd=root,
         check=True,
         capture_output=True,
+        env=environment,
         text=True,
     )
     report = json.loads(report_path.read_text(encoding="utf-8"))
