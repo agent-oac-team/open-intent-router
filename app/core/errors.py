@@ -94,6 +94,28 @@ class RuntimeCatalogUnavailableError(AppError):
     code = "runtime_catalog_unavailable"
 
 
+class ApplicationRuntimeUnavailable(AppError):
+    """A request reached an app without a fully published Container."""
+
+    status_code = 503
+    code = "application_runtime_unavailable"
+
+
+class ApplicationStartupError(RuntimeError):
+    """Safe startup failure; the causal exception is deliberately not retained."""
+
+    def __init__(self) -> None:
+        super().__init__("application_startup_failed")
+
+
+class ApplicationShutdownError(RuntimeError):
+    """Safe aggregate cleanup result after every cleanup step was attempted."""
+
+    def __init__(self, failure_count: int) -> None:
+        super().__init__("application_shutdown_failed")
+        self.failure_count = failure_count
+
+
 class AgentUnavailableError(AppError):
     status_code = 404
     code = "agent_not_available"

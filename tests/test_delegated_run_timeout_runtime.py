@@ -171,7 +171,9 @@ async def test_timeout_runtime_skips_terminal_race_and_stops_cleanly() -> None:
     assert runtime.running is False
 
 
-def test_fastapi_lifespan_starts_and_awaits_timeout_runtime(monkeypatch) -> None:
+def test_fastapi_lifespan_starts_and_awaits_timeout_runtime() -> None:
+    from dataclasses import replace
+
     from app import main as main_module
 
     calls: list[str] = []
@@ -183,13 +185,23 @@ def test_fastapi_lifespan_starts_and_awaits_timeout_runtime(monkeypatch) -> None
         async def stop(self):
             calls.append("stop")
 
-    monkeypatch.setattr(
-        main_module,
-        "build_delegated_run_timeout_runtime",
-        lambda: LifecycleProbe(),
-    )
+    settings = Settings(storage_backend="memory", registry_backend="file")
 
-    with TestClient(main_module.create_app()) as client:
+    def container_builder(catalog, databases):
+        container = main_module._build_minimal_container(
+            settings=settings,
+            catalog=catalog,
+            databases=databases,
+            external_executor=None,
+        )
+        return replace(container, _background_runtimes=(LifecycleProbe(),))
+
+    with TestClient(
+        main_module.create_app(
+            settings=settings,
+            application_container_builder=container_builder,
+        )
+    ) as client:
         assert client.get("/health").status_code == 200
         assert calls == ["start"]
 

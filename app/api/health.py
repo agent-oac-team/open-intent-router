@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.runtime.application import ApplicationRuntimeView
 from app.schemas.runtime import ReadinessResponse, RuntimeCatalogReadinessErrorResponse
 from app.services.runtime_readiness import RuntimeReadinessRuntime
 
@@ -23,18 +24,24 @@ async def health() -> dict[str, str]:
     },
 )
 async def ready(request: Request) -> ReadinessResponse:
+    view = getattr(request.app.state, "application_runtime_view", None)
+    if isinstance(view, ApplicationRuntimeView):
+        report = await view.readiness()
+    else:
+        report = None
     readiness_runtime = getattr(request.app.state, "runtime_readiness_runtime", None)
-    if not isinstance(readiness_runtime, RuntimeReadinessRuntime):
+    if report is None and not isinstance(readiness_runtime, RuntimeReadinessRuntime):
         payload = RuntimeCatalogReadinessErrorResponse(
             status="error",
             runtime_status="error",
-            runtime_reason="core_runtime_unavailable",
+            runtime_reason="application_runtime_unavailable",
         )
         return JSONResponse(
             status_code=503,
             content=payload.model_dump(),
         )
-    report = await readiness_runtime.refresh()
+    if report is None:
+        report = await readiness_runtime.refresh()
     if report.status == "error":
         payload = RuntimeCatalogReadinessErrorResponse(
             status="error",

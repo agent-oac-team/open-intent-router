@@ -8,7 +8,11 @@ from app.adapters.knowledge_sys import (
     load_signing_private_key,
 )
 from app.core.config import Settings, get_settings
-from app.core.errors import RegistryUnavailableError, RuntimeCatalogUnavailableError
+from app.core.errors import (
+    ApplicationRuntimeUnavailable,
+    RegistryUnavailableError,
+    RuntimeCatalogUnavailableError,
+)
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.db.session import create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
@@ -84,7 +88,8 @@ from app.repositories.turn_route_completion import (
     MemoryRouteTurnCompletionStore,
 )
 from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
-from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogRuntime
+from app.runtime.application import ApplicationContainer, ApplicationRuntimeView
+from app.runtime.catalog import RuntimeCatalog
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.agent_event_service import NativeAgentEventService
 from app.services.binding_resolution import BindingResolver
@@ -205,7 +210,7 @@ def get_memory_data_settings():
 
 
 @lru_cache
-def get_registry_service() -> AgentRegistryService:
+def _legacy_registry_service() -> AgentRegistryService:
     settings = get_settings()
     if settings.storage_backend == "memory":
         repository = MemoryAgentDefinitionRepository()
@@ -216,6 +221,21 @@ def get_registry_service() -> AgentRegistryService:
         repository=repository,
         file_source=FileRegistrySource(settings.registry_file_path),
     )
+
+
+def get_application_container(request: Request) -> ApplicationContainer:
+    view = getattr(request.app.state, "application_runtime_view", None)
+    if not isinstance(view, ApplicationRuntimeView):
+        raise ApplicationRuntimeUnavailable("Application Runtime is unavailable")
+    return view.require_container()
+
+
+def get_registry_service(request: Request = None) -> AgentRegistryService:
+    """Resolve the current app's Registry, preserving a legacy direct-call seam."""
+
+    if request is not None:
+        return get_application_container(request).registry
+    return _legacy_registry_service()
 
 
 @lru_cache
@@ -628,7 +648,6 @@ def get_native_agent_event_service() -> NativeAgentEventService:
     )
 
 
-@lru_cache
 def build_delegated_run_timeout_runtime() -> DelegatedRunTimeoutRuntime:
     settings = get_settings()
     return DelegatedRunTimeoutRuntime(
@@ -639,17 +658,15 @@ def build_delegated_run_timeout_runtime() -> DelegatedRunTimeoutRuntime:
 
 
 async def get_runtime_catalog(request: Request) -> RuntimeCatalog:
-    runtime = getattr(request.app.state, "runtime_catalog_runtime", None)
-    if not isinstance(runtime, RuntimeCatalogRuntime):
-        raise RuntimeCatalogUnavailableError("Runtime Catalog is unavailable")
-    return await runtime.get_catalog()
+    try:
+        return get_application_container(request).runtime_catalog
+    except ApplicationRuntimeUnavailable as exc:
+        raise RuntimeCatalogUnavailableError("Runtime Catalog is unavailable") from exc
 
 
 def get_registry_snapshot_runtime(request: Request) -> RegistrySnapshotRuntime | None:
-    runtime = getattr(request.app.state, "registry_snapshot_runtime", None)
-    if runtime is None:
-        return None
-    if not isinstance(runtime, RegistrySnapshotRuntime):
+    runtime = get_application_container(request).registry_snapshot_runtime
+    if runtime is not None and not isinstance(runtime, RegistrySnapshotRuntime):
         raise RegistryUnavailableError("Registry Snapshot Runtime is unavailable")
     return runtime
 

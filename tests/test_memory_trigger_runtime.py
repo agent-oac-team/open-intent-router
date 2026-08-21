@@ -575,7 +575,9 @@ async def test_reconciler_runs_when_idle_sweeper_is_disabled() -> None:
     assert reconciler.calls >= 2
 
 
-async def test_application_lifespan_starts_and_stops_formation_runtime(monkeypatch) -> None:
+async def test_application_lifespan_starts_and_stops_formation_runtime() -> None:
+    from dataclasses import replace
+
     calls = []
 
     class FakeRuntime:
@@ -585,9 +587,20 @@ async def test_application_lifespan_starts_and_stops_formation_runtime(monkeypat
         async def stop(self) -> None:
             calls.append("stop")
 
-    monkeypatch.setattr("app.main.build_memory_formation_runtime", lambda **kwargs: FakeRuntime())
-    monkeypatch.setattr("app.main.build_memory_maintenance_runtime", lambda **kwargs: FakeRuntime())
-    app = create_app()
+    from app import main as main_module
+
+    settings = Settings(storage_backend="memory", registry_backend="file")
+
+    def container_builder(catalog, databases):
+        container = main_module._build_minimal_container(
+            settings=settings,
+            catalog=catalog,
+            databases=databases,
+            external_executor=None,
+        )
+        return replace(container, _background_runtimes=(FakeRuntime(), FakeRuntime()))
+
+    app = create_app(settings=settings, application_container_builder=container_builder)
 
     async with app.router.lifespan_context(app):
         assert calls == ["start", "start"]
