@@ -21,6 +21,9 @@ from app.db.models import (
 )
 from app.repositories.interfaces import PlanCancelTransition
 from app.repositories.json_utils import dumps, loads
+from app.repositories.native_definition_migration_fence import (
+    require_native_definition_migration_fence_open,
+)
 from app.repositories.plan_steps import plan_step_model
 from app.schemas.agents import AgentDefinition
 from app.schemas.events import AgentEvent, ConversationEvent
@@ -57,6 +60,7 @@ class DatabaseAgentDefinitionRepository:
         self, definition: AgentDefinition, *, expected_revision: int | None = None
     ) -> AgentDefinition:
         async with self.session_factory() as session:
+            await require_native_definition_migration_fence_open(session, kind="native_write")
             row = await session.scalar(
                 select(AgentDefinitionModel).where(
                     AgentDefinitionModel.agent_id == definition.agent_id
@@ -83,6 +87,7 @@ class DatabaseAgentDefinitionRepository:
         self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
     ) -> AgentDefinition | None:
         async with self.session_factory() as session:
+            await require_native_definition_migration_fence_open(session, kind="native_write")
             row = await session.scalar(
                 select(AgentDefinitionModel).where(AgentDefinitionModel.agent_id == agent_id)
             )
@@ -98,6 +103,7 @@ class DatabaseAgentDefinitionRepository:
 
     async def delete(self, agent_id: str, *, expected_revision: int | None = None) -> bool:
         async with self.session_factory() as session:
+            await require_native_definition_migration_fence_open(session, kind="native_write")
             if expected_revision is not None:
                 current = await session.scalar(
                     select(AgentDefinitionModel).where(AgentDefinitionModel.agent_id == agent_id)
@@ -114,6 +120,7 @@ class DatabaseAgentDefinitionRepository:
 
     async def mutate(self, command: RegistryMutationCommand) -> RegistryMutationResult:
         async with self.session_factory() as session, session.begin():
+            await require_native_definition_migration_fence_open(session, kind="native_write")
             row = await session.scalar(
                 select(AgentDefinitionModel)
                 .where(AgentDefinitionModel.agent_id == command.agent_id)
@@ -283,6 +290,7 @@ class DatabaseRunRepository:
 
     async def add_run(self, run: AgentRun) -> AgentRun:
         async with self.session_factory() as session:
+            await require_native_definition_migration_fence_open(session, kind="new_execution")
             row = AgentRunModel(**_run_values(run))
             session.add(row)
             await session.commit()
@@ -458,6 +466,11 @@ class DatabasePlanRepository:
     async def save(self, plan: Plan, *, formation_suppressed: bool = False) -> Plan:
         async with self.session_factory() as session:
             row = await session.get(PlanModel, plan.plan_id)
+            if row is None:
+                await require_native_definition_migration_fence_open(
+                    session,
+                    kind="new_execution",
+                )
             if row is not None and (row.tenant_id != plan.tenant_id or row.user_id != plan.user_id):
                 raise ValueError("Plan ownership cannot be changed")
             metadata = {
@@ -705,6 +718,7 @@ class DatabasePlanRepository:
         formation_suppressed: bool = False,
     ) -> Plan | None:
         async with self.session_factory() as session:
+            await require_native_definition_migration_fence_open(session, kind="new_execution")
             row = await session.scalar(
                 select(PlanModel).where(
                     PlanModel.plan_id == plan_id,

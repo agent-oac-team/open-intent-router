@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.models import AgentResultModel, AgentRunModel, CanonicalTurnModel
 from app.repositories.database import _result_from_row, _run_from_row, _run_values
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
+from app.repositories.native_definition_migration_fence import (
+    require_native_definition_migration_fence_open,
+)
 from app.repositories.turn_outbox import MemoryTurnOutboxRepository
 from app.repositories.turn_transactions import (
     DatabaseTurnTransactionCoordinator,
@@ -37,6 +40,7 @@ class DatabaseCanonicalInvocationStore:
     async def start_run(self, run: AgentRun) -> tuple[AgentRun, CanonicalTurn, AgentResult | None]:
         _validate_run_owner(run)
         async with self.session_factory() as session, session.begin():
+            await require_native_definition_migration_fence_open(session, kind="new_execution")
             turn_row = await session.scalar(
                 select(CanonicalTurnModel)
                 .where(

@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
     version VARCHAR(64),
     revision INTEGER DEFAULT 0 NOT NULL,
     type VARCHAR(64) NOT NULL,
+    schema_version VARCHAR(32),
+    handling_text TEXT,
     enabled BOOLEAN NOT NULL,
     domain VARCHAR(200),
     capabilities_text TEXT NOT NULL,
@@ -107,7 +109,10 @@ CREATE TABLE IF NOT EXISTS agent_definitions (
 CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_definitions_agent_id ON agent_definitions (agent_id);
 CREATE INDEX IF NOT EXISTS ix_agent_definitions_enabled ON agent_definitions (enabled);
 CREATE INDEX IF NOT EXISTS ix_agent_definitions_type ON agent_definitions (type);
+CREATE INDEX IF NOT EXISTS ix_agent_definitions_schema_version ON agent_definitions (schema_version);
 ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS revision INTEGER DEFAULT 0 NOT NULL;
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS schema_version VARCHAR(32);
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS handling_text TEXT;
 
 CREATE TABLE IF NOT EXISTS registry_revisions (
     revision_id VARCHAR(128) NOT NULL,
@@ -125,6 +130,46 @@ CREATE INDEX IF NOT EXISTS ix_registry_revisions_agent_id ON registry_revisions 
 CREATE INDEX IF NOT EXISTS ix_registry_revisions_operation ON registry_revisions (operation);
 CREATE INDEX IF NOT EXISTS ix_registry_revisions_operator_id ON registry_revisions (operator_id);
 CREATE INDEX IF NOT EXISTS ix_registry_revisions_source ON registry_revisions (source);
+
+-- Offline Native Definition v1 -> v2 migration support. These tables are not
+-- served by an API and retain private rollback material only for the controlled
+-- maintenance window. They are not a Runtime feature flag or a dual-read path.
+CREATE TABLE IF NOT EXISTS native_definition_migration_preparations (
+    source VARCHAR(32) NOT NULL,
+    native_writes_frozen BOOLEAN NOT NULL,
+    new_execution_frozen BOOLEAN NOT NULL,
+    active BOOLEAN DEFAULT false NOT NULL,
+    target_fingerprint VARCHAR(64),
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (source)
+);
+ALTER TABLE native_definition_migration_preparations
+    ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT false NOT NULL;
+ALTER TABLE native_definition_migration_preparations
+    ADD COLUMN IF NOT EXISTS target_fingerprint VARCHAR(64);
+INSERT INTO native_definition_migration_preparations (
+    source,
+    native_writes_frozen,
+    new_execution_frozen,
+    active
+) VALUES ('__native_definition_global__', false, false, false)
+ON CONFLICT (source) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS native_definition_migration_snapshots (
+    snapshot_id VARCHAR(128) NOT NULL,
+    source VARCHAR(32) NOT NULL,
+    migration_version VARCHAR(128) NOT NULL,
+    legacy_runtime_version VARCHAR(128) NOT NULL,
+    input_digest VARCHAR(64) NOT NULL,
+    input_fingerprint VARCHAR(64) NOT NULL,
+    payload_text TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (snapshot_id)
+);
+ALTER TABLE native_definition_migration_snapshots
+    ADD COLUMN IF NOT EXISTS input_fingerprint VARCHAR(64);
+CREATE INDEX IF NOT EXISTS ix_native_definition_migration_snapshots_source
+    ON native_definition_migration_snapshots (source);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id SERIAL NOT NULL,

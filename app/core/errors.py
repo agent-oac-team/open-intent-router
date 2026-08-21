@@ -42,6 +42,12 @@ class RegistryUnavailableError(RegistryError):
     code = "registry_unavailable"
 
 
+class NativeDefinitionMigrationFrozenError(RegistryUnavailableError):
+    """A controlled offline Native Definition release window is active."""
+
+    code = "native_definition_migration_frozen"
+
+
 class RegistryVersionConflict(RegistryError):
     status_code = 409
     code = "registry_version_conflict"

@@ -10,7 +10,11 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Settings
-from app.db.models import Base
+from app.db.models import (
+    Base,
+    NativeDefinitionMigrationPreparationModel,
+    NativeDefinitionMigrationSnapshotModel,
+)
 
 
 def _ensure_sqlite_parent(database_url: str) -> None:
@@ -43,6 +47,23 @@ async def create_all_tables(settings: Settings) -> None:
     await engine.dispose()
 
 
+async def ensure_native_definition_migration_schema(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Install only the expand-phase support required by the offline v2 gate.
+
+    The migration command runs before the Runtime contract cutover, including
+    against an existing database that may not have been started by this binary.
+    It needs its own narrowly-scoped schema preparation rather than relying on
+    a broad application startup or silently changing Registry source data.
+    """
+
+    async with session_factory() as session:
+        connection = await session.connection()
+        await connection.run_sync(_ensure_native_definition_migration_schema)
+        await session.commit()
+
+
 def _ensure_compatible_columns(sync_conn) -> None:
     inspector = inspect(sync_conn)
     dialect = sync_conn.dialect.name
@@ -57,6 +78,11 @@ def _ensure_compatible_columns(sync_conn) -> None:
             sync_conn.execute(
                 text("ALTER TABLE agent_definitions ADD COLUMN revision INTEGER DEFAULT 0 NOT NULL")
             )
+        _ensure_native_definition_migration_columns(sync_conn, inspector)
+    if "native_definition_migration_snapshots" in tables:
+        _ensure_native_definition_migration_snapshot_columns(sync_conn, inspector)
+    if "native_definition_migration_preparations" in tables:
+        _ensure_native_definition_migration_preparation_columns(sync_conn, inspector)
     if "memory_items" in tables:
         _ensure_memory_item_columns(sync_conn, inspector)
         _backfill_legacy_memories(sync_conn, dialect=dialect)
@@ -71,6 +97,85 @@ def _ensure_compatible_columns(sync_conn) -> None:
     _ensure_context_owner_columns(sync_conn, inspector, tables, dialect=dialect)
     _ensure_execution_ticket_columns(sync_conn, inspector, tables, dialect=dialect)
     _ensure_canonical_pipeline_indexes(sync_conn, tables)
+
+
+def _ensure_native_definition_migration_schema(sync_conn) -> None:
+    """Add the migration-only schema without mutating Registry source rows."""
+
+    inspector = inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    if "agent_definitions" in tables:
+        _ensure_native_definition_migration_columns(sync_conn, inspector)
+    NativeDefinitionMigrationPreparationModel.__table__.create(sync_conn, checkfirst=True)
+    NativeDefinitionMigrationSnapshotModel.__table__.create(sync_conn, checkfirst=True)
+    refreshed_inspector = inspect(sync_conn)
+    _ensure_native_definition_migration_preparation_columns(sync_conn, refreshed_inspector)
+    _ensure_native_definition_migration_global_fence(sync_conn)
+    _ensure_native_definition_migration_snapshot_columns(sync_conn, refreshed_inspector)
+
+
+def _ensure_native_definition_migration_columns(sync_conn, inspector) -> None:
+    columns = _column_names(inspector, "agent_definitions")
+    definitions = {
+        "schema_version": "VARCHAR(32)",
+        "handling_text": "TEXT",
+    }
+    for name, definition in definitions.items():
+        if name not in columns:
+            sync_conn.execute(text(f"ALTER TABLE agent_definitions ADD COLUMN {name} {definition}"))
+    sync_conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_definitions_schema_version "
+            "ON agent_definitions (schema_version)"
+        )
+    )
+
+
+def _ensure_native_definition_migration_snapshot_columns(sync_conn, inspector) -> None:
+    snapshot_columns = _column_names(inspector, "native_definition_migration_snapshots")
+    if "input_fingerprint" not in snapshot_columns:
+        sync_conn.execute(
+            text(
+                "ALTER TABLE native_definition_migration_snapshots "
+                "ADD COLUMN input_fingerprint VARCHAR(64)"
+            )
+        )
+
+
+def _ensure_native_definition_migration_preparation_columns(sync_conn, inspector) -> None:
+    preparation_columns = _column_names(inspector, "native_definition_migration_preparations")
+    if "active" not in preparation_columns:
+        sync_conn.execute(
+            text(
+                "ALTER TABLE native_definition_migration_preparations "
+                "ADD COLUMN active BOOLEAN DEFAULT false NOT NULL"
+            )
+        )
+    if "target_fingerprint" not in preparation_columns:
+        sync_conn.execute(
+            text(
+                "ALTER TABLE native_definition_migration_preparations "
+                "ADD COLUMN target_fingerprint VARCHAR(64)"
+            )
+        )
+
+
+def _ensure_native_definition_migration_global_fence(sync_conn) -> None:
+    """Seed the one row that serializes prepare/rollback activation."""
+
+    # This path runs during an offline command's schema preflight, so two
+    # operators may arrive before either has observed the row.  Use the
+    # portable PostgreSQL/SQLite upsert spelling instead of a select-then-
+    # insert race; the actual migration lock is taken later by ``prepare``.
+    sync_conn.execute(
+        text(
+            "INSERT INTO native_definition_migration_preparations "
+            "(source, native_writes_frozen, new_execution_frozen, active) "
+            "VALUES (:source, false, false, false) "
+            "ON CONFLICT (source) DO NOTHING"
+        ),
+        {"source": "__native_definition_global__"},
+    )
 
 
 def _column_names(inspector, table_name: str) -> set[str]:

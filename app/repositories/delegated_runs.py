@@ -29,6 +29,9 @@ from app.repositories.memory import (
     MemoryResultRepository,
     MemoryRunRepository,
 )
+from app.repositories.native_definition_migration_fence import (
+    require_native_definition_migration_fence_open,
+)
 from app.repositories.turn_outbox import MemoryTurnOutboxRepository
 from app.repositories.turn_transactions import (
     DatabaseTurnTransactionCoordinator,
@@ -89,6 +92,10 @@ class DatabaseDelegatedRunStartStore(DelegatedRunStartStore):
     ) -> DelegatedRunStartResult:
         try:
             async with self.session_factory() as session, session.begin():
+                await require_native_definition_migration_fence_open(
+                    session,
+                    kind="new_execution",
+                )
                 existing = await session.scalar(
                     select(AgentRunModel).where(AgentRunModel.delegation_key == delegation_key)
                 )

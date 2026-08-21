@@ -21,6 +21,7 @@
 | 第一次接触项目 | [项目 README](../README.md) -> [领域语言](../CONTEXT.md) -> [App-Desc 应用地图](App-Desc/README.md) -> [API 概览](App-Desc/contracts/api.md) |
 | 修改 OIR Core | [Develop Standards](App-Adr/develop/develop-standards/README.md) -> [App-Desc](App-Desc/README.md) -> 相关 OpenSpec -> 对应领域文档 |
 | 部署或变更 Runtime Catalog | [Runtime Catalog Runbook](App-Adr/develop/skills/runbooks/runtime-catalog-lifecycle.md) -> `/health` 与 `/ready` 验收 |
+| 执行 Native Definition v2 硬切 | [Native Definition Migration Runbook](App-Adr/develop/skills/runbooks/native-definition-migration.md) -> dry-run、snapshot、迁移 / rollback 与发布门禁 |
 | 修改 OAC Host Adapter | [OAC Host Adapter](App-Desc/architecture/oac-host-adapter.md) -> [Legacy / Native 兼容矩阵](App-Desc/contracts/legacy-native-compat-matrix.md) -> 对应 OpenSpec |
 | 修改 Context / Memory / Knowledge | [Develop Standards](App-Adr/develop/develop-standards/README.md) -> [Canonical Turn](App-Desc/architecture/canonical-turn-data-model.md) -> 对应 Runbook 和 OpenSpec |
 | 设计或执行测试 | [Test Standards](App-Adr/test/test-standards/README.md) -> [Test Skills](App-Adr/test/skills/README.md) -> 相关测试方案 / Runbook |
