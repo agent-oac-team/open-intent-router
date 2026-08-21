@@ -32,6 +32,12 @@ class AgentDefinitionModel(Base):
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     type: Mapped[str] = mapped_column(String(64), index=True)
+    # Expand-only target fields used by the offline Native Definition migration
+    # gate.  The v2 contract becomes the only Runtime representation in #51;
+    # keeping these nullable here lets the migration atomically distinguish a
+    # legacy source row from a completed target row without a dual-read path.
+    schema_version: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    handling_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     domain: Mapped[str | None] = mapped_column(String(200), nullable=True)
     capabilities_text: Mapped[str] = mapped_column(Text, default="[]")
@@ -71,6 +77,38 @@ class RegistryRevisionModel(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     before_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     after_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NativeDefinitionMigrationPreparationModel(Base):
+    """Auditable release-window assertion, never a request-time feature flag."""
+
+    __tablename__ = "native_definition_migration_preparations"
+
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    native_writes_frozen: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    new_execution_frozen: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class NativeDefinitionMigrationSnapshotModel(Base):
+    """Private rollback material for the one-time Native v1 -> v2 cutover."""
+
+    __tablename__ = "native_definition_migration_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    migration_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    legacy_runtime_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Safe correlation value exposed in the operator result.  The full digest
+    # and source payload remain private rollback material.
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # This material can contain legacy configuration and is deliberately never
+    # projected through an API or logged. Database access control is the boundary.
+    payload_text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -109,6 +109,17 @@ def test_postgresql_schema_contains_registry_revision_and_audit_contract() -> No
     assert "after_text TEXT" in schema_sql
 
 
+def test_postgresql_schema_contains_native_definition_cutover_support() -> None:
+    schema_sql = Path("sql/postgresql_schema.sql").read_text(encoding="utf-8")
+
+    assert "schema_version VARCHAR(32)" in schema_sql
+    assert "handling_text TEXT" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS native_definition_migration_preparations" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS native_definition_migration_snapshots" in schema_sql
+    assert "input_digest VARCHAR(64) NOT NULL" in schema_sql
+    assert "input_fingerprint VARCHAR(64) NOT NULL" in schema_sql
+
+
 def test_legacy_runtime_datetime_columns_use_postgresql_type() -> None:
     postgresql = _context_owner_column_definitions("postgresql")["agent_runs"]
     sqlite = _context_owner_column_definitions("sqlite")["agent_runs"]
@@ -214,7 +225,7 @@ async def test_create_all_tables_adds_agent_context_column_to_existing_database(
             }
         )
     await engine.dispose()
-    assert "context_text" in columns
+    assert {"context_text", "schema_version", "handling_text"} <= columns
 
 
 async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp_path) -> None:
