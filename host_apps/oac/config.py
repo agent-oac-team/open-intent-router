@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -109,8 +108,9 @@ class OacHostProfile:
     host: OacHostSettings
 
 
-@lru_cache
 def get_oac_host_settings() -> OacHostSettings:
+    """Read a standalone profile only outside an already composed Host app."""
+
     return OacHostSettings()
 
 

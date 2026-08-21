@@ -1,15 +1,23 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
-from app.dependencies import get_memory_service, get_registry_service
+from app.dependencies import (
+    get_memory_observability_service,
+    get_memory_runtime_policy,
+    get_memory_service,
+    get_registry_service,
+)
 from app.main import create_app
 from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.memory import MemoryAgentDefinitionRepository
+from app.repositories.memory_formation import MemoryFormationTurnJobRepository
 from app.repositories.memory_index_operations import MemoryIndexOutboxRepository
+from app.repositories.memory_traces import MemoryFormationTraceRepository
 from app.schemas.common import UserContext
 from app.schemas.memory import MemoryItem, MemoryRecallRequest, MemoryWriteCandidate
 from app.services.mem0_config import build_mem0_config, mem0_static_metadata
 from app.services.memory_adapter import Mem0AdapterError, Mem0MemoryAdapter, _search_filter_sets
+from app.services.memory_observability import MemoryObservabilityService
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
 
@@ -612,13 +620,25 @@ def test_mem0_runtime_and_debug_metadata_do_not_expose_secrets() -> None:
             settings, repository, client_factory=lambda _config: FakeMem0Client()
         ),
     )
+    formation = MemoryFormationTurnJobRepository()
+    observability = MemoryObservabilityService(
+        settings=settings,
+        memory_service=service,
+        formation_repository=formation,
+        trace_repository=MemoryFormationTraceRepository(
+            formation_repository=formation,
+            event_repository=repository,
+        ),
+    )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_runtime_policy] = lambda: settings.memory_runtime_policy
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=MemoryAgentDefinitionRepository(),
     )
     app.dependency_overrides[get_memory_service] = lambda: service
+    app.dependency_overrides[get_memory_observability_service] = lambda: observability
 
     client = TestClient(app)
     runtime = client.get("/api/v1/runtime/config").json()

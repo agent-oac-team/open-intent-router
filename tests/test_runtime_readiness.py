@@ -10,7 +10,7 @@ from app.core.config import Settings
 from app.core.errors import ApplicationStartupError, RegistryUnavailableError
 from app.db.managed import ManagedDatabase
 from app.main import create_app
-from app.runtime.application import ApplicationContainer
+from app.runtime.application import ApplicationComposition, ApplicationContainer
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterContext,
@@ -88,7 +88,7 @@ def _ui_definition(*, revision: int = 1) -> AgentDefinitionV2:
     )
 
 
-def _container_builder(registry):
+def _container_composition_factory(registry):
     def build(catalog, _databases) -> ApplicationContainer:
         return ApplicationContainer(
             registry=registry,
@@ -96,7 +96,10 @@ def _container_builder(registry):
             registry_snapshot_runtime=RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog)),
         )
 
-    return build
+    return lambda _settings: ApplicationComposition(
+        container_builder=build,
+        required_database_targets=frozenset(),
+    )
 
 
 async def _runtime(
@@ -302,7 +305,7 @@ def test_health_is_probe_free_and_ready_inventory_are_safe() -> None:
     app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", probe)],
         registry_snapshot_mapper=snapshot_mapper,
-        application_container_builder=_container_builder(registry),
+        application_composition_factory=_container_composition_factory(registry),
     )
 
     with TestClient(app) as client:
@@ -376,7 +379,7 @@ def test_primary_registry_and_core_startup_failures_abort_with_safe_errors(monke
 
     registry_app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
-        application_container_builder=_container_builder(BrokenRegistry()),
+        application_composition_factory=_container_composition_factory(BrokenRegistry()),
     )
     with pytest.raises(ApplicationStartupError) as registry_error:
         with TestClient(registry_app):
@@ -413,7 +416,7 @@ def test_startup_failure_logs_never_include_secret_markers(monkeypatch, caplog) 
 
     registry_app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
-        application_container_builder=_container_builder(BrokenRegistry()),
+        application_composition_factory=_container_composition_factory(BrokenRegistry()),
     )
     with caplog.at_level(logging.WARNING):
         with pytest.raises(ApplicationStartupError):
@@ -478,7 +481,7 @@ def test_failed_admin_registry_reload_updates_cached_readiness() -> None:
     registry = ReloadingRegistry()
     app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
-        application_container_builder=_container_builder(registry),
+        application_composition_factory=_container_composition_factory(registry),
     )
 
     with TestClient(app) as client:
@@ -522,7 +525,7 @@ def test_admin_registry_reload_replaces_the_composed_live_snapshot() -> None:
     app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
         registry_snapshot_mapper=snapshot_mapper,
-        application_container_builder=_container_builder(registry),
+        application_composition_factory=_container_composition_factory(registry),
     )
 
     with TestClient(app) as client:
@@ -572,7 +575,7 @@ def test_native_registry_crud_refreshes_the_process_snapshot_after_each_write() 
     registry = MutableRegistry()
     app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
-        application_container_builder=_container_builder(registry),
+        application_composition_factory=_container_composition_factory(registry),
     )
     payload = {
         "agent_id": "native-agent",

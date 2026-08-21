@@ -10,6 +10,22 @@
 
 首期 Adapter 与 OIR 同仓、同进程；边界允许后续拆成独立服务，不改变 OAC/Coze 的 Legacy HTTP 契约。
 
+## 生命周期所有权
+
+每次 Core lifespan 只创建一个单次 `ApplicationRuntime`：它依次拥有 Runtime Catalog、唯一的
+Managed Database targets、完整 `ApplicationContainer` 以及已启动的后台 Runtime。Container 只公开
+已组装的业务服务和受限 Registry/Snapshot 端口，不公开 Engine、Session Factory 或 Settings；HTTP
+provider 只能从当前请求所属的已发布 Container 取得服务，不能在请求期创建资源或读取进程全局配置。
+数据库 target 由该次选中的服务图声明：只有存在 Repository、Service 或 background Runtime 消费者的
+target 才进入 lifespan，等价 spec 复用同一个物理 Managed Database。完整 Core 图在 Memory `off` 时仍会
+选择 Memory Service 和维护 Runtime，因此不会仅因该模式省略其 target。
+
+OAC Host 在 Core 成功发布完整 Container 后才在外层 lifespan 组装自己的
+`OacApplicationContainer`。它只从 Core 的受限服务和端口建立 Legacy Adapter、Host identity、Cutover
+guard 与 capability provider；Core 关闭前先撤销这个 Host Container。若 Catalog/Core 未就绪，Host
+不得发布部分 Adapter 端口：Legacy 业务入口和 `/capabilities` 返回安全的
+`503 application_runtime_unavailable`，而 `/health` 仍仅表示进程存活。
+
 ## API Surface
 
 - Central：Route、Navigation Event、Agent Event、Active Plan Snapshot、Plan Confirm。

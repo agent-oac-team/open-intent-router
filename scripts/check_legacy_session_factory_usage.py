@@ -9,25 +9,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-ALLOWED_CALL_SITES = frozenset(
+PRODUCTION_DIRECTORIES = ("app", "host_adapters", "host_apps", "scripts")
+TEST_DIRECTORIES = ("tests",)
+SCANNED_DIRECTORIES = (*PRODUCTION_DIRECTORIES, *TEST_DIRECTORIES)
+
+
+ALLOWED_TEST_CALL_SITES = frozenset(
     {
-        "app/dependencies.py:218",
-        "app/dependencies.py:253",
-        "app/dependencies.py:268",
-        "app/dependencies.py:295",
-        "app/dependencies.py:328",
-        "app/dependencies.py:536",
-        "app/dependencies.py:545",
-        "app/dependencies.py:559",
-        "app/dependencies.py:567",
-        "app/dependencies.py:626",
-        "app/dependencies.py:637",
-        "app/dependencies.py:701",
-        "app/dependencies.py:730",
-        "app/services/registry_service.py:178",
-        "host_apps/oac/dependencies.py:206",
-        "scripts/reconcile_orphan_turns.py:29",
-        "scripts/smoke_mem0_memory_loop.py:78",
         "tests/test_canonical_invocation_store.py:47",
         "tests/test_database_migrations.py:483",
         "tests/test_database_migrations.py:512",
@@ -41,7 +29,7 @@ ALLOWED_CALL_SITES = frozenset(
         "tests/test_delegated_run_progress.py:46",
         "tests/test_delegated_run_progress.py:221",
         "tests/test_delegated_run_start.py:36",
-        "tests/test_delegated_run_timeout_runtime.py:53",
+        "tests/test_delegated_run_timeout_runtime.py:54",
         "tests/test_direct_binding_resolution.py:615",
         "tests/test_events_plans_evidence.py:516",
         "tests/test_events_plans_evidence.py:579",
@@ -56,21 +44,21 @@ ALLOWED_CALL_SITES = frozenset(
         "tests/test_memory_debug_management_metrics.py:925",
         "tests/test_memory_debug_management_metrics.py:1369",
         "tests/test_memory_debug_management_metrics.py:1411",
-        "tests/test_memory_debug_management_metrics.py:1964",
-        "tests/test_memory_debug_management_metrics.py:2004",
-        "tests/test_memory_debug_management_metrics.py:2107",
-        "tests/test_memory_debug_management_metrics.py:2211",
-        "tests/test_memory_debug_management_metrics.py:2256",
+        "tests/test_memory_debug_management_metrics.py:1966",
+        "tests/test_memory_debug_management_metrics.py:2006",
+        "tests/test_memory_debug_management_metrics.py:2109",
+        "tests/test_memory_debug_management_metrics.py:2213",
         "tests/test_memory_debug_management_metrics.py:2258",
-        "tests/test_memory_debug_management_metrics.py:2259",
-        "tests/test_memory_debug_management_metrics.py:2341",
-        "tests/test_memory_debug_management_metrics.py:2393",
+        "tests/test_memory_debug_management_metrics.py:2260",
+        "tests/test_memory_debug_management_metrics.py:2261",
+        "tests/test_memory_debug_management_metrics.py:2343",
         "tests/test_memory_debug_management_metrics.py:2395",
-        "tests/test_memory_debug_management_metrics.py:2396",
-        "tests/test_memory_debug_management_metrics.py:2447",
-        "tests/test_memory_debug_management_metrics.py:2499",
-        "tests/test_memory_debug_management_metrics.py:2500",
-        "tests/test_memory_debug_management_metrics.py:2529",
+        "tests/test_memory_debug_management_metrics.py:2397",
+        "tests/test_memory_debug_management_metrics.py:2398",
+        "tests/test_memory_debug_management_metrics.py:2449",
+        "tests/test_memory_debug_management_metrics.py:2501",
+        "tests/test_memory_debug_management_metrics.py:2502",
+        "tests/test_memory_debug_management_metrics.py:2531",
         "tests/test_memory_event_repository_filters.py:21",
         "tests/test_memory_event_repository_filters.py:75",
         "tests/test_memory_formation_repositories.py:345",
@@ -105,9 +93,9 @@ ALLOWED_CALL_SITES = frozenset(
         "tests/test_memory_trace_repositories.py:62",
         "tests/test_memory_trace_repositories.py:147",
         "tests/test_memory_trace_repositories.py:200",
-        "tests/test_memory_trigger_runtime.py:74",
-        "tests/test_memory_trigger_runtime.py:248",
+        "tests/test_memory_trigger_runtime.py:75",
         "tests/test_memory_trigger_runtime.py:249",
+        "tests/test_memory_trigger_runtime.py:250",
         "tests/test_native_definition_migration.py:59",
         "tests/test_native_resource_ownership.py:576",
         "tests/test_orphan_turn_reconciler.py:84",
@@ -137,12 +125,14 @@ ALLOWED_CALL_SITES = frozenset(
 )
 
 
-def find_call_sites(root: Path) -> frozenset[str]:
+def find_call_sites(
+    root: Path,
+    *,
+    directories: tuple[str, ...] = SCANNED_DIRECTORIES,
+) -> frozenset[str]:
     call_sites: set[str] = set()
     for path in sorted(
-        source
-        for directory in ("app", "host_adapters", "host_apps", "scripts", "tests")
-        for source in (root / directory).rglob("*.py")
+        source for directory in directories for source in (root / directory).rglob("*.py")
     ):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         direct_names, module_aliases = _factory_bindings(tree)
@@ -166,8 +156,12 @@ def _factory_bindings(tree: ast.AST) -> tuple[frozenset[str], dict[str, tuple[st
             for item in node.names:
                 if item.name == "app.db.session" and item.asname:
                     module_aliases[item.asname] = ("app", "db", "session")
+                elif item.name == "app.db.session":
+                    module_aliases["app"] = ("app",)
                 elif item.name == "app.db" and item.asname:
                     module_aliases[item.asname] = ("app", "db")
+                elif item.name == "app.db":
+                    module_aliases["app"] = ("app",)
             continue
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -213,8 +207,18 @@ def _qualified_name(node: ast.expr) -> tuple[str, ...] | None:
     return parent + (node.attr,)
 
 
+def production_call_sites(root: Path) -> frozenset[str]:
+    """Return all forbidden factory calls in production composition scopes."""
+
+    return find_call_sites(root, directories=PRODUCTION_DIRECTORIES)
+
+
+def unexpected_test_call_sites(root: Path) -> frozenset[str]:
+    return find_call_sites(root, directories=TEST_DIRECTORIES) - ALLOWED_TEST_CALL_SITES
+
+
 def unexpected_call_sites(root: Path) -> frozenset[str]:
-    return find_call_sites(root) - ALLOWED_CALL_SITES
+    return production_call_sites(root) | unexpected_test_call_sites(root)
 
 
 def main() -> int:
@@ -222,7 +226,7 @@ def main() -> int:
     unexpected = sorted(unexpected_call_sites(root))
     if not unexpected:
         return 0
-    print("New legacy Session Factory call sites are not permitted:")
+    print("Legacy Session Factory calls are not permitted outside approved test compatibility:")
     print("\n".join(unexpected))
     return 1
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings
 from app.dependencies import get_memory_data_settings
 from app.services.mem0_config import (
     build_mem0_config,
@@ -126,13 +126,8 @@ def test_knowledge_and_router_configuration_cannot_change_memory_config() -> Non
 def test_memory_bootstrap_uses_the_explicit_memory_database(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///core.db")
     monkeypatch.setenv("MEMORY_DATABASE_URL", "sqlite+aiosqlite:///memory.db")
-    get_settings.cache_clear()
-    get_memory_data_settings.cache_clear()
-    try:
-        assert get_memory_data_settings().database_url == "sqlite+aiosqlite:///memory.db"
-    finally:
-        get_memory_data_settings.cache_clear()
-        get_settings.cache_clear()
+
+    assert get_memory_data_settings(Settings()).database_url == "sqlite+aiosqlite:///memory.db"
 
 
 def test_disabled_memory_does_not_require_infrastructure() -> None:

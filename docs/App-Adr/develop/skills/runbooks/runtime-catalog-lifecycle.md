@@ -5,6 +5,21 @@ lifespan 内创建一次：所有受信内置 Adapter 先完成 Descriptor 校�
 冻结。结构性失败（Descriptor、factory、activate）使 Catalog 不可用；健康失败按部署策略
 分别处理，不在请求路径重新创建 Adapter。
 
+## Container 所有权
+
+Catalog 成功后，Application Runtime 从选中的服务图组合对象读取实际消费者及其 `required database
+targets`，只建立这些 Managed Database target（相同 Engine spec 合并为一个物理资源），随后一次性组装完整
+`ApplicationContainer` 和后台 Runtime。完整 Core 图的 Memory Service、formation 与 maintenance Runtime
+即使在 Memory `off` 时仍是消费者；只有组合图没有任何消费者的 target 才会省略。Container 只公开预组装业务服务、Registry 和
+Snapshot 端口；它不公开 Engine、Session Factory 或可变 Settings。HTTP dependency 只能读取当前
+已发布的 Container，不能缓存或重新构建服务。自定义组合必须以该 app 已深拷贝的 Settings snapshot
+作为工厂输入；不得复用或闭包捕获另一个 app 的 Settings。
+
+OAC Host 采用外层 lifespan：必须先进入并确认 Core Container 已就绪，再建立 Host 自己的 Adapter
+Container；退出时先撤销 Host ports，才允许 Core 按逆序停止后台 Runtime、关闭数据库并停止 Catalog。
+Core/Catalog 降级时不得发布半成品 Host ports，调用方应得到安全的
+`application_runtime_unavailable` 响应。
+
 ## 配置
 
 `RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS` 是应用退出或 Catalog 部分激活回滚时，全部

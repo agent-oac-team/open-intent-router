@@ -9,6 +9,7 @@ from app import main as main_module
 from app.core.config import Settings
 from app.core.errors import ApplicationStartupError, RuntimeCatalogUnavailableError
 from app.main import create_app
+from app.runtime.application import ApplicationComposition
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterContext,
@@ -464,7 +465,10 @@ def test_lifespan_rolls_back_catalog_when_a_later_runtime_start_fails() -> None:
     app = create_app(
         settings=settings,
         runtime_descriptors=[descriptor("test", catalog_events)],
-        application_container_builder=container_builder,
+        application_composition_factory=lambda _settings: ApplicationComposition(
+            container_builder=container_builder,
+            required_database_targets=frozenset(),
+        ),
     )
 
     with pytest.raises(ApplicationStartupError, match="application_startup_failed"):

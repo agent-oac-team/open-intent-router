@@ -1,35 +1,18 @@
-from functools import lru_cache
+"""Request providers for the OAC Host Container owned by its lifespan."""
 
-from fastapi import HTTPException, Request, status
+from __future__ import annotations
 
-from app.application import RegistrySnapshotRefreshApplicationPort
-from app.core.config import get_settings
-from app.db.session import create_session_factory
-from app.dependencies import (
-    build_router_service,
-    get_delegated_run_service,
-    get_event_service,
-    get_execution_trace_service,
-    get_external_execution_acceptance_store,
-    get_memory_governance_service,
-    get_memory_management_service,
-    get_plan_service,
-    get_registry_service,
-    get_turn_service,
-)
-from app.dependencies import (
-    get_execution_ticket_service as get_execution_ticket_service,
-)
-from app.repositories.registry_audit import (
-    DatabaseRegistryAuditStore,
-    MemoryRegistryAuditStore,
-    RegistryAuditStore,
-)
+from dataclasses import dataclass
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, Request, status
+
+from app.runtime.application import ApplicationContainer
 from app.runtime.catalog import RuntimeCatalogRuntime
+from app.services.execution_ticket_service import ExecutionTicketService
 from app.services.snapshot_routing_service import SnapshotRoutingService
 from host_adapters.oac.application import OacAdapterApplicationPorts
 from host_adapters.oac.cutover import CutoverGuard, FileCutoverAuditRepository
-from host_adapters.oac.external_executor import OacExternalExecutor
 from host_adapters.oac.identity import HostIdentityVerifier
 from host_adapters.oac.identity.models import (
     HostAuthenticationError,
@@ -38,134 +21,106 @@ from host_adapters.oac.identity.models import (
 )
 from host_adapters.oac.repositories.nonces import MemoryNonceStore
 from host_adapters.oac.routing import OacLegacyRegistryRoutingAdapter
-from host_apps.oac.config import get_oac_host_settings
+from host_apps.oac.capabilities import OacHostCapabilityProvider
+from host_apps.oac.config import OacHostProfile
 
 
-def get_oac_adapter_application_ports(request: Request = None) -> OacAdapterApplicationPorts:
-    """Compose request routing with the owning app's current health projection."""
+@dataclass(frozen=True, slots=True)
+class OacApplicationContainer:
+    """Host capabilities composed only after the full Core Container is ready."""
 
-    runtime_catalog = _runtime_catalog_runtime(request)
-    routing = get_oac_legacy_registry_routing(runtime_catalog=runtime_catalog)
-    return OacAdapterApplicationPorts(
+    ports: OacAdapterApplicationPorts
+    identity_verifier: HostIdentityVerifier
+    cutover_guard: CutoverGuard
+    capability_provider: OacHostCapabilityProvider
+
+
+def build_oac_application_container(
+    *,
+    profile: OacHostProfile,
+    core_container: ApplicationContainer,
+    runtime_catalog_runtime: RuntimeCatalogRuntime,
+    registry_snapshot_refresh,
+) -> OacApplicationContainer:
+    services = core_container.services
+    if services is None:
+        raise RuntimeError("OAC Host requires a complete Core Application Container")
+    external_executor = services.external_executor
+    snapshot_routing = SnapshotRoutingService(
+        router_factory=services.router_for_snapshot,
+        runtime_catalog=core_container.runtime_catalog,
+        external_executor=external_executor,
+        adapter_health_provider=lambda: runtime_catalog_runtime.health.unhealthy_adapter_keys,
+    )
+    routing = OacLegacyRegistryRoutingAdapter(
+        registry=core_container.registry,
+        snapshot_routing=snapshot_routing,
+    )
+    ports = OacAdapterApplicationPorts(
         routing=routing,
-        registry=get_registry_service(),
-        events=get_event_service(),
-        plans=get_plan_service(),
-        delegated_runs=get_delegated_run_service(),
-        turns=get_turn_service(),
-        registry_snapshot_refresh=_registry_snapshot_refresh(request),
+        registry=core_container.registry,
+        events=services.event_service,
+        plans=services.plan_service,
+        delegated_runs=services.delegated_run_service,
+        turns=services.turn_service,
+        registry_snapshot_refresh=registry_snapshot_refresh,
         plan_preflight=routing,
-        external_execution=get_oac_external_execution_service(),
-        execution_traces=get_execution_trace_service(),
-        memory_management=get_memory_management_service(),
-        memory_governance=get_memory_governance_service(),
+        external_execution=services.external_execution_service,
+        execution_traces=services.execution_trace_service,
+        memory_management=services.memory_management_service,
+        memory_governance=services.memory_governance_service,
     )
-
-
-@lru_cache
-def get_oac_external_executor() -> OacExternalExecutor:
-    settings = get_oac_host_settings()
-    host_ticket_secret = (
-        settings.execution_ticket_secret.get_secret_value()
-        if settings.execution_ticket_secret is not None
-        else None
+    host = profile.host
+    identity_verifier = HostIdentityVerifier(
+        audience=host.identity_audience,
+        tenant_id=host.tenant_id,
+        keys=_identity_keys(host),
+        key_credential_classes=_identity_key_credential_classes(host),
+        nonce_store=MemoryNonceStore(),
     )
-    return OacExternalExecutor(
-        supported_executor_refs=settings.supported_external_executor_refs,
-        acceptance_store=get_external_execution_acceptance_store(),
-        acceptance_fingerprint_secret=host_ticket_secret or get_execution_ticket_service().secret,
+    cutover_guard = CutoverGuard(
+        watermark=host.cutover_watermark_at,
+        repository=FileCutoverAuditRepository(host.cutover_audit_path),
     )
-
-
-def get_oac_snapshot_routing(
-    *,
-    runtime_catalog: RuntimeCatalogRuntime | None = None,
-) -> SnapshotRoutingService:
-    catalog = runtime_catalog.catalog if runtime_catalog is not None else None
-    return SnapshotRoutingService(
-        router_factory=lambda snapshot_runtime: build_router_service(
-            snapshot_runtime=snapshot_runtime
-        ),
-        runtime_catalog=catalog,
-        external_executor=get_oac_external_executor(),
-        adapter_health_provider=(
-            (lambda: runtime_catalog.health.unhealthy_adapter_keys)
-            if runtime_catalog is not None
-            else None
+    return OacApplicationContainer(
+        ports=ports,
+        identity_verifier=identity_verifier,
+        cutover_guard=cutover_guard,
+        capability_provider=OacHostCapabilityProvider(
+            core=profile.core,
+            host=host,
+            ports=ports,
+            memory_policy=services.memory_runtime_policy,
         ),
     )
 
 
-def get_oac_legacy_registry_routing(
-    *,
-    runtime_catalog: RuntimeCatalogRuntime | None = None,
-) -> OacLegacyRegistryRoutingAdapter:
-    return OacLegacyRegistryRoutingAdapter(
-        registry=get_registry_service(),
-        snapshot_routing=get_oac_snapshot_routing(runtime_catalog=runtime_catalog),
-    )
+def get_oac_adapter_application_ports(request: Request) -> OacAdapterApplicationPorts:
+    return _host_container(request).ports
 
 
-def _runtime_catalog_runtime(request: Request | None) -> RuntimeCatalogRuntime | None:
-    if request is None:
-        return None
-    runtime = getattr(request.app.state, "runtime_catalog_runtime", None)
-    return runtime if isinstance(runtime, RuntimeCatalogRuntime) else None
+def get_execution_ticket_service(request: Request) -> ExecutionTicketService:
+    services = _core_container(request).services
+    if services is None:
+        raise _runtime_unavailable()
+    return services.execution_ticket_service
 
 
-def _registry_snapshot_refresh(
-    request: Request | None,
-) -> RegistrySnapshotRefreshApplicationPort | None:
-    if request is None:
-        return None
-    refresh = getattr(request.app.state, "runtime_readiness_runtime", None)
-    return refresh if isinstance(refresh, RegistrySnapshotRefreshApplicationPort) else None
+def get_cutover_guard(request: Request) -> CutoverGuard:
+    return _host_container(request).cutover_guard
 
 
-@lru_cache
-def get_oac_external_execution_service():
-    from app.services.external_execution_service import ExternalExecutionService
-
-    return ExternalExecutionService(
-        external_executor=get_oac_external_executor(),
-        delegated_runs=get_delegated_run_service(),
-        tickets=get_execution_ticket_service(),
-        ticket_ttl_seconds=get_oac_host_settings().execution_ticket_ttl_seconds,
-    )
+def get_host_identity_verifier(request: Request) -> HostIdentityVerifier:
+    container = getattr(request.app.state, "oac_application_container", None)
+    if isinstance(container, OacApplicationContainer):
+        return container.identity_verifier
+    raise _runtime_unavailable()
 
 
-@lru_cache
-def get_host_nonce_store() -> MemoryNonceStore:
-    return MemoryNonceStore()
-
-
-@lru_cache
-def get_host_identity_verifier() -> HostIdentityVerifier:
-    settings = get_oac_host_settings()
-    keys = {}
-    key_credential_classes: dict[str, frozenset[str]] = {}
-    if settings.identity_current_key_id and settings.identity_current_key:
-        keys[settings.identity_current_key_id] = settings.identity_current_key.get_secret_value()
-        key_credential_classes[settings.identity_current_key_id] = frozenset({"oac_user"})
-    if settings.identity_previous_key_id and settings.identity_previous_key:
-        keys[settings.identity_previous_key_id] = settings.identity_previous_key.get_secret_value()
-        key_credential_classes[settings.identity_previous_key_id] = frozenset({"oac_user"})
-    if settings.oac_admin_key_id and settings.oac_admin_credential:
-        keys[settings.oac_admin_key_id] = settings.oac_admin_credential.get_secret_value()
-        key_credential_classes[settings.oac_admin_key_id] = frozenset({"oac_admin"})
-    if settings.coze_workflow_key_id and settings.coze_workflow_credential:
-        keys[settings.coze_workflow_key_id] = settings.coze_workflow_credential.get_secret_value()
-        key_credential_classes[settings.coze_workflow_key_id] = frozenset({"coze_workflow"})
-    return HostIdentityVerifier(
-        audience=settings.identity_audience,
-        tenant_id=settings.tenant_id,
-        keys=keys,
-        key_credential_classes=key_credential_classes,
-        nonce_store=get_host_nonce_store(),
-    )
-
-
-async def get_trusted_host_identity(request: Request) -> TrustedHostIdentity:
+async def get_trusted_host_identity(
+    request: Request,
+    verifier: Annotated[HostIdentityVerifier, Depends(get_host_identity_verifier)],
+) -> TrustedHostIdentity:
     body = request.scope.get("oac_host_wire_body")
     if body is None:
         body = await request.body()
@@ -191,7 +146,7 @@ async def get_trusted_host_identity(request: Request) -> TrustedHostIdentity:
         policy_version=headers.get("X-OIR-Host-Policy-Version", ""),
     )
     try:
-        return await get_host_identity_verifier().verify(signed)
+        return await verifier.verify(signed)
     except HostAuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -199,18 +154,51 @@ async def get_trusted_host_identity(request: Request) -> TrustedHostIdentity:
         ) from exc
 
 
-@lru_cache
-def get_registry_audit_store() -> RegistryAuditStore:
-    core = get_settings()
-    if core.storage_backend == "database":
-        return DatabaseRegistryAuditStore(create_session_factory(core))
-    return MemoryRegistryAuditStore()
+def _core_container(request: Request) -> ApplicationContainer:
+    view = getattr(request.app.state, "application_runtime_view", None)
+    if view is None:
+        raise _runtime_unavailable()
+    try:
+        return view.require_container()
+    except Exception as exc:
+        raise _runtime_unavailable() from exc
 
 
-@lru_cache
-def get_cutover_guard() -> CutoverGuard:
-    settings = get_oac_host_settings()
-    return CutoverGuard(
-        watermark=settings.cutover_watermark_at,
-        repository=FileCutoverAuditRepository(settings.cutover_audit_path),
+def _host_container(request: Request) -> OacApplicationContainer:
+    container = getattr(request.app.state, "oac_application_container", None)
+    if not isinstance(container, OacApplicationContainer):
+        raise _runtime_unavailable()
+    return container
+
+
+def _runtime_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="application_runtime_unavailable",
     )
+
+
+def _identity_keys(host) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    if host.identity_current_key_id and host.identity_current_key:
+        keys[host.identity_current_key_id] = host.identity_current_key.get_secret_value()
+    if host.identity_previous_key_id and host.identity_previous_key:
+        keys[host.identity_previous_key_id] = host.identity_previous_key.get_secret_value()
+    if host.oac_admin_key_id and host.oac_admin_credential:
+        keys[host.oac_admin_key_id] = host.oac_admin_credential.get_secret_value()
+    if host.coze_workflow_key_id and host.coze_workflow_credential:
+        keys[host.coze_workflow_key_id] = host.coze_workflow_credential.get_secret_value()
+    return keys
+
+
+def _identity_key_credential_classes(host) -> dict[str, frozenset[str]]:
+    classes: dict[str, frozenset[str]] = {}
+    if host.identity_current_key_id and host.identity_current_key:
+        classes[host.identity_current_key_id] = frozenset({"oac_user"})
+    if host.identity_previous_key_id and host.identity_previous_key:
+        classes[host.identity_previous_key_id] = frozenset({"oac_user"})
+    if host.oac_admin_key_id and host.oac_admin_credential:
+        classes[host.oac_admin_key_id] = frozenset({"oac_admin"})
+    if host.coze_workflow_key_id and host.coze_workflow_credential:
+        classes[host.coze_workflow_key_id] = frozenset({"coze_workflow"})
+    return classes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
@@ -116,7 +117,12 @@ class ManagedDatabase:
         return engine
 
 
-def build_managed_database_targets(settings: Settings) -> dict[str, ManagedDatabase]:
+def build_managed_database_targets(
+    settings: Settings,
+    *,
+    memory_settings: Settings | None = None,
+    required_targets: Collection[str] = ("core", "memory"),
+) -> dict[str, ManagedDatabase]:
     """Create the complete Core/Memory target map for one app lifespan.
 
     Target names remain an internal composition detail.  Equal private Engine
@@ -124,13 +130,25 @@ def build_managed_database_targets(settings: Settings) -> dict[str, ManagedDatab
     setup, probes, and disposal occur exactly once for that physical target.
     """
 
+    selected_targets = frozenset(required_targets)
+    unknown_targets = selected_targets.difference({"core", "memory"})
+    if unknown_targets:
+        names = ", ".join(sorted(unknown_targets))
+        raise ValueError(f"Unknown Managed Database targets: {names}")
     if settings.storage_backend != "database":
         return {}
 
-    memory_settings = _memory_target_settings(settings)
+    selected_memory_settings = memory_settings or _memory_target_settings(settings)
     instances_by_spec: dict[_EngineSpec, ManagedDatabase] = {}
     targets: dict[str, ManagedDatabase] = {}
-    for name, target_settings in (("core", settings), ("memory", memory_settings)):
+    target_settings_by_name = {
+        "core": settings,
+        "memory": selected_memory_settings,
+    }
+    for name in ("core", "memory"):
+        if name not in selected_targets:
+            continue
+        target_settings = target_settings_by_name[name]
         spec = _EngineSpec.from_settings(target_settings)
         targets[name] = instances_by_spec.setdefault(spec, ManagedDatabase(spec))
     return targets

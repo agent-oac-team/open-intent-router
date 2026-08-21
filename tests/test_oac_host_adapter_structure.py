@@ -17,7 +17,6 @@ from host_apps.oac.config import (
     validate_host_credential_profiles,
     validate_registry_single_writer,
 )
-from host_apps.oac.dependencies import get_oac_adapter_application_ports
 from host_apps.oac.main import create_app as create_oac_host_app
 
 
@@ -46,6 +45,25 @@ def test_oac_host_composition_root_includes_oir_core() -> None:
     assert app.state.native_api_prefix == "/oir/api/v1"
     assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/oir/health").json() == {"status": "ok"}
+
+
+def test_oac_host_revalidates_an_explicit_profile_before_composition() -> None:
+    invalid = OacHostProfile(
+        core=Settings(registry_backend="file"),
+        host=OacHostSettings(_env_file=None, enforce_registry_single_writer=True),
+    )
+
+    with pytest.raises(ValueError, match="only writable Registry source"):
+        create_oac_host_app(profile=invalid)
+
+
+def test_uncomposed_oac_host_routes_return_runtime_unavailable_not_authentication_failed() -> None:
+    app = create_oac_host_app()
+
+    response = TestClient(app).get("/api/v1/admin/agent-registry")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "application_runtime_unavailable"}
 
 
 def test_oac_root_liveness_never_calls_the_capability_provider() -> None:
@@ -141,7 +159,8 @@ def test_native_knowledge_search_is_not_exposed_under_internal_prefix() -> None:
 
 
 def test_adapter_composition_exposes_only_public_application_ports() -> None:
-    ports = get_oac_adapter_application_ports()
+    with TestClient(create_oac_host_app()) as client:
+        ports = client.app.state.oac_application_container.ports
 
     assert isinstance(ports, OacAdapterApplicationPorts)
     assert isinstance(ports.routing, RoutingApplicationPort)
@@ -170,7 +189,8 @@ def test_recording_application_port_doubles_match_public_protocols() -> None:
 
 
 def test_host_capabilities_are_versioned_and_redacted() -> None:
-    response = TestClient(create_oac_host_app()).get("/capabilities")
+    with TestClient(create_oac_host_app()) as client:
+        response = client.get("/capabilities")
 
     assert response.status_code == 200
     body = response.json()

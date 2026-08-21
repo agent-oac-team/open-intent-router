@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.core.config import Settings  # noqa: E402
-from app.db.session import create_session_factory  # noqa: E402
+from app.db.managed import ManagedDatabase  # noqa: E402
 from app.services.orphan_turn_reconciler import DatabaseOrphanTurnReconciler  # noqa: E402
 
 
@@ -26,29 +26,30 @@ async def _run(args) -> dict:
         storage_backend="database",
         **({} if args.use_configured_database else {"database_url": args.database_url}),
     )
-    reconciler = DatabaseOrphanTurnReconciler(create_session_factory(settings))
-    report = await reconciler.scan(
-        tenant_id=args.tenant_id,
-        user_id=args.user_id,
-        request_ids=args.request_id,
-        updated_before=args.updated_before,
-        limit=args.limit,
-    )
-    payload = report.model_dump(mode="json")
-    if args.apply:
-        payload["dry_run"] = False
-        payload["repairs"] = [
-            (
-                await reconciler.repair(
-                    tenant_id=args.tenant_id,
-                    user_id=args.user_id,
-                    request_id=request_id,
-                    idempotency_key=f"{args.idempotency_key}:{request_id}",
-                )
-            ).model_dump(mode="json")
-            for request_id in args.request_id
-        ]
-    return payload
+    async with ManagedDatabase.from_settings(settings) as database:
+        reconciler = DatabaseOrphanTurnReconciler(database.session_factory)
+        report = await reconciler.scan(
+            tenant_id=args.tenant_id,
+            user_id=args.user_id,
+            request_ids=args.request_id,
+            updated_before=args.updated_before,
+            limit=args.limit,
+        )
+        payload = report.model_dump(mode="json")
+        if args.apply:
+            payload["dry_run"] = False
+            payload["repairs"] = [
+                (
+                    await reconciler.repair(
+                        tenant_id=args.tenant_id,
+                        user_id=args.user_id,
+                        request_id=request_id,
+                        idempotency_key=f"{args.idempotency_key}:{request_id}",
+                    )
+                ).model_dump(mode="json")
+                for request_id in args.request_id
+            ]
+        return payload
 
 
 def main() -> None:

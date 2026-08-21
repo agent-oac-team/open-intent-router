@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from inspect import isawaitable
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from app.application import RegistrySnapshotSourceMapper
 from app.core.config import Settings
@@ -22,6 +22,9 @@ from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogRuntime
 from app.services.registry_service import AgentRegistryService
 from app.services.registry_snapshot import RegistrySnapshotRuntime
 from app.services.runtime_readiness import RuntimeReadinessReport, RuntimeReadinessRuntime
+
+if TYPE_CHECKING:
+    from app.runtime.services import ApplicationServices
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class ApplicationContainer:
     registry: AgentRegistryService
     runtime_catalog: RuntimeCatalog
     registry_snapshot_runtime: RegistrySnapshotRuntime | None
+    services: ApplicationServices | None = field(default=None, repr=False)
     _background_runtimes: Sequence[object] = field(default_factory=tuple, repr=False)
 
 
@@ -50,6 +54,18 @@ ContainerBuilder: TypeAlias = Callable[
     [RuntimeCatalog, Mapping[str, ManagedDatabase]],
     ApplicationContainer | Awaitable[ApplicationContainer],
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationComposition:
+    """One selected service graph and the database targets it actually consumes."""
+
+    container_builder: ContainerBuilder
+    required_database_targets: frozenset[str]
+    memory_database_settings: Settings | None = field(default=None, repr=False)
+
+
+ApplicationCompositionFactory: TypeAlias = Callable[[Settings], ApplicationComposition]
 
 
 class ApplicationRuntimeView:

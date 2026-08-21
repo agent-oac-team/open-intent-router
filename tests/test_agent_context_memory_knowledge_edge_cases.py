@@ -131,17 +131,16 @@ def test_knowledge_search_api_is_not_exposed() -> None:
 
     from app.main import create_app
 
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/v1/knowledge/search",
-        json={
-            "query": "risk",
-            "user": {"id": "u1"},
-            "source_ids": ["docs"],
-            "top_k": 51,
-        },
-    )
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/v1/knowledge/search",
+            json={
+                "query": "risk",
+                "user": {"id": "u1"},
+                "source_ids": ["docs"],
+                "top_k": 51,
+            },
+        )
     assert response.status_code == 404
 
 
@@ -150,16 +149,15 @@ def test_memory_api_rejects_invalid_boundary_values() -> None:
 
     from app.main import create_app
 
-    client = TestClient(create_app())
-
-    invalid_max_items = client.post(
-        "/api/v1/memories/recall",
-        json={"query": "risk", "user": {"id": "u1"}, "max_items": 51},
-    )
-    missing_user_id = client.post(
-        "/api/v1/memories/write-candidates",
-        json=[{"scope": "stable_fact", "content": "confirmed fact"}],
-    )
+    with TestClient(create_app()) as client:
+        invalid_max_items = client.post(
+            "/api/v1/memories/recall",
+            json={"query": "risk", "user": {"id": "u1"}, "max_items": 51},
+        )
+        missing_user_id = client.post(
+            "/api/v1/memories/write-candidates",
+            json=[{"scope": "stable_fact", "content": "confirmed fact"}],
+        )
 
     assert invalid_max_items.status_code == 422
     assert missing_user_id.status_code == 422

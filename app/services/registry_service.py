@@ -5,8 +5,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import Settings
 from app.core.errors import RegistryError, RegistryUnavailableError
-from app.db.session import create_session_factory
-from app.repositories.database import DatabaseAgentDefinitionRepository
 from app.repositories.file_registry import FileRegistrySource
 from app.repositories.interfaces import AgentDefinitionRepository
 from app.schemas.agents import (
@@ -175,8 +173,7 @@ class AgentRegistryService:
     def _repository(self) -> AgentDefinitionRepository:
         if self.repository:
             return self.repository
-        self.repository = DatabaseAgentDefinitionRepository(create_session_factory(self.settings))
-        return self.repository
+        raise RegistryUnavailableError("Registry repository is unavailable")
 
     def _require_writable_repository(self) -> AgentDefinitionRepository:
         if self.settings.registry_backend == "file":

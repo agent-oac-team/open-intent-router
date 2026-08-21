@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
 from app.core.errors import RegistryVersionConflict
@@ -510,14 +510,18 @@ def test_registry_token_only_request_fails_real_host_verifier() -> None:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: _client().app.state
-    get_host_identity_verifier.cache_clear()
-    try:
-        response = TestClient(app).get(
-            "/api/v1/admin/agent-registry",
-            headers={"X-Admin-Sync-Token": "legacy-token"},
-        )
-    finally:
-        get_host_identity_verifier.cache_clear()
+    app.dependency_overrides[get_host_identity_verifier] = _reject_host_identity
+    response = TestClient(app).get(
+        "/api/v1/admin/agent-registry",
+        headers={"X-Admin-Sync-Token": "legacy-token"},
+    )
 
     assert response.status_code == 401
     assert response.json() == {"detail": "host_authentication_failed"}
+
+
+async def _reject_host_identity() -> TrustedHostIdentity:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="host_authentication_failed",
+    )

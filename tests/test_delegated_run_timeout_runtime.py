@@ -15,6 +15,7 @@ from app.repositories.delegated_runs import (
 from app.repositories.memory import MemoryEventRepository, MemoryRunRepository
 from app.repositories.turn_outbox import MemoryTurnOutboxRepository
 from app.repositories.turns import MemoryTurnRepository
+from app.runtime.application import ApplicationComposition
 from app.schemas.delegated_runs import (
     DelegatedRunOrphanResponse,
     DelegatedRunOverdueQuery,
@@ -199,7 +200,10 @@ def test_fastapi_lifespan_starts_and_awaits_timeout_runtime() -> None:
     with TestClient(
         main_module.create_app(
             settings=settings,
-            application_container_builder=container_builder,
+            application_composition_factory=lambda _settings: ApplicationComposition(
+                container_builder=container_builder,
+                required_database_targets=frozenset(),
+            ),
         )
     ) as client:
         assert client.get("/health").status_code == 200

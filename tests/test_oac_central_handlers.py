@@ -497,6 +497,10 @@ def _client(*, user_id: str = "trusted-user", action: str = "open_agent"):
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_execution_ticket_service] = lambda: tickets
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
+    app.dependency_overrides[get_cutover_guard] = lambda: CutoverGuard(
+        watermark=None,
+        repository=MemoryCutoverAuditRepository(),
+    )
     app.dependency_overrides[get_oac_host_settings] = lambda: OacHostSettings(
         _env_file=None,
         execution_ticket_secret="test-secret",

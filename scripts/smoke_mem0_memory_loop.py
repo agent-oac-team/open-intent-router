@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import delete, func, select
 
 from app.core.config import Settings
+from app.db.managed import ManagedDatabase
 from app.db.models import (
     MemoryEventModel,
     MemoryFormationJobModel,
@@ -18,7 +19,6 @@ from app.db.models import (
     PlanModel,
     PlanStepModel,
 )
-from app.db.session import create_all_tables, create_session_factory
 from app.llm.conversation_formation import OpenAICompatibleConversationFormationModel
 from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.database import DatabasePlanRepository
@@ -74,8 +74,12 @@ async def main() -> int:
         print(f"SMOKE_FAIL: 需要 mem0ai 2.0.11，当前为 {version('mem0ai')}")
         return 2
 
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    async with ManagedDatabase.from_settings(settings) as database:
+        await database.initialize_schema()
+        return await _run_smoke(settings, health, database.session_factory)
+
+
+async def _run_smoke(settings: Settings, health: dict, session_factory) -> int:
     repository = DatabaseMemoryItemRepository(session_factory)
     outbox = DatabaseMemoryIndexOutboxRepository(session_factory)
     lifecycle_store = DatabaseMemoryLifecycleStore(session_factory)
@@ -221,7 +225,6 @@ async def main() -> int:
                 failure = RuntimeError(f"smoke tenant cleanup 失败: {cleanup_exc}")
             else:
                 print(f"SMOKE_CLEANUP_FAIL: {cleanup_exc}")
-        await session_factory.kw["bind"].dispose()
     if failure is not None:
         print(f"SMOKE_FAIL: mem0 index consistency 闭环失败: {failure}")
         print(f"SMOKE_DEBUG: {health}")

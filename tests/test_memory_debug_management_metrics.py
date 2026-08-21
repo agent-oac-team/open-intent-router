@@ -1791,6 +1791,7 @@ async def test_memory_management_api_requires_identity_and_hides_cross_user_targ
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_service] = lambda: memory
     app.dependency_overrides[get_memory_management_service] = lambda: management
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
     client = TestClient(app)
@@ -1841,6 +1842,7 @@ async def test_debug_and_admin_api_authorization_boundaries() -> None:
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_service] = lambda: memory
     app.dependency_overrides[get_memory_management_service] = lambda: management
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
     client = TestClient(app)

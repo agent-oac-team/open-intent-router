@@ -10,6 +10,7 @@ from app.repositories.memory_formation import (
     DatabaseMemoryFormationTurnJobRepository,
     MemoryFormationTurnJobRepository,
 )
+from app.runtime.application import ApplicationComposition
 from app.schemas.memory import MemoryFormationJobStatus, MemoryFormationTurn
 from app.services.memory_formation import (
     FormationIdleSweeper,
@@ -600,7 +601,13 @@ async def test_application_lifespan_starts_and_stops_formation_runtime() -> None
         )
         return replace(container, _background_runtimes=(FakeRuntime(), FakeRuntime()))
 
-    app = create_app(settings=settings, application_container_builder=container_builder)
+    app = create_app(
+        settings=settings,
+        application_composition_factory=lambda _settings: ApplicationComposition(
+            container_builder=container_builder,
+            required_database_targets=frozenset(),
+        ),
+    )
 
     async with app.router.lifespan_context(app):
         assert calls == ["start", "start"]

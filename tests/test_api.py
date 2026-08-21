@@ -4,6 +4,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import memory_identity_signature
 from app.dependencies import (
     get_chat_history_service,
+    get_memory_observability_service,
     get_memory_service,
     get_router_service,
 )
@@ -18,8 +19,8 @@ from tests.fakes.native_principal import native_principal_headers
 
 
 def test_health_endpoint() -> None:
-    client = TestClient(create_app())
-    response = client.get("/health")
+    with TestClient(create_app()) as client:
+        response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
@@ -157,6 +158,7 @@ async def test_memory_debug_endpoint_returns_admin_state() -> None:
         settings=Settings(storage_backend="memory"),
         repository=memory_repository,
     )
+    app.dependency_overrides[get_memory_observability_service] = object
     client = TestClient(app)
 
     memory_response = client.get("/api/v1/memories/debug?user_id=u1")
