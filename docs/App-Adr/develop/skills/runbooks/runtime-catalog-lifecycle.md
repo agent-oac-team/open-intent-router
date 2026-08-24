@@ -111,6 +111,11 @@ factory 中创建它，并让 HTTP Connector 的 operation map 提供 endpoint �
 `operation`；Connector Egress Policy 必须显式限定 host、port、method、可发送 Header 和请求/响应大小。
 默认 HTTPS、TLS verification、拒绝 redirect，且 Client 仅在 Adapter activate 时创建、Catalog dispose
 时关闭。若显式启用 redirect，每一跳均需重新通过同一 Egress Policy；不要在调用路径创建临时 HTTP Client。
+每个获准 hostname 仍必须在受理前解析全部地址；只要其中出现 loopback、private、link-local、multicast、
+unspecified、reserved 或 metadata 目标就拒绝，连接只可使用本次审查的一个已验证 IP。开发环境如确需
+loopback/private 或明文 HTTP，必须同时在 `APP_ENV=local` 运行、显式配置普通 host/port allowlist，以及成对的
+`allowed_local_address_hosts` / `allowed_local_address_ports`；local override 不可包含 metadata、
+link-local、multicast、unspecified 或 reserved 地址，也不可仅由 `APP_ENV`、调试开关或请求参数隐式开启。
 
 ## 部署与验收
 

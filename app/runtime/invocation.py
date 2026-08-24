@@ -317,6 +317,9 @@ RuntimeAdapterExecutor = Callable[
     Awaitable[RawInvocationOutcome],
 ]
 RuntimeAdapterConnectorValidator = Callable[[RuntimeAdapterBinding, ResolvedConnector], bool]
+RuntimeAdapterConnectorPreparer = Callable[
+    [RuntimeAdapterBinding, ResolvedConnector], Awaitable[ResolvedConnector | None]
+]
 
 _RAW_OUTCOME_FIELDS = (
     "message",
@@ -388,6 +391,11 @@ class RuntimeAdapterExecution:
     execute: RuntimeAdapterExecutor
     connector: ResolvedConnector | None = None
     connector_validator: RuntimeAdapterConnectorValidator | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    connector_preparer: RuntimeAdapterConnectorPreparer | None = field(
         default=None,
         repr=False,
         compare=False,

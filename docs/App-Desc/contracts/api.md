@@ -251,9 +251,13 @@ Adapter 若吞掉 deadline 的取消，Core 会继续强持有它直至应用生
 内置 `http` Runtime Adapter 仅使用 HTTP Connector 中由 deployment 选择的 endpoint、method 与显式
 允许的认证 Header；它复用 Catalog 生命周期内唯一的 Async Client，不会临时创建 Client。默认只接受
 HTTPS、精确 host/port allowlist 与 TLS 验证；Definition 或调用方不能透传 URL、Host/Header、Token 或
-网络策略。请求与响应应用硬大小上限，redirect 默认失败；部署显式启用 redirect 时每一跳都重新校验完整
-Egress Policy。HTTP status、协议异常、非 JSON 和畸形 JSON 都收敛为既有安全 Invocation 失败，不向
-公共结果暴露远端 body 或异常文本。
+网络策略。受理前会规范化 hostname、审查完整 DNS 地址集并默认拒绝 loopback、private、link-local、
+multicast、unspecified、reserved 和云 metadata；实际连接固定使用该次审查通过的 IP，不会在连接时再次
+按 hostname 解析。只有 Runtime 处于 `APP_ENV=local` 且 deployment policy 中成对列出的精确 local host/port
+才可允许 loopback 或 private；不存在仅按 `APP_ENV`、调试模式或请求参数自动放宽的路径。请求与响应应用硬大小上限，redirect 默认失败；
+部署显式启用 redirect 时每一跳都重新执行 hostname、port、DNS/IP、TLS、Header 与剩余 deadline 检查。
+HTTP status、协议异常、非 JSON 和畸形 JSON 都收敛为既有安全 Invocation 失败，不向公共结果暴露远端 body、
+完整 URL、DNS 诊断或异常文本。
 
 预检会构造唯一的 Agent Call Envelope。它只含只读执行 ID、Definition `input_schema` 已声明并通过
 校验的输入、默认 `subject/tenant` Principal、三方门控后可选的规范 claim、安全 Context 定位事实、

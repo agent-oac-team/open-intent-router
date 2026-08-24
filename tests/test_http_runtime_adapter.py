@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -19,6 +21,10 @@ from app.runtime.http import (
     HttpEgressPolicy,
     HttpRuntimeAdapter,
     HttpRuntimeConnector,
+    HttpTargetResolver,
+    _PinnedNetworkBackend,
+    _PreparedHttpRuntimeConnector,
+    _ResolvedHttpTarget,
     http_runtime_descriptor,
 )
 from app.runtime.invocation import (
@@ -57,6 +63,9 @@ def _policy(
     allow_redirects: bool = False,
     max_redirects: int = 0,
     verify_tls: bool = True,
+    allow_plaintext_http: bool = False,
+    local_hosts: frozenset[str] = frozenset(),
+    local_ports: frozenset[int] = frozenset(),
 ) -> HttpEgressPolicy:
     return HttpEgressPolicy(
         allowed_hosts=hosts,
@@ -67,6 +76,9 @@ def _policy(
         allow_redirects=allow_redirects,
         max_redirects=max_redirects,
         verify_tls=verify_tls,
+        allow_plaintext_http=allow_plaintext_http,
+        allowed_local_address_hosts=local_hosts,
+        allowed_local_address_ports=local_ports,
     )
 
 
@@ -150,9 +162,11 @@ def _envelope(*, execution_id: str) -> AgentCallEnvelope:
 async def _service(
     *,
     resolver: _ConnectorResolver,
-    transport: httpx.AsyncBaseTransport,
+    transport: httpx.AsyncBaseTransport | None,
     verify_tls: bool = True,
     definition: AgentDefinitionV2 | None = None,
+    target_resolver: HttpTargetResolver | None = None,
+    settings: Settings | None = None,
 ) -> tuple[
     RuntimeCatalog,
     HttpRuntimeAdapter,
@@ -161,8 +175,14 @@ async def _service(
     MemoryResultRepository,
 ]:
     catalog = await RuntimeCatalog.activate(
-        [http_runtime_descriptor(transport=transport, verify_tls=verify_tls)],
-        RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
+        [
+            http_runtime_descriptor(
+                transport=transport,
+                verify_tls=verify_tls,
+                target_resolver=target_resolver or _public_target_resolver,
+            )
+        ],
+        RuntimeAdapterContext(settings=settings or Settings(storage_backend="memory")),
         shutdown_timeout_seconds=1,
     )
     adapter = catalog.get("http")
@@ -179,6 +199,21 @@ async def _service(
         binding_resolver=BindingResolver(catalog, connector_resolver=resolver),
     )
     return catalog, adapter, service, runs, results
+
+
+async def _public_target_resolver(_host: str, _port: int) -> tuple[str, ...]:
+    return ("8.8.8.8",)
+
+
+@dataclass
+class _TargetResolver:
+    responses: tuple[tuple[str, ...], ...]
+    calls: list[tuple[str, int]] = field(default_factory=list)
+
+    async def __call__(self, host: str, port: int) -> tuple[str, ...]:
+        index = min(len(self.calls), len(self.responses) - 1)
+        self.calls.append((host, port))
+        return self.responses[index]
 
 
 async def test_http_runtime_uses_connector_separately_and_reuses_one_lifespan_client() -> None:
@@ -205,7 +240,13 @@ async def test_http_runtime_uses_connector_separately_and_reuses_one_lifespan_cl
         assert len(captured) == 2
         assert adapter.client is first_client
         assert captured[0].method == "POST"
-        assert str(captured[0].url) == "https://api.example.test/execute"
+        assert captured[0].url.host is not None
+        assert captured[0].url.host.startswith("oir-egress-")
+        assert captured[0].url.host.endswith(".invalid")
+        assert "api.example.test" not in str(captured[0].url)
+        assert "8.8.8.8" not in str(captured[0].url)
+        assert captured[0].headers["host"] == "api.example.test"
+        assert captured[0].extensions["sni_hostname"] == "api.example.test"
         assert captured[0].headers["authorization"] == "Bearer connector-test-secret"
         payload = json.loads(captured[0].content)
         assert payload["input"] == {"text": "approved text"}
@@ -225,6 +266,7 @@ async def test_http_runtime_uses_connector_separately_and_reuses_one_lifespan_cl
         )
         assert "connector-test-secret" not in persisted
         assert "api.example.test/execute" not in persisted
+        assert "8.8.8.8" not in persisted
         assert resolver.released == [connector, connector]
     finally:
         await catalog.aclose()
@@ -246,7 +288,12 @@ async def test_http_runtime_does_not_retain_or_replay_remote_cookies_across_conn
         return httpx.Response(200, json={"output": {"summary": "second"}})
 
     catalog = await RuntimeCatalog.activate(
-        [http_runtime_descriptor(transport=httpx.MockTransport(handler))],
+        [
+            http_runtime_descriptor(
+                transport=httpx.MockTransport(handler),
+                target_resolver=_public_target_resolver,
+            )
+        ],
         RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
         shutdown_timeout_seconds=1,
     )
@@ -258,8 +305,11 @@ async def test_http_runtime_does_not_retain_or_replay_remote_cookies_across_conn
     connector_a = _connector(headers={"Authorization": "Bearer tenant-a"})
     connector_b = _connector(headers={"Authorization": "Bearer tenant-b"})
     try:
-        first = await adapter.execute(binding, connector_a, _envelope(execution_id="tenant-a"))
-        second = await adapter.execute(binding, connector_b, _envelope(execution_id="tenant-b"))
+        prepared_a = await adapter.prepare_connector(binding, connector_a)
+        prepared_b = await adapter.prepare_connector(binding, connector_b)
+        assert prepared_a is not None and prepared_b is not None
+        first = await adapter.execute(binding, prepared_a, _envelope(execution_id="tenant-a"))
+        second = await adapter.execute(binding, prepared_b, _envelope(execution_id="tenant-b"))
 
         assert first.failure is None
         assert second.failure is None
@@ -269,12 +319,46 @@ async def test_http_runtime_does_not_retain_or_replay_remote_cookies_across_conn
         await catalog.aclose()
 
 
+async def test_http_runtime_pins_the_vetted_address_for_the_actual_connection() -> None:
+    target_context: ContextVar[_ResolvedHttpTarget | None] = ContextVar(
+        "http-runtime-test-target",
+        default=None,
+    )
+    target = _ResolvedHttpTarget(
+        hostname="api.example.test",
+        port=443,
+        address="8.8.8.8",
+        wire_host="oir-egress-test.invalid",
+    )
+
+    class _RecordingBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+            self.stream = object()
+
+        async def connect_tcp(self, host: str, port: int, **_kwargs: object) -> object:
+            self.calls.append((host, port))
+            return self.stream
+
+    delegate = _RecordingBackend()
+    backend = _PinnedNetworkBackend(delegate, target_context)
+    token = target_context.set(target)
+    try:
+        stream = await backend.connect_tcp(target.wire_host, target.port)
+    finally:
+        target_context.reset(token)
+
+    assert stream is delegate.stream
+    assert delegate.calls == [("8.8.8.8", 443)]
+
+
 @pytest.mark.parametrize(
     "connector",
     [
         _connector(url="http://api.example.test/execute"),
         _connector(url="https://not-allowed.example.test/execute"),
         _connector(url="https://api.example.test:8443/execute"),
+        _connector(url="https://api.example.test:0/execute"),
         _connector(method="GET"),
         _connector(policy=_policy(verify_tls=False)),
     ],
@@ -304,6 +388,400 @@ async def test_http_connector_policy_rejects_before_run_or_network_call(
         assert runs.runs == {}
         assert results.results == []
         assert resolver.released == [connector]
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_rejects_a_prepared_connector_at_the_resolution_boundary() -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"output": {"summary": "unexpected"}})
+
+    source = _connector().connection
+    assert isinstance(source, HttpRuntimeConnector)
+    connector = _connector()
+    connector = ResolvedConnector(
+        tenant_id=connector.tenant_id,
+        adapter_key=connector.adapter_key,
+        connector_ref=connector.connector_ref,
+        revision=connector.revision,
+        connection=_PreparedHttpRuntimeConnector(
+            source=source,
+            operation_targets={
+                "summarize": _ResolvedHttpTarget(
+                    hostname="api.example.test",
+                    port=443,
+                    address="127.0.0.1",
+                    wire_host="oir-egress-forged.invalid",
+                )
+            },
+        ),
+    )
+    resolver = _ConnectorResolver(connector)
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=resolver,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(InvocationBindingUnavailableError) as exc_info:
+            await service.invoke(_request())
+
+        assert exc_info.value.details == {"reason_code": "connector_unavailable"}
+        assert requests == 0
+        assert runs.runs == {}
+        assert results.results == []
+        assert resolver.released == [connector]
+    finally:
+        await catalog.aclose()
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "10.0.0.1",
+        "169.254.169.254",
+        "224.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "fc00::1",
+        "fe80::1",
+        "fec0::1",
+        "::",
+        "::ffff:127.0.0.1",
+    ],
+)
+async def test_http_runtime_rejects_nonpublic_dns_answers_before_run_or_network_call(
+    address: str,
+) -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"output": {"summary": "unexpected"}})
+
+    target_resolver = _TargetResolver(((address,),))
+    connector = _connector()
+    resolver = _ConnectorResolver(connector)
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=resolver,
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        with pytest.raises(InvocationBindingUnavailableError) as exc_info:
+            await service.invoke(_request())
+
+        assert exc_info.value.details == {"reason_code": "connector_unavailable"}
+        assert target_resolver.calls == [("api.example.test", 443)]
+        assert requests == 0
+        assert runs.runs == {}
+        assert results.results == []
+        assert resolver.released == [connector]
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_projects_dns_failure_without_private_diagnostics() -> None:
+    secret = "resolver=10.0.0.7 token=dns-secret-marker"
+    requests = 0
+
+    async def failing_resolver(_host: str, _port: int) -> tuple[str, ...]:
+        raise RuntimeError(secret)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"output": {"summary": "unexpected"}})
+
+    connector = _connector()
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=httpx.MockTransport(handler),
+        target_resolver=failing_resolver,
+    )
+    try:
+        with pytest.raises(InvocationBindingUnavailableError) as exc_info:
+            await service.invoke(_request())
+
+        assert exc_info.value.details == {"reason_code": "connector_unavailable"}
+        assert secret not in str(exc_info.value)
+        assert requests == 0
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_rejects_mixed_public_and_private_dns_answers_before_acceptance() -> (
+    None
+):
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"output": {"summary": "unexpected"}})
+
+    target_resolver = _TargetResolver((("8.8.8.8", "127.0.0.1"),))
+    connector = _connector()
+    resolver = _ConnectorResolver(connector)
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=resolver,
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        with pytest.raises(InvocationBindingUnavailableError):
+            await service.invoke(_request())
+
+        assert target_resolver.calls == [("api.example.test", 443)]
+        assert requests == 0
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_rejects_metadata_hosts_without_a_dns_lookup() -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"output": {"summary": "unexpected"}})
+
+    target_resolver = _TargetResolver((("8.8.8.8",),))
+    connector = _connector(
+        url="https://metadata.google.internal/compute",
+        policy=_policy(hosts=frozenset({"metadata.google.internal"})),
+    )
+    resolver = _ConnectorResolver(connector)
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=resolver,
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        with pytest.raises(InvocationBindingUnavailableError):
+            await service.invoke(_request())
+
+        assert target_resolver.calls == []
+        assert requests == 0
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_allows_only_a_narrow_explicit_local_development_target() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"output": {"summary": "completed"}})
+
+    policy = _policy(
+        hosts=frozenset({"localhost"}),
+        ports=frozenset({8443}),
+        allow_plaintext_http=True,
+        local_hosts=frozenset({"localhost"}),
+        local_ports=frozenset({8443}),
+    )
+    connector = _connector(url="http://localhost:8443/execute", policy=policy)
+    target_resolver = _TargetResolver((("127.0.0.1",),))
+    catalog, _adapter, service, _runs, _results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        result = await service.invoke(_request())
+
+        assert result.status == "completed"
+        assert target_resolver.calls == [("localhost", 8443)]
+        assert [request.headers["host"] for request in captured] == ["localhost:8443"]
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_rejects_local_target_outside_the_local_runtime_environment() -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"output": {"summary": "unexpected"}})
+
+    policy = _policy(
+        hosts=frozenset({"localhost"}),
+        ports=frozenset({8443}),
+        allow_plaintext_http=True,
+        local_hosts=frozenset({"localhost"}),
+        local_ports=frozenset({8443}),
+    )
+    connector = _connector(url="http://localhost:8443/execute", policy=policy)
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=httpx.MockTransport(handler),
+        target_resolver=_TargetResolver((("127.0.0.1",),)),
+        settings=Settings(
+            app_env="production",
+            storage_backend="memory",
+            _env_file=None,
+        ),
+    )
+    try:
+        with pytest.raises(InvocationBindingUnavailableError) as exc_info:
+            await service.invoke(_request())
+
+        assert exc_info.value.details == {"reason_code": "connector_unavailable"}
+        assert requests == 0
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_pins_an_actual_controlled_local_connection() -> None:
+    received_requests: list[bytes] = []
+
+    async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = await reader.readuntil(b"\r\n\r\n")
+        content_length = next(
+            (
+                int(line.split(b":", maxsplit=1)[1].strip())
+                for line in head.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            ),
+            0,
+        )
+        body = await reader.readexactly(content_length)
+        received_requests.append(head + body)
+        payload = b'{"output":{"summary":"completed"}}'
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Connection: close\r\n" + f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_connection, "127.0.0.1", 0)
+    socket = next(iter(server.sockets or ()))
+    assert socket is not None
+    port = int(socket.getsockname()[1])
+    policy = _policy(
+        hosts=frozenset({"localhost"}),
+        ports=frozenset({port}),
+        allow_plaintext_http=True,
+        local_hosts=frozenset({"localhost"}),
+        local_ports=frozenset({port}),
+    )
+    connector = _connector(url=f"http://localhost:{port}/execute", policy=policy)
+    target_resolver = _TargetResolver((("127.0.0.1",),))
+    catalog, _adapter, service, _runs, _results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=None,
+        target_resolver=target_resolver,
+    )
+    try:
+        result = await service.invoke(_request())
+
+        assert result.status == "completed"
+        assert target_resolver.calls == [("localhost", port)]
+        assert len(received_requests) == 1
+        assert f"host: localhost:{port}".encode() in received_requests[0].lower()
+    finally:
+        await catalog.aclose()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {
+            "allowed_local_address_hosts": frozenset({"localhost"}),
+            "allowed_local_address_ports": frozenset(),
+        },
+        {
+            "allowed_local_address_hosts": frozenset({"otherhost"}),
+            "allowed_local_address_ports": frozenset({443}),
+        },
+        {
+            "allowed_local_address_hosts": frozenset({"localhost"}),
+            "allowed_local_address_ports": frozenset({8443}),
+        },
+    ],
+)
+def test_http_egress_policy_rejects_incomplete_or_expansive_local_overrides(
+    kwargs: dict[str, frozenset[object]],
+) -> None:
+    with pytest.raises(ValueError):
+        HttpEgressPolicy(
+            allowed_hosts=frozenset({"localhost"}),
+            allowed_ports=frozenset({443}),
+            **kwargs,
+        )
+
+
+async def test_http_runtime_does_not_reresolve_a_vetted_target_during_connection() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"output": {"summary": "completed"}})
+
+    target_resolver = _TargetResolver(
+        (
+            ("8.8.8.8",),
+            ("127.0.0.1",),
+        )
+    )
+    connector = _connector()
+    catalog, _adapter, service, _runs, _results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        result = await service.invoke(_request())
+
+        assert result.status == "completed"
+        assert target_resolver.calls == [("api.example.test", 443)]
+        assert len(captured) == 1
+        assert captured[0].url.host is not None
+        assert captured[0].url.host.startswith("oir-egress-")
+    finally:
+        await catalog.aclose()
+
+
+async def test_http_runtime_canonicalizes_hostname_before_dns_resolution() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"output": {"summary": "completed"}})
+
+    connector = _connector(url="https://API.EXAMPLE.TEST./execute")
+    target_resolver = _TargetResolver((("8.8.8.8",),))
+    catalog, _adapter, service, _runs, _results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        result = await service.invoke(_request())
+
+        assert result.status == "completed"
+        assert target_resolver.calls == [("api.example.test", 443)]
+        assert [request.headers["host"] for request in captured] == ["api.example.test"]
     finally:
         await catalog.aclose()
 
@@ -476,9 +954,7 @@ async def test_http_runtime_rejects_redirects_by_default_and_revalidates_allowed
         assert rejected.status == "failed"
         assert rejected.error is not None
         assert rejected.error.code == "invocation_remote_failure"
-        assert [str(request.url) for request in default_requests] == [
-            "https://api.example.test/execute"
-        ]
+        assert [request.headers["host"] for request in default_requests] == ["api.example.test"]
     finally:
         await default_catalog.aclose()
 
@@ -486,7 +962,7 @@ async def test_http_runtime_rejects_redirects_by_default_and_revalidates_allowed
 
     def redirect_handler(request: httpx.Request) -> httpx.Response:
         redirected_requests.append(request)
-        if request.url.host == "api.example.test":
+        if request.headers["host"] == "api.example.test":
             return httpx.Response(
                 307, headers={"location": "https://redirect.example.test/execute"}
             )
@@ -506,9 +982,9 @@ async def test_http_runtime_rejects_redirects_by_default_and_revalidates_allowed
     try:
         completed = await redirect_service.invoke(_request())
         assert completed.status == "completed"
-        assert [str(request.url) for request in redirected_requests] == [
-            "https://api.example.test/execute",
-            "https://redirect.example.test/execute",
+        assert [request.headers["host"] for request in redirected_requests] == [
+            "api.example.test",
+            "redirect.example.test",
         ]
     finally:
         await redirect_catalog.aclose()
@@ -531,11 +1007,47 @@ async def test_http_runtime_rejects_redirects_by_default_and_revalidates_allowed
         assert blocked.status == "failed"
         assert blocked.error is not None
         assert blocked.error.code == "invocation_remote_failure"
-        assert [str(request.url) for request in blocked_redirect_requests] == [
-            "https://api.example.test/execute"
+        assert [request.headers["host"] for request in blocked_redirect_requests] == [
+            "api.example.test"
         ]
     finally:
         await blocked_catalog.aclose()
+
+
+async def test_http_runtime_rejects_a_redirect_when_its_dns_answer_is_not_permitted() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(307, headers={"location": "https://redirect.example.test/execute"})
+
+    connector = _connector(
+        policy=_policy(
+            hosts=frozenset({"api.example.test", "redirect.example.test"}),
+            allow_redirects=True,
+            max_redirects=1,
+        )
+    )
+    target_resolver = _TargetResolver((("8.8.8.8",), ("127.0.0.1",)))
+    catalog, _adapter, service, runs, results = await _service(
+        resolver=_ConnectorResolver(connector),
+        transport=httpx.MockTransport(handler),
+        target_resolver=target_resolver,
+    )
+    try:
+        result = await service.invoke(_request())
+
+        assert result.status == "failed"
+        assert result.error is not None
+        assert result.error.code == "invocation_remote_failure"
+        assert target_resolver.calls == [
+            ("api.example.test", 443),
+            ("redirect.example.test", 443),
+        ]
+        assert [request.headers["host"] for request in requests] == ["api.example.test"]
+        assert len(runs.runs) == len(results.results) == 1
+    finally:
+        await catalog.aclose()
 
 
 @pytest.mark.parametrize(

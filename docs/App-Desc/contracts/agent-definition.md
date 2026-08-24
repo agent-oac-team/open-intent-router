@@ -46,7 +46,10 @@ Definition。
   逻辑 `connector_ref` 和安全 `connector_revision`，从不保存 endpoint、Header、Token 或 Secret。
   内置 `http` Runtime Adapter 的 `config` 只接受稳定的 `operation` 名；endpoint、HTTP method、认证
   Header、host/port allowlist、TLS、redirect 与 body 上限均属于部署提供的 HTTP Connector 和 Egress Policy，
-  不可写入 Definition。
+  不可写入 Definition。每次调用在 Run 受理前规范化目标 hostname、解析全部 DNS 地址并拒绝 loopback、
+  private、link-local、multicast、unspecified、reserved 与 metadata 目标；实际 TCP 连接被钉到这次已验证的
+  地址，不能在 DNS 重绑定后重新解析。loopback/private 仅可由同一 deployment policy 中额外的精确
+  host/port local override 开启，且 Runtime 必须运行在 `APP_ENV=local`，Definition、Connector 操作或请求都不能自行放宽。
 - `external_execution`：逻辑 `executor_ref` 与受限 `params`。Host External Executor 接受后，
   Runtime 创建受 Ticket 约束的 Delegated Run；Native Runtime 不把它伪装为本地 Invocation。
 - `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invoker。

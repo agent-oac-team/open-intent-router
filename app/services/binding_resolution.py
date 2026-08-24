@@ -23,6 +23,7 @@ from app.core.errors import (
 from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogKeyError
 from app.runtime.invocation import (
     RuntimeAdapterBinding,
+    RuntimeAdapterConnectorPreparer,
     RuntimeAdapterConnectorValidator,
     RuntimeAdapterExecution,
     RuntimeAdapterExecutor,
@@ -229,6 +230,11 @@ class BindingResolver:
                 details={"reason_code": "connector_unavailable"},
             )
 
+        # The request-scoped lease begins as soon as a valid Connector exists,
+        # before any async Adapter preparation.  DNS and other preparers may
+        # be cancelled while awaiting, and must not strand Connector secrets
+        # or short-lived clients in that window.
+        lease = _ConnectorLease(resolver=resolver, connector=connector)
         try:
             self._validate_resolved_connector(
                 connector,
@@ -237,17 +243,17 @@ class BindingResolver:
                 connector_ref=binding.requirement.connector_ref,
             )
             self._validate_connector_for_adapter(binding, connector)
-        except InvocationBindingUnavailableError:
-            await self._release_connector(resolver, connector)
-            raise
-
-        lease = _ConnectorLease(resolver=resolver, connector=connector)
-        resolved = binding.with_connector(
-            connector,
-            late_task_cleanup=lease.defer_release_until_late_task_finishes,
-        )
-
-        try:
+            prepared_connector = await self._prepare_connector_for_adapter(binding, connector)
+            self._validate_resolved_connector(
+                prepared_connector,
+                tenant_id=tenant_id,
+                adapter_key=binding.adapter_key,
+                connector_ref=binding.requirement.connector_ref,
+            )
+            resolved = binding.with_connector(
+                prepared_connector,
+                late_task_cleanup=lease.defer_release_until_late_task_finishes,
+            )
             yield resolved
         finally:
             await lease.close()
@@ -299,6 +305,34 @@ class BindingResolver:
             accepted = False
         if accepted is True:
             return
+        raise InvocationBindingUnavailableError(
+            "Invocation Binding is unavailable",
+            details={"reason_code": "connector_unavailable"},
+        )
+
+    @staticmethod
+    async def _prepare_connector_for_adapter(
+        binding: ResolvedInvocationBinding,
+        connector: ResolvedConnector,
+    ) -> ResolvedConnector:
+        """Let an Adapter attach request-only verified transport facts."""
+
+        execution = binding.runtime_execution
+        preparer = execution.connector_preparer if execution is not None else None
+        if preparer is None:
+            return connector
+        try:
+            candidate = preparer(execution.binding, connector)
+            if not isawaitable(candidate):
+                raise TypeError("Connector preparer must be async")
+            prepared = await candidate
+        except Exception:
+            raise InvocationBindingUnavailableError(
+                "Invocation Binding is unavailable",
+                details={"reason_code": "connector_unavailable"},
+            ) from None
+        if isinstance(prepared, ResolvedConnector):
+            return prepared
         raise InvocationBindingUnavailableError(
             "Invocation Binding is unavailable",
             details={"reason_code": "connector_unavailable"},
@@ -389,6 +423,7 @@ class BindingResolver:
                     details={"reason_code": "invocation_adapter_incompatible"},
                 )
             connector_validator = _runtime_connector_validator(adapter)
+            connector_preparer = _runtime_connector_preparer(adapter)
             requires_connector = _runtime_adapter_requires_connector(adapter)
             return ResolvedInvocationBinding(
                 selection=selection,
@@ -403,6 +438,7 @@ class BindingResolver:
                     ),
                     execute=cast(RuntimeAdapterExecutor, runtime_execute),
                     connector_validator=connector_validator,
+                    connector_preparer=connector_preparer,
                     requires_connector=requires_connector,
                     limits=handling.limits,
                     requires_knowledge_context=(
@@ -475,6 +511,22 @@ def _runtime_connector_validator(adapter: object) -> RuntimeAdapterConnectorVali
     except Exception:
         return None
     return cast(RuntimeAdapterConnectorValidator, candidate)
+
+
+def _runtime_connector_preparer(adapter: object) -> RuntimeAdapterConnectorPreparer | None:
+    """Capture an optional async Connector preparer once with the Adapter."""
+
+    try:
+        candidate = getattr(adapter, "prepare_connector", None)
+    except Exception:
+        return None
+    if not callable(candidate) or not iscoroutinefunction(candidate):
+        return None
+    try:
+        signature(candidate).bind(object(), object())
+    except Exception:
+        return None
+    return cast(RuntimeAdapterConnectorPreparer, candidate)
 
 
 def _runtime_adapter_requires_connector(adapter: object) -> bool:

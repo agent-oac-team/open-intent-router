@@ -97,6 +97,23 @@ class _RecordingRuntimeAdapter:
 
 
 @dataclass
+class _BlockingConnectorPreparerAdapter(_RecordingRuntimeAdapter):
+    """Stops in pre-acceptance preparation so cancellation cleanup is observable."""
+
+    preparation_started: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_preparation: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def prepare_connector(
+        self,
+        _binding: RuntimeAdapterBinding,
+        connector: ResolvedConnector,
+    ) -> ResolvedConnector:
+        self.preparation_started.set()
+        await self.allow_preparation.wait()
+        return connector
+
+
+@dataclass
 class _CancellationDefiantConnectorAdapter:
     """Suppresses one deadline cancellation, then cooperates at shutdown."""
 
@@ -495,6 +512,29 @@ async def test_connector_releases_after_adapter_cancellation() -> None:
         assert len(adapter.calls) == 1
         assert resolver.released == [connector]
     finally:
+        await catalog.aclose()
+
+
+async def test_connector_releases_when_preacceptance_preparation_is_cancelled() -> None:
+    connector = _connector()
+    resolver = _RecordingConnectorResolver(connector=connector)
+    adapter = _BlockingConnectorPreparerAdapter()
+    catalog, service, runs, results = await _service(resolver=resolver, adapter=adapter)
+    try:
+        invocation_task = asyncio.create_task(service.invoke(_request()))
+        await asyncio.wait_for(adapter.preparation_started.wait(), timeout=1)
+        invocation_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await invocation_task
+
+        assert resolver.released == [connector]
+        assert connector.connection.closed is True
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        adapter.allow_preparation.set()
         await catalog.aclose()
 
 
