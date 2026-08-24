@@ -101,11 +101,12 @@ class PlanService:
         *,
         tenant_id: str,
         user_id: str,
+        claim_id: str | None = None,
         lease_seconds: float = 300,
         publish: bool = True,
     ) -> tuple[Plan, str] | None:
         now = datetime.now(UTC)
-        claim_id = f"plan_claim_{uuid4().hex}"
+        claim_id = claim_id or f"plan_claim_{uuid4().hex}"
         plan = await self.repository.claim_step(
             plan_id,
             step_id,
@@ -129,6 +130,40 @@ class PlanService:
 
     async def get_execution_claim_key(self, plan_id: str, *, claim_id: str) -> str | None:
         return await self.repository.get_execution_claim_key(plan_id, claim_id=claim_id)
+
+    async def get_execution_claim_fence(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ):
+        """Return a non-expiring start reservation for restart-safe recovery."""
+
+        return await self.repository.get_execution_claim_fence(
+            plan_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+
+    async def fence_step_claim(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        claim_id: str,
+    ) -> bool:
+        """Prevent lease expiry from redispatching while durable Run start is unknown."""
+
+        return await self.repository.fence_step_claim(
+            plan_id,
+            step_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            claim_id=claim_id,
+        )
 
     async def renew_step_claim(
         self,

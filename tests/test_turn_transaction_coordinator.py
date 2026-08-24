@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
+from app.core.errors import InvocationDeadlineExceededError
 from app.db.models import AgentResultModel, AgentRunModel, CanonicalTurnModel, TurnOutboxModel
 from app.repositories.database import DatabasePlanRepository, DatabaseRunRepository
 from app.repositories.turn_transactions import (
@@ -188,6 +189,40 @@ async def test_turn_completion_commits_run_result_turn_and_outbox_atomically(
     assert result and result.status == "completed"
     assert turn and turn.status == "completed"
     assert outbox and outbox.status == "pending"
+
+
+async def test_turn_completion_commit_guard_rechecks_during_context_exit(
+    tmp_path,
+    managed_database,
+) -> None:
+    """A deadline that expires after flush still rolls back all terminal facts."""
+
+    _settings, factory, bundle = await _fixture(tmp_path, "commit-guard", managed_database)
+    checks = 0
+
+    def expires_at_commit() -> bool:
+        nonlocal checks
+        checks += 1
+        # coordinator checks before writes, after its explicit flush, then
+        # SQLAlchemy invokes the per-session guard immediately before commit.
+        return checks < 3
+
+    with pytest.raises(InvocationDeadlineExceededError):
+        await DatabaseTurnTransactionCoordinator(factory).complete(
+            bundle,
+            may_commit=expires_at_commit,
+        )
+
+    assert checks == 3
+    async with factory() as session:
+        run = await session.get(AgentRunModel, bundle.run.run_id)
+        result = await session.get(AgentResultModel, bundle.result.result_id)
+        turn = await session.get(CanonicalTurnModel, bundle.turn.turn_id)
+        outbox = await session.get(TurnOutboxModel, bundle.outbox.outbox_id)
+    assert run and run.status == "running"
+    assert result is None
+    assert turn and turn.status == "running"
+    assert outbox is None
 
 
 async def test_turn_completion_rolls_back_all_writes_when_outbox_fails(

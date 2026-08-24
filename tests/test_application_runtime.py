@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -342,15 +343,54 @@ async def test_cancellation_during_cleanup_still_attempts_later_resources() -> N
     assert events[-1] == "catalog.stop"
 
 
+async def test_cleanup_timeout_stays_bounded_when_background_stop_ignores_cancellation() -> None:
+    events: list[str] = []
+    database = _DatabaseProbe(events)
+    catalog = _CatalogProbe(events)
+    defiant = _CancellationDefiantBackgroundProbe("defiant", events)
+    runtime = _runtime_under_test(
+        catalog=catalog,
+        database=database,
+        background_runtimes=(defiant,),
+        cleanup_timeout_seconds=0.01,
+    )
+    await runtime.__aenter__()
+
+    try:
+        started = time.perf_counter()
+        with pytest.raises(ApplicationShutdownError) as error:
+            await asyncio.wait_for(runtime.__aexit__(None, None, None), timeout=0.2)
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 0.1
+        assert error.value.failure_count == 1
+        assert events[-1] == "background.stop:defiant"
+        assert "database.close" not in events
+        assert "catalog.stop" not in events
+        await asyncio.wait_for(defiant.cancelled.wait(), timeout=0.1)
+        assert runtime._abandoned_cleanup_tasks
+    finally:
+        defiant.allow_stop.set()
+        for _ in range(20):
+            if not runtime._abandoned_cleanup_tasks:
+                break
+            await asyncio.sleep(0)
+    assert runtime._abandoned_cleanup_tasks == set()
+
+
 def _runtime_under_test(
     *,
     catalog: "_CatalogProbe",
     database: "_DatabaseProbe",
     background_runtimes: tuple[object, ...] = (),
+    cleanup_timeout_seconds: float = 1,
 ) -> ApplicationRuntime:
     registry = _RegistryProbe(catalog.events)
     return ApplicationRuntime(
-        settings=Settings(memory_mode="off", application_cleanup_timeout_seconds=1),
+        settings=Settings(
+            memory_mode="off",
+            application_cleanup_timeout_seconds=cleanup_timeout_seconds,
+        ),
         runtime_catalog=catalog,
         database_factory=lambda: {"core": database},
         container_builder=lambda _catalog, _databases: ApplicationContainer(
@@ -425,3 +465,18 @@ class _BackgroundProbe:
         self.events.append(f"background.stop:{self.name}")
         if self.fail_stop:
             raise RuntimeError("cleanup failure")
+
+
+class _CancellationDefiantBackgroundProbe(_BackgroundProbe):
+    def __init__(self, name: str, events: list[str]) -> None:
+        super().__init__(name, events)
+        self.cancelled = asyncio.Event()
+        self.allow_stop = asyncio.Event()
+
+    async def stop(self) -> None:
+        self.events.append(f"background.stop:{self.name}")
+        while not self.allow_stop.is_set():
+            try:
+                await self.allow_stop.wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()

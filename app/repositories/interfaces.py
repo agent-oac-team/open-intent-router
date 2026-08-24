@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
@@ -31,6 +32,22 @@ class PlanCancelTransition:
         "control_unsupported",
         "terminal_conflict",
     ]
+
+
+@dataclass(frozen=True)
+class PlanExecutionClaimFence:
+    """A durable, not-yet-acknowledged Plan Run start reservation.
+
+    ``execution_claim_expires_at=None`` is deliberately not a free-form
+    sentinel: it means the claim was fenced immediately before a durable Run
+    start.  The stable execution key is sufficient to deterministically
+    reconstruct the proposed Run identity after a process restart, without
+    guessing whether a prior write committed.
+    """
+
+    step_id: str
+    claim_id: str
+    execution_key: str
 
 
 class TurnRepository(Protocol):
@@ -101,6 +118,13 @@ class EventRepository(Protocol):
 class RunRepository(Protocol):
     async def add_run(self, run: AgentRun) -> AgentRun: ...
 
+    async def add_run_if_absent(
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, bool]: ...
+
     async def update_run(self, run: AgentRun) -> AgentRun: ...
 
     async def get_run(self, run_id: str) -> AgentRun | None: ...
@@ -142,13 +166,17 @@ class InvocationCompletionStore(Protocol):
         *,
         run: AgentRun,
         result: AgentResult,
+        may_commit: Callable[[], bool] | None = None,
     ) -> tuple[AgentRun, AgentResult]: ...
 
 
 class CanonicalInvocationStore(Protocol):
     async def start_run(
-        self, run: AgentRun
-    ) -> tuple[AgentRun, CanonicalTurn, AgentResult | None]: ...
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, CanonicalTurn, AgentResult | None, bool]: ...
 
     async def complete_run(
         self,
@@ -157,6 +185,7 @@ class CanonicalInvocationStore(Protocol):
         result: AgentResult,
         response_text: str,
         eligibility: FormationEligibilitySnapshot,
+        may_commit: Callable[[], bool] | None = None,
     ) -> tuple[AgentRun, AgentResult, CanonicalTurn]: ...
 
 
@@ -196,10 +225,28 @@ class PlanRepository(Protocol):
         tenant_id: str,
         user_id: str,
         claim_id: str,
-        lease_expires_at: datetime,
+        lease_expires_at: datetime | None,
         now: datetime,
         formation_suppressed: bool = False,
     ) -> Plan | None: ...
+
+    async def fence_step_claim(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        claim_id: str,
+    ) -> bool: ...
+
+    async def get_execution_claim_fence(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> PlanExecutionClaimFence | None: ...
 
     async def save_claimed_step(
         self,

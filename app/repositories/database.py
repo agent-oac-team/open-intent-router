@@ -1,12 +1,14 @@
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import and_, case, delete, desc, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.errors import RegistryError, RegistryVersionConflict
+from app.core.errors import InvocationDeadlineExceededError, RegistryError, RegistryVersionConflict
 from app.core.redaction import redact_value
 from app.db.models import (
     AgentDefinitionModel,
@@ -20,7 +22,8 @@ from app.db.models import (
     RegistryRevisionModel,
     RouteLogModel,
 )
-from app.repositories.interfaces import PlanCancelTransition
+from app.repositories.interfaces import PlanCancelTransition, PlanExecutionClaimFence
+from app.repositories.invocation_commit_guard import guard_invocation_commit
 from app.repositories.json_utils import dumps, loads
 from app.repositories.native_definition_migration_fence import (
     require_native_definition_migration_fence_open,
@@ -291,14 +294,41 @@ class DatabaseRunRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
 
-    async def add_run(self, run: AgentRun) -> AgentRun:
-        async with self.session_factory() as session:
+    async def add_run(
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> AgentRun:
+        async with self.session_factory() as session, session.begin():
+            guard_invocation_commit(session, may_commit)
             await require_native_definition_migration_fence_open(session, kind="new_execution")
+            _require_run_start_commit_allowed(may_commit)
             row = AgentRunModel(**_run_values(run))
             session.add(row)
-            await session.commit()
-            await session.refresh(row)
-            return _run_from_row(row)
+            # Explicitly flush before the local recheck. SQLAlchemy's
+            # ``before_commit`` hook runs *before* its implicit flush, so it
+            # alone cannot close the interval where a slow flush consumes the
+            # final pre-acceptance budget and then commits a late Run.
+            await session.flush()
+            _require_run_start_commit_allowed(may_commit)
+        return run.model_copy(deep=True)
+
+    async def add_run_if_absent(
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, bool]:
+        """Return the existing stable Run instead of racing its Adapter owner."""
+
+        try:
+            return await self.add_run(run, may_commit=may_commit), True
+        except IntegrityError:
+            existing = await self.get_run(run.run_id)
+            if existing is None:
+                raise
+            return existing, False
 
     async def update_run(self, run: AgentRun) -> AgentRun:
         async with self.session_factory() as session:
@@ -716,7 +746,7 @@ class DatabasePlanRepository:
         tenant_id: str,
         user_id: str,
         claim_id: str,
-        lease_expires_at: datetime,
+        lease_expires_at: datetime | None,
         now: datetime,
         formation_suppressed: bool = False,
     ) -> Plan | None:
@@ -733,7 +763,7 @@ class DatabasePlanRepository:
             if row is None:
                 return None
             expiry = _as_utc(row.execution_claim_expires_at)
-            expired = bool(row.execution_claim_id and (expiry is None or expiry <= _as_utc(now)))
+            expired = bool(row.execution_claim_id and expiry is not None and expiry <= _as_utc(now))
             allowed_step_statuses = ["pending", "blocked"]
             if expired and row.execution_claim_step_id == step_id:
                 allowed_step_statuses.append("running")
@@ -765,7 +795,6 @@ class DatabasePlanRepository:
                     PlanModel.status.in_(["pending", "running", "blocked"]),
                     or_(
                         PlanModel.execution_claim_id.is_(None),
-                        PlanModel.execution_claim_expires_at.is_(None),
                         PlanModel.execution_claim_expires_at <= now,
                     ),
                 )
@@ -912,6 +941,71 @@ class DatabasePlanRepository:
                 )
             )
 
+    async def get_execution_claim_fence(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> PlanExecutionClaimFence | None:
+        """Read a durable start fence without treating it as an expired lease."""
+
+        async with self.session_factory() as session:
+            row = await session.execute(
+                select(
+                    PlanModel.execution_claim_step_id,
+                    PlanModel.execution_claim_id,
+                    PlanModel.execution_claim_key,
+                ).where(
+                    PlanModel.plan_id == plan_id,
+                    PlanModel.tenant_id == tenant_id,
+                    PlanModel.user_id == user_id,
+                    PlanModel.execution_claim_id.is_not(None),
+                    PlanModel.execution_claim_expires_at.is_(None),
+                )
+            )
+            values = row.one_or_none()
+            if values is None:
+                return None
+            step_id, claim_id, execution_key = values
+            if not step_id or not claim_id or not execution_key:
+                # A partial historical write cannot safely be reclaimed or
+                # redispatched. Present it as unavailable rather than making
+                # an optimistic state transition here.
+                return None
+            return PlanExecutionClaimFence(
+                step_id=step_id,
+                claim_id=claim_id,
+                execution_key=execution_key,
+            )
+
+    async def fence_step_claim(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        claim_id: str,
+    ) -> bool:
+        """Persist a non-expiring Claim before beginning an uncertain Run write."""
+
+        async with self.session_factory() as session:
+            fenced = await session.execute(
+                update(PlanModel)
+                .where(
+                    PlanModel.plan_id == plan_id,
+                    PlanModel.tenant_id == tenant_id,
+                    PlanModel.user_id == user_id,
+                    PlanModel.execution_claim_id == claim_id,
+                    PlanModel.execution_claim_step_id == step_id,
+                )
+                .values(execution_claim_expires_at=None)
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+            return fenced.rowcount == 1
+
     async def renew_step_claim(
         self,
         plan_id: str,
@@ -930,9 +1024,17 @@ class DatabasePlanRepository:
                     PlanModel.tenant_id == tenant_id,
                     PlanModel.user_id == user_id,
                     PlanModel.execution_claim_id == claim_id,
-                    PlanModel.execution_claim_expires_at > now,
+                    or_(
+                        PlanModel.execution_claim_expires_at.is_(None),
+                        PlanModel.execution_claim_expires_at > now,
+                    ),
                 )
-                .values(execution_claim_expires_at=lease_expires_at)
+                .values(
+                    execution_claim_expires_at=case(
+                        (PlanModel.execution_claim_expires_at.is_(None), None),
+                        else_=lease_expires_at,
+                    )
+                )
                 .execution_options(synchronize_session=False)
             )
             await session.commit()
@@ -1293,6 +1395,13 @@ def _validate_run_identity(existing: AgentRun, incoming: AgentRun) -> None:
     )
     if any(getattr(existing, field) != getattr(incoming, field) for field in identity_fields):
         raise ValueError("Agent run identity cannot be changed")
+
+
+def _require_run_start_commit_allowed(may_commit: Callable[[], bool] | None) -> None:
+    """Abort a pre-acceptance Run mutation once its deadline elapsed."""
+
+    if may_commit is not None and not may_commit():
+        raise InvocationDeadlineExceededError()
 
 
 def _result_values(result: AgentResult) -> dict:

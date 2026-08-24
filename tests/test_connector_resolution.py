@@ -11,7 +11,11 @@ import pytest
 
 from app.application import ConnectorResolutionRequest, ResolvedConnector
 from app.core.config import Settings
-from app.core.errors import InvocationBindingUnavailableError, InvocationPreflightRejectedError
+from app.core.errors import (
+    InvocationBindingUnavailableError,
+    InvocationDeadlineExceededError,
+    InvocationPreflightRejectedError,
+)
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
 from app.runtime.catalog import (
@@ -23,6 +27,8 @@ from app.runtime.catalog import (
 )
 from app.runtime.invocation import (
     AgentCallEnvelope,
+    InvocationRuntime,
+    InvocationRuntimePolicy,
     RawInvocationFailure,
     RawInvocationOutcome,
     RuntimeAdapterBinding,
@@ -53,6 +59,17 @@ class _Connection:
 
 
 @dataclass
+class _Clock:
+    now: datetime
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, duration: timedelta) -> None:
+        self.now += duration
+
+
+@dataclass
 class _RecordingConnectorResolver:
     connector: ResolvedConnector | None
     failure: BaseException | None = None
@@ -69,6 +86,74 @@ class _RecordingConnectorResolver:
         self.released.append(connector)
         if isinstance(connector.connection, _Connection):
             connector.connection.closed = True
+
+
+@dataclass
+class _DeadlineAdvancingConnectorResolver(_RecordingConnectorResolver):
+    clock: _Clock | None = None
+    advance_by: timedelta = timedelta(0)
+
+    async def resolve(self, request: ConnectorResolutionRequest) -> ResolvedConnector | None:
+        self.requests.append(request)
+        if self.clock is not None:
+            self.clock.advance(self.advance_by)
+        if self.failure is not None:
+            raise self.failure
+        return self.connector
+
+
+@dataclass
+class _BlockingReleaseDeadlineConnectorResolver(_DeadlineAdvancingConnectorResolver):
+    """Makes post-deadline cleanup ownership observable without blocking 504."""
+
+    release_started: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_release: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def release(self, connector: ResolvedConnector) -> None:
+        self.released.append(connector)
+        self.release_started.set()
+        await self.allow_release.wait()
+        if isinstance(connector.connection, _Connection):
+            connector.connection.closed = True
+
+
+@dataclass
+class _CancellationDefiantReleaseConnectorResolver(_RecordingConnectorResolver):
+    """Models a deployment release hook that ignores shutdown cancellation."""
+
+    release_started: asyncio.Event = field(default_factory=asyncio.Event)
+    release_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_release: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def release(self, connector: ResolvedConnector) -> None:
+        self.released.append(connector)
+        self.release_started.set()
+        while not self.allow_release.is_set():
+            try:
+                await self.allow_release.wait()
+            except asyncio.CancelledError:
+                self.release_cancelled.set()
+        if isinstance(connector.connection, _Connection):
+            connector.connection.closed = True
+
+
+@dataclass
+class _DeadlineDefiantConnectorResolver(_RecordingConnectorResolver):
+    """Returns a Connector only after suppressing the preflight timeout."""
+
+    resolution_started: asyncio.Event = field(default_factory=asyncio.Event)
+    deadline_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_finish: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def resolve(self, request: ConnectorResolutionRequest) -> ResolvedConnector | None:
+        self.requests.append(request)
+        self.resolution_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.deadline_cancelled.set()
+            await self.allow_finish.wait()
+        return self.connector
 
 
 @dataclass
@@ -111,6 +196,47 @@ class _BlockingConnectorPreparerAdapter(_RecordingRuntimeAdapter):
         self.preparation_started.set()
         await self.allow_preparation.wait()
         return connector
+
+
+@dataclass
+class _DeadlineDefiantConnectorPreparerAdapter(_RecordingRuntimeAdapter):
+    """Suppresses one deadline cancellation during pre-acceptance DNS work."""
+
+    preparation_started: asyncio.Event = field(default_factory=asyncio.Event)
+    deadline_cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_finish: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def prepare_connector(
+        self,
+        _binding: RuntimeAdapterBinding,
+        connector: ResolvedConnector,
+    ) -> ResolvedConnector:
+        self.preparation_started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.deadline_cancelled.set()
+            await self.allow_finish.wait()
+        return connector
+
+
+@dataclass
+class _BlockingRuntimeAdapter(_RecordingRuntimeAdapter):
+    """Makes accepted client-disconnect cleanup observable with a Connector."""
+
+    execution_started: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_completion: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def execute(
+        self,
+        binding: RuntimeAdapterBinding,
+        connector: ResolvedConnector | None,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, connector, envelope))
+        self.execution_started.set()
+        await self.allow_completion.wait()
+        return self.outcome
 
 
 @dataclass
@@ -227,6 +353,7 @@ async def _service(
     adapter: _RecordingRuntimeAdapter,
     definition: AgentDefinitionV2 | None = None,
     traces: ExecutionTraceService | None = None,
+    runtime: InvocationRuntime | None = None,
 ) -> tuple[RuntimeCatalog, InvocationService, MemoryRunRepository, MemoryResultRepository]:
     descriptor = RuntimeAdapterDescriptor(
         key="connector_adapter",
@@ -265,6 +392,7 @@ async def _service(
             snapshot_runtime=snapshot_runtime,
             binding_resolver=BindingResolver(catalog, connector_resolver=resolver),
             execution_traces=traces,
+            invocation_runtime=runtime,
         ),
         runs,
         results,
@@ -350,6 +478,265 @@ async def test_connector_is_bound_to_the_trusted_request_and_never_enters_envelo
         assert resolver.released == [connector]
         assert private_connection.closed is True
     finally:
+        await catalog.aclose()
+
+
+async def test_connector_resolution_consumes_the_pipeline_deadline_before_run_acceptance() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    connector = _connector()
+    resolver = _DeadlineAdvancingConnectorResolver(
+        connector=connector,
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+    adapter = _RecordingRuntimeAdapter()
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(default_deadline_seconds=1),
+            clock=clock,
+        ),
+    )
+    try:
+        with pytest.raises(InvocationDeadlineExceededError) as raised:
+            await service.invoke(_request())
+
+        expected_deadline = datetime(2030, 1, 1, 0, 0, 1, tzinfo=UTC)
+        assert raised.value.status_code == 504
+        assert resolver.requests[0].deadline_at == expected_deadline
+        assert resolver.released == [connector]
+        assert runs.runs == {}
+        assert results.results == []
+        assert adapter.calls == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_same_turn_connector_failure_after_deadline_is_the_stable_504() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    resolver = _DeadlineAdvancingConnectorResolver(
+        connector=None,
+        failure=RuntimeError("resolver failed after budget was consumed"),
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+    adapter = _RecordingRuntimeAdapter()
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(default_deadline_seconds=1),
+            clock=clock,
+        ),
+    )
+    try:
+        with pytest.raises(InvocationDeadlineExceededError) as raised:
+            await service.invoke(_request())
+
+        assert raised.value.status_code == 504
+        assert runs.runs == {}
+        assert results.results == []
+        assert adapter.calls == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_post_deadline_connector_release_is_observed_without_delaying_504() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    connector = _connector()
+    resolver = _BlockingReleaseDeadlineConnectorResolver(
+        connector=connector,
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+    adapter = _RecordingRuntimeAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(default_deadline_seconds=1),
+        clock=clock,
+    )
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=runtime,
+    )
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await asyncio.wait_for(service.invoke(_request()), timeout=0.1)
+
+        await asyncio.wait_for(resolver.release_started.wait(), timeout=1)
+        assert runs.runs == {}
+        assert results.results == []
+        assert adapter.calls == []
+        assert runtime._late_preflight_cleanup_tasks
+
+        resolver.allow_release.set()
+        for _ in range(20):
+            if not runtime._late_preflight_cleanup_tasks:
+                break
+            await asyncio.sleep(0)
+        assert connector.connection.closed is True
+        assert runtime._late_preflight_cleanup_tasks == set()
+    finally:
+        resolver.allow_release.set()
+        await runtime.stop()
+        await catalog.aclose()
+
+
+async def test_shutdown_does_not_wait_forever_for_a_cancellation_defiant_connector_release() -> (
+    None
+):
+    connector = _connector()
+    resolver = _CancellationDefiantReleaseConnectorResolver(connector=connector)
+    adapter = _RecordingRuntimeAdapter()
+    runtime = InvocationRuntime(policy=InvocationRuntimePolicy(default_deadline_seconds=0.02))
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=runtime,
+    )
+    try:
+        result = await asyncio.wait_for(service.invoke(_request()), timeout=0.2)
+
+        assert result.status == "failed"
+        assert result.error is not None
+        assert result.error.code == "invocation_deadline_exceeded"
+        assert result.error.details == {
+            "category": "deadline_exceeded",
+            "retryable": False,
+            "completion_certainty": "unknown",
+        }
+        assert len(runs.runs) == len(results.results) == 1
+        assert results.results[0].error == result.error.model_dump()
+        await asyncio.wait_for(resolver.release_started.wait(), timeout=1)
+        assert runtime._late_preflight_cleanup_tasks
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(runtime.stop(), timeout=0.03)
+        assert resolver.release_cancelled.is_set()
+        assert runtime._late_preflight_cleanup_tasks
+
+        resolver.allow_release.set()
+        for _ in range(20):
+            if not runtime._late_preflight_cleanup_tasks:
+                break
+            await asyncio.sleep(0)
+        assert connector.connection.closed is True
+        assert runtime._late_preflight_cleanup_tasks == set()
+    finally:
+        resolver.allow_release.set()
+        await runtime.stop()
+        await catalog.aclose()
+
+
+async def test_deadline_observes_and_releases_a_late_connector_resolution() -> None:
+    connector = _connector()
+    resolver = _DeadlineDefiantConnectorResolver(connector=connector)
+    adapter = _RecordingRuntimeAdapter()
+    runtime = InvocationRuntime(policy=InvocationRuntimePolicy(default_deadline_seconds=0.01))
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=runtime,
+    )
+    try:
+        invocation = asyncio.create_task(service.invoke(_request()))
+        await asyncio.wait_for(resolver.resolution_started.wait(), timeout=1)
+
+        with pytest.raises(InvocationDeadlineExceededError):
+            await invocation
+
+        await asyncio.wait_for(resolver.deadline_cancelled.wait(), timeout=1)
+        assert runs.runs == {}
+        assert results.results == []
+        assert adapter.calls == []
+        assert resolver.released == []
+        assert len(runtime._late_preflight_tasks) == 1
+
+        resolver.allow_finish.set()
+        for _ in range(20):
+            if resolver.released:
+                break
+            await asyncio.sleep(0)
+        assert resolver.released == [connector]
+        assert connector.connection.closed is True
+        assert runtime._late_preflight_tasks == set()
+    finally:
+        resolver.allow_finish.set()
+        await runtime.stop()
+        await catalog.aclose()
+
+
+async def test_deadline_cancels_and_observes_late_connector_preparation_before_release() -> None:
+    connector = _connector()
+    resolver = _RecordingConnectorResolver(connector=connector)
+    adapter = _DeadlineDefiantConnectorPreparerAdapter()
+    runtime = InvocationRuntime(policy=InvocationRuntimePolicy(default_deadline_seconds=0.01))
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=runtime,
+    )
+    try:
+        invocation = asyncio.create_task(service.invoke(_request()))
+        await asyncio.wait_for(adapter.preparation_started.wait(), timeout=1)
+
+        with pytest.raises(InvocationDeadlineExceededError):
+            await invocation
+
+        await asyncio.wait_for(adapter.deadline_cancelled.wait(), timeout=1)
+        assert runs.runs == {}
+        assert results.results == []
+        assert adapter.calls == []
+        assert resolver.released == []
+        assert len(runtime._late_preflight_tasks) == 1
+
+        adapter.allow_finish.set()
+        for _ in range(20):
+            if resolver.released:
+                break
+            await asyncio.sleep(0)
+        assert resolver.released == [connector]
+        assert connector.connection.closed is True
+        assert runtime._late_preflight_tasks == set()
+    finally:
+        adapter.allow_finish.set()
+        await runtime.stop()
+        await catalog.aclose()
+
+
+async def test_client_disconnect_keeps_accepted_connector_scope_until_run_converges() -> None:
+    connector = _connector()
+    resolver = _RecordingConnectorResolver(connector=connector)
+    adapter = _BlockingRuntimeAdapter()
+    runtime = InvocationRuntime(policy=InvocationRuntimePolicy(default_deadline_seconds=5))
+    catalog, service, runs, results = await _service(
+        resolver=resolver,
+        adapter=adapter,
+        runtime=runtime,
+    )
+    try:
+        client_waiter = asyncio.create_task(service.invoke(_request()))
+        await asyncio.wait_for(adapter.execution_started.wait(), timeout=1)
+
+        client_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client_waiter
+
+        assert resolver.released == []
+        adapter.allow_completion.set()
+        for _ in range(20):
+            if results.results and not runtime._accepted_execution_tasks:
+                break
+            await asyncio.sleep(0)
+
+        assert len(runs.runs) == len(results.results) == 1
+        assert results.results[0].status == "completed"
+        assert resolver.released == [connector]
+        assert connector.connection.closed is True
+    finally:
+        adapter.allow_completion.set()
+        await runtime.stop()
         await catalog.aclose()
 
 

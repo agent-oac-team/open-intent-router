@@ -77,6 +77,16 @@ class InvocationPreflightRejectedError(InvocationError):
         self.code = reason_code
 
 
+class InvocationDeadlineExceededError(InvocationError):
+    """The single Invocation deadline elapsed before a Run was accepted."""
+
+    status_code = 504
+    code = "invocation_deadline_exceeded"
+
+    def __init__(self) -> None:
+        super().__init__("Invocation deadline exceeded.")
+
+
 class DirectInvocationUnsupportedError(AppError):
     """A Direct Invoke target uses a non-Invocation Handling branch."""
 

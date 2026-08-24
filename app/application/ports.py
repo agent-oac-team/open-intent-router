@@ -92,6 +92,10 @@ class ConnectorResolutionRequest:
     principal: UserContext = field(repr=False)
     adapter_key: str
     connector_ref: str
+    # The Invocation Runtime establishes this absolute fact before Connector
+    # resolution begins. Deployments may shorten their own work to its
+    # remaining budget but must never start a fresh full timeout.
+    deadline_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

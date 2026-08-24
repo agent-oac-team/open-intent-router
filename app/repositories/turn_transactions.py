@@ -1,8 +1,10 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import InvocationDeadlineExceededError
 from app.db.models import (
     AgentEventModel,
     AgentResultModel,
@@ -12,6 +14,7 @@ from app.db.models import (
     PlanStepModel,
     TurnOutboxModel,
 )
+from app.repositories.invocation_commit_guard import guard_invocation_commit
 from app.repositories.json_utils import dumps
 from app.repositories.plan_steps import plan_step_model
 from app.schemas.events import AgentEvent
@@ -38,9 +41,16 @@ class DatabaseTurnTransactionCoordinator:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
 
-    async def complete(self, bundle: TurnCompletionBundle) -> None:
+    async def complete(
+        self,
+        bundle: TurnCompletionBundle,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> None:
         _validate_bundle(bundle)
         async with self.session_factory() as session, session.begin():
+            guard_invocation_commit(session, may_commit)
+            _require_terminal_commit_allowed(may_commit)
             turn_row = await session.scalar(
                 select(CanonicalTurnModel)
                 .where(CanonicalTurnModel.turn_id == bundle.turn.turn_id)
@@ -70,6 +80,11 @@ class DatabaseTurnTransactionCoordinator:
                 await _apply_plan(session, bundle.plan)
             _apply_turn(turn_row, bundle.turn)
             session.add(TurnOutboxModel(**_outbox_values(bundle.outbox)))
+            # Do not leave new Result/Outbox rows for the transaction context
+            # to flush after the deadline check. The commit event guard below
+            # covers the final context-exit window as well.
+            await session.flush()
+            _require_terminal_commit_allowed(may_commit)
 
 
 def _validate_bundle(bundle: TurnCompletionBundle) -> None:
@@ -96,6 +111,13 @@ def _validate_bundle(bundle: TurnCompletionBundle) -> None:
         or bundle.event.user_id != bundle.turn.user_id
     ):
         raise TurnTransactionConflict("Event association conflicts")
+
+
+def _require_terminal_commit_allowed(may_commit: Callable[[], bool] | None) -> None:
+    """Abort before commit when the caller's absolute deadline elapsed."""
+
+    if may_commit is not None and not may_commit():
+        raise InvocationDeadlineExceededError()
 
 
 def _apply_run(row: AgentRunModel, run: AgentRun) -> None:

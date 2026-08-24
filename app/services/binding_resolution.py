@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -18,10 +19,12 @@ from app.application import (
 from app.core.errors import (
     DirectInvocationUnsupportedError,
     InvocationBindingUnavailableError,
+    InvocationDeadlineExceededError,
     InvocationError,
 )
 from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogKeyError
 from app.runtime.invocation import (
+    InvocationDeadline,
     RuntimeAdapterBinding,
     RuntimeAdapterConnectorPreparer,
     RuntimeAdapterConnectorValidator,
@@ -59,12 +62,18 @@ class ResolvedInvocationBinding:
         ]
         | None
     ) = field(default=None, repr=False)
+    _release_before_terminal: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def with_connector(
         self,
         connector: ResolvedConnector,
         *,
         late_task_cleanup: Callable[[], Awaitable[None]] | None = None,
+        release_before_terminal: Callable[[], Awaitable[None]] | None = None,
     ) -> ResolvedInvocationBinding:
         """Attach one request-only Connector without changing selected Handling.
 
@@ -90,7 +99,22 @@ class ResolvedInvocationBinding:
                 connector=connector,
                 late_task_cleanup=late_task_cleanup,
             ),
+            _release_before_terminal=release_before_terminal,
         )
+
+    async def release_before_terminal(self) -> None:
+        """Release this request's Connector before a Run becomes terminal.
+
+        The connector scope is normally managed by ``open_connector``.  For
+        an accepted Invocation, however, release remains part of the one
+        absolute deadline: exposing this narrow callback lets the Service
+        project a release timeout into the same durable terminal outcome
+        instead of discovering it only after a success was committed.
+        """
+
+        release = self._release_before_terminal
+        if release is not None:
+            await release()
 
     async def invoke(self, invocation: AgentInvocation) -> AgentInvocationResult:
         """Execute the retained pre-Runtime Adapter protocol during expansion.
@@ -122,11 +146,37 @@ class _ConnectorLease:
     _late_task_claimed: bool = False
     _released: bool = False
 
-    def defer_release_until_late_task_finishes(self) -> Awaitable[None]:
-        """Transfer cleanup to Runtime after it retains a late Adapter task."""
+    @property
+    def release_is_deferred(self) -> bool:
+        return self._late_task_claimed
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def defer_release(self) -> Awaitable[None]:
+        """Transfer a release to the Runtime's observed cleanup ownership."""
 
         self._late_task_claimed = True
         return self.release()
+
+    def defer_release_until_late_task_finishes(self) -> Awaitable[None]:
+        """Transfer cleanup to Runtime after it retains a late Adapter task."""
+
+        return self.defer_release()
+
+    def defer_release_task(self, task: asyncio.Future[object]) -> Awaitable[None]:
+        """Let Runtime drain an already-started, deadline-late release.
+
+        The request path awaits a shield around ``task``, so its deadline
+        cancellation cannot cancel the actual deployment release. Return that
+        original task directly to Runtime instead of a shielded wrapper: the
+        lifecycle stop path must be able to cancel and drain the real release
+        task before Catalog disposal.
+        """
+
+        self._late_task_claimed = True
+        return cast(Awaitable[None], task)
 
     async def close(self) -> None:
         """Release now unless Runtime owns cleanup for a late Adapter task."""
@@ -161,6 +211,7 @@ class BindingResolver:
         binding: ResolvedInvocationBinding,
         *,
         principal: UserContext,
+        deadline: InvocationDeadline | None = None,
     ) -> AsyncIterator[ResolvedInvocationBinding]:
         """Resolve then always release one Connector around an accepted call.
 
@@ -208,17 +259,28 @@ class BindingResolver:
                 details={"reason_code": "connector_unavailable"},
             )
 
+        if deadline is not None:
+            deadline.require_remaining()
         request = ConnectorResolutionRequest(
             tenant_id=tenant_id,
             principal=principal.model_copy(deep=True),
             adapter_key=binding.adapter_key,
             connector_ref=binding.requirement.connector_ref,
+            deadline_at=deadline.deadline_at if deadline is not None else None,
         )
         try:
             candidate = resolver.resolve(request)
             if not isawaitable(candidate):
                 raise TypeError("Connector Resolver must resolve asynchronously")
-            connector = await candidate
+            if deadline is None:
+                connector = await candidate
+            else:
+                connector = await deadline.wait_for(
+                    candidate,
+                    on_late_task=lambda task: _release_late_resolved_connector(resolver, task),
+                )
+        except InvocationDeadlineExceededError:
+            raise
         except Exception:
             raise InvocationBindingUnavailableError(
                 "Invocation Binding is unavailable",
@@ -236,6 +298,8 @@ class BindingResolver:
         # or short-lived clients in that window.
         lease = _ConnectorLease(resolver=resolver, connector=connector)
         try:
+            if deadline is not None:
+                deadline.require_remaining()
             self._validate_resolved_connector(
                 connector,
                 tenant_id=tenant_id,
@@ -243,7 +307,18 @@ class BindingResolver:
                 connector_ref=binding.requirement.connector_ref,
             )
             self._validate_connector_for_adapter(binding, connector)
-            prepared_connector = await self._prepare_connector_for_adapter(binding, connector)
+            prepared_connector = await self._prepare_connector_for_adapter(
+                binding,
+                connector,
+                deadline=deadline,
+                late_task_cleanup=(
+                    (lambda _task: lease.defer_release_until_late_task_finishes())
+                    if deadline is not None
+                    else None
+                ),
+            )
+            if deadline is not None:
+                deadline.require_remaining()
             self._validate_resolved_connector(
                 prepared_connector,
                 tenant_id=tenant_id,
@@ -253,10 +328,60 @@ class BindingResolver:
             resolved = binding.with_connector(
                 prepared_connector,
                 late_task_cleanup=lease.defer_release_until_late_task_finishes,
+                release_before_terminal=lambda: self._close_lease_before_terminal(
+                    lease,
+                    deadline=deadline,
+                ),
             )
             yield resolved
         finally:
+            # Connector release is also part of the request's absolute
+            # budget.  Checking only before entering ``close`` is racy: a
+            # deployment release can begin with 1ms remaining and then block
+            # indefinitely.  Shield the actual release and hand it to the
+            # Runtime if the remaining budget elapses, so the response never
+            # waits while lifecycle still owns the request-scoped resource.
+            if not lease.released and not lease.release_is_deferred:
+                if deadline is None:
+                    await lease.close()
+                else:
+                    try:
+                        await self._close_lease_before_terminal(lease, deadline=deadline)
+                    except InvocationDeadlineExceededError:
+                        # A body that has not used the accepted-call callback
+                        # is already raising its own deadline error. The
+                        # Runtime's late-cleanup observer owns the actual
+                        # release; do not hide that failure with cleanup
+                        # latency.
+                        if not lease.release_is_deferred:
+                            raise
+
+    @staticmethod
+    async def _close_lease_before_terminal(
+        lease: _ConnectorLease,
+        *,
+        deadline: InvocationDeadline | None,
+    ) -> None:
+        """Release under the shared budget and retain a late deployment task."""
+
+        if lease.released or lease.release_is_deferred:
+            return
+        if deadline is None:
             await lease.close()
+            return
+        release_task = asyncio.create_task(lease.close())
+        try:
+            await deadline.wait_for(
+                asyncio.shield(release_task),
+                on_late_task=lambda _task: lease.defer_release_task(release_task),
+            )
+        except InvocationDeadlineExceededError:
+            # ``wait_for`` invokes the cleanup hook even in the immediate
+            # expiry case. Keep this defensive branch for non-standard
+            # Deadline implementations used by narrow Host tests.
+            if not lease.release_is_deferred:
+                deadline.observe_late_cleanup(lease.defer_release_task(release_task))
+            raise
 
     @staticmethod
     def _validate_resolved_connector(
@@ -314,6 +439,9 @@ class BindingResolver:
     async def _prepare_connector_for_adapter(
         binding: ResolvedInvocationBinding,
         connector: ResolvedConnector,
+        *,
+        deadline: InvocationDeadline | None = None,
+        late_task_cleanup: Callable[[asyncio.Future[object]], Awaitable[None] | None] | None = None,
     ) -> ResolvedConnector:
         """Let an Adapter attach request-only verified transport facts."""
 
@@ -325,7 +453,15 @@ class BindingResolver:
             candidate = preparer(execution.binding, connector)
             if not isawaitable(candidate):
                 raise TypeError("Connector preparer must be async")
-            prepared = await candidate
+            if deadline is None:
+                prepared = await candidate
+            else:
+                prepared = await deadline.wait_for(
+                    candidate,
+                    on_late_task=late_task_cleanup,
+                )
+        except InvocationDeadlineExceededError:
+            raise
         except Exception:
             raise InvocationBindingUnavailableError(
                 "Invocation Binding is unavailable",
@@ -548,3 +684,23 @@ def _supports_v2_invocation_protocol(method: object) -> bool:
     except Exception:
         return False
     return True
+
+
+def _release_late_resolved_connector(
+    resolver: ConnectorResolverApplicationPort,
+    task: asyncio.Future[object],
+) -> Awaitable[None]:
+    """Release a Connector returned after its pre-acceptance budget expired."""
+
+    async def release() -> None:
+        result = getattr(task, "result", None)
+        if not callable(result):
+            return
+        try:
+            connector = result()
+        except (asyncio.CancelledError, Exception):
+            return
+        if isinstance(connector, ResolvedConnector):
+            await BindingResolver._release_connector(resolver, connector)
+
+    return release()

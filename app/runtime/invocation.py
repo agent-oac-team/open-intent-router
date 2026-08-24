@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from math import isfinite
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, TypeVar, cast
 from urllib.parse import unquote, urlsplit
 
 from jsonschema import SchemaError as JsonSchemaSchemaError
@@ -26,7 +26,7 @@ from jsonschema import validate as validate_json_schema
 from pydantic import ConfigDict, Field, StrictInt, StrictStr, ValidationError, model_validator
 
 from app.application import ResolvedConnector
-from app.core.errors import InvocationPreflightRejectedError
+from app.core.errors import InvocationDeadlineExceededError, InvocationPreflightRejectedError
 from app.schemas.agents import (
     INVOCATION_PRINCIPAL_CLAIMS,
     InvocationLimits,
@@ -187,6 +187,136 @@ class InvocationRuntimePolicy:
             if limits.max_artifact_metadata_bytes is not None
             else self.max_artifact_metadata_bytes,
         )
+
+
+InvocationClock = Callable[[], datetime]
+_DeadlineValue = TypeVar("_DeadlineValue")
+LateInvocationTaskCleanup = Callable[[asyncio.Future[object]], Awaitable[None] | None]
+LateInvocationTaskObserver = Callable[
+    [asyncio.Future[object], LateInvocationTaskCleanup | None], None
+]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationDeadline:
+    """One immutable, process-owned deadline shared by an Invocation pipeline.
+
+    The value is established before Connector or Context work starts.  It is
+    deliberately distinct from a relative timeout so no nested operation can
+    reset the caller's budget by starting a fresh timer.
+    """
+
+    deadline_at: datetime
+    _clock: InvocationClock = field(repr=False, compare=False)
+    _observe_late_task: LateInvocationTaskObserver | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def remaining_seconds(self) -> float:
+        return (self.deadline_at - _as_utc(self._clock())).total_seconds()
+
+    def require_remaining(self) -> float:
+        remaining = self.remaining_seconds()
+        if remaining <= 0:
+            raise InvocationDeadlineExceededError()
+        return remaining
+
+    def has_elapsed(self, timestamp: datetime | None) -> bool:
+        """Compare a persisted deadline using this invocation's clock."""
+
+        return timestamp is not None and _as_utc(timestamp) <= _as_utc(self._clock())
+
+    async def wait_for(
+        self,
+        awaitable: Awaitable[_DeadlineValue],
+        *,
+        on_late_task: LateInvocationTaskCleanup | None = None,
+        require_remaining_after_result: bool = True,
+    ) -> _DeadlineValue:
+        """Await work only through the remaining absolute budget.
+
+        A Connector Resolver or Context Provider may accidentally suppress
+        cancellation.  The Runtime still returns at the absolute deadline and
+        retains that late task through lifecycle shutdown rather than letting
+        it become an unobserved background task. Accepted terminal persistence
+        may opt out of the post-result check because its repository-level
+        commit guard, rather than a late acknowledgement, establishes the
+        durable deadline boundary.
+        """
+
+        task = asyncio.ensure_future(awaitable)
+        try:
+            timeout = self.require_remaining()
+        except InvocationDeadlineExceededError:
+            # Even an already-expired call may own a shielded Connector
+            # release, heartbeat, or durable-write task.  Give the same
+            # late-task hook a real Future in this zero-budget branch rather
+            # than merely closing a coroutine and losing lifecycle ownership.
+            task.cancel()
+            self._observe(task, on_late_task)
+            raise
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            task.cancel()
+            self._observe(task, on_late_task)
+            raise
+        if task not in done:
+            task.cancel()
+            self._observe(task, on_late_task)
+            raise InvocationDeadlineExceededError()
+        try:
+            value = task.result()
+        except BaseException:
+            # A dependency can fail in the same event-loop turn that consumed
+            # the last budget. The absolute deadline wins at the public
+            # boundary; while budget remains, preserve the dependency's own
+            # failure mapping (for example Connector -> 503 unavailable).
+            if self.remaining_seconds() <= 0:
+                raise InvocationDeadlineExceededError() from None
+            raise
+        if require_remaining_after_result:
+            try:
+                self.require_remaining()
+            except InvocationDeadlineExceededError:
+                # The dependency completed in the same event-loop turn in
+                # which its absolute budget elapsed. It must not be accepted,
+                # but a late Connector result still needs its request-scoped
+                # release. Register its release with the Runtime rather than
+                # awaiting it inline: an uncooperative Connector cleanup
+                # cannot extend the mandated pre-acceptance 504 response.
+                self._observe(task, on_late_task)
+                raise
+        return cast(_DeadlineValue, value)
+
+    def _observe(
+        self,
+        task: asyncio.Future[object],
+        on_late_task: LateInvocationTaskCleanup | None,
+    ) -> None:
+        observer = self._observe_late_task
+        if observer is not None:
+            observer(task, on_late_task)
+            return
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                return
+
+        task.add_done_callback(consume)
+
+    def observe_late_cleanup(self, cleanup: Awaitable[None]) -> None:
+        """Retain a post-deadline resource release without delaying the caller."""
+
+        self._observe(asyncio.ensure_future(cleanup), None)
 
 
 class AgentCallEnvelope(StrictBaseModel):
@@ -438,8 +568,14 @@ class RuntimeAdapterExecution:
 class InvocationRuntime:
     """Process-owned Runtime that projects Adapter outcomes into public results."""
 
-    def __init__(self, *, policy: InvocationRuntimePolicy | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        policy: InvocationRuntimePolicy | None = None,
+        clock: InvocationClock | None = None,
+    ) -> None:
         self._policy = policy or InvocationRuntimePolicy()
+        self._clock = clock or _utc_now
         # A cancellation-defiant Adapter task must remain strongly owned until
         # it completes.  Otherwise it can be garbage-collected before
         # application shutdown drains it, leaving it to use a disposed Adapter
@@ -447,46 +583,58 @@ class InvocationRuntime:
         # task is removed, together with its cleanup hook, as soon as it ends.
         self._late_adapter_tasks: set[asyncio.Future[object]] = set()
         self._late_adapter_cleanup_tasks: set[asyncio.Future[object]] = set()
+        self._late_preflight_tasks: set[asyncio.Future[object]] = set()
+        self._late_preflight_cleanup_tasks: set[asyncio.Future[object]] = set()
+        # A disconnected HTTP client must not cancel a Run that was already
+        # accepted.  These tasks retain the complete Connector scope and
+        # persistence convergence until they finish, or application shutdown
+        # explicitly takes control of them.
+        self._accepted_execution_tasks: set[asyncio.Future[object]] = set()
+        # A cancelled durable Run start may have committed before its
+        # acknowledgement was delivered. These reconciliation tasks never
+        # redispatch an Adapter; they only read the stable Run identity and
+        # converge it or safely release its fenced Plan claim.
+        self._durable_start_reconciliation_tasks: set[asyncio.Future[object]] = set()
 
-    async def start(self) -> None:
-        """Participate in the application lifecycle before Adapter use begins."""
+    def establish_deadline(self, invocation: AgentInvocation) -> AgentInvocation:
+        """Stamp the sole absolute deadline at pipeline entry.
 
-    async def stop(self) -> None:
-        """Cancel and drain Adapter tasks that outlived their call deadline.
-
-        Normal calls are owned by their request.  Only cancellation-defiant
-        tasks are retained here, so application shutdown can stop observing
-        them before the Catalog releases the underlying Adapters.  The owning
-        Application Runtime still applies its bounded cleanup deadline to this
-        operation.
+        A caller may only tighten this process policy.  The returned immutable
+        Invocation is then carried through Connector resolution, Context
+        preflight, the Envelope and durable Run record.
         """
 
-        while self._late_adapter_tasks or self._late_adapter_cleanup_tasks:
-            tasks = tuple(self._late_adapter_tasks)
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-                # A completed Task's done callbacks may be queued behind the
-                # gather continuation. Remove this known-complete batch here
-                # as well, so shutdown cannot busy-loop before those callbacks
-                # get a chance to discard it.
-                self._late_adapter_tasks.difference_update(tasks)
+        deadline_at = _resolve_deadline(
+            invocation.deadline_at,
+            default_deadline_seconds=self._policy.default_deadline_seconds,
+            now=self._clock(),
+        )
+        return invocation.model_copy(update={"deadline_at": deadline_at})
 
-            cleanup_tasks = tuple(self._late_adapter_cleanup_tasks)
-            if cleanup_tasks:
-                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-                self._late_adapter_cleanup_tasks.difference_update(cleanup_tasks)
+    def deadline_for(self, invocation: AgentInvocation) -> InvocationDeadline:
+        """Return the already-established deadline for an Invocation."""
 
-    def preflight(
+        established = self.establish_deadline(invocation)
+        deadline_at = established.deadline_at
+        if deadline_at is None:  # pragma: no cover - establish_deadline guarantees it.
+            raise InvocationDeadlineExceededError()
+        return InvocationDeadline(
+            deadline_at=deadline_at,
+            _clock=self._clock,
+            _observe_late_task=self._observe_late_preflight_task,
+        )
+
+    def _preflight_established(
         self,
         *,
         execution: RuntimeAdapterExecution,
         invocation: AgentInvocation,
         input_schema: Mapping[str, object] | None = None,
     ) -> AgentCallEnvelope:
-        """Construct and bound the Adapter envelope before accepting a Run."""
+        """Validate an Invocation whose absolute deadline is already fixed."""
 
+        deadline = self.deadline_for(invocation)
+        deadline.require_remaining()
         # Callers that assemble Context first use ``preflight_input`` before
         # any Provider sees request data. Repeating it here keeps direct
         # Runtime callers safe and makes this method self-contained.
@@ -498,7 +646,7 @@ class InvocationRuntime:
         envelope = _build_call_envelope(
             invocation,
             input_schema=input_schema,
-            deadline_seconds=self._policy.default_deadline_seconds,
+            deadline_at=deadline.deadline_at,
             principal_claims=(execution.principal_claims & self._policy.allowed_principal_claims),
             principal_attribute_keys=(
                 execution.principal_attribute_keys & self._policy.allowed_principal_attribute_keys
@@ -514,7 +662,94 @@ class InvocationRuntime:
             max_metadata_bytes=self._policy.effective_artifact_metadata_limit(execution.limits),
         ):
             raise InvocationPreflightRejectedError("invocation_artifact_invalid")
+        deadline.require_remaining()
         return envelope
+
+    async def start(self) -> None:
+        """Participate in the application lifecycle before Adapter use begins."""
+
+    async def stop(self) -> None:
+        """Cancel and drain Adapter tasks that outlived their call deadline.
+
+        Normal calls are owned by their request.  Only cancellation-defiant
+        tasks are retained here, so application shutdown can stop observing
+        them before the Catalog releases the underlying Adapters.  The owning
+        Application Runtime still applies its bounded cleanup deadline to this
+        operation.
+        """
+
+        while (
+            self._accepted_execution_tasks
+            or self._durable_start_reconciliation_tasks
+            or self._late_adapter_tasks
+            or self._late_adapter_cleanup_tasks
+            or self._late_preflight_tasks
+            or self._late_preflight_cleanup_tasks
+        ):
+            accepted_tasks = tuple(self._accepted_execution_tasks)
+            for task in accepted_tasks:
+                task.cancel()
+            if accepted_tasks:
+                await _drain_shutdown_tasks(accepted_tasks)
+                self._accepted_execution_tasks.difference_update(accepted_tasks)
+
+            tasks = tuple(self._late_adapter_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await _drain_shutdown_tasks(tasks)
+                # A completed Task's done callbacks may be queued behind the
+                # gather continuation. Remove this known-complete batch here
+                # as well, so shutdown cannot busy-loop before those callbacks
+                # get a chance to discard it.
+                self._late_adapter_tasks.difference_update(tasks)
+
+            cleanup_tasks = tuple(self._late_adapter_cleanup_tasks)
+            if cleanup_tasks:
+                for task in cleanup_tasks:
+                    task.cancel()
+                await _drain_shutdown_tasks(cleanup_tasks)
+                self._late_adapter_cleanup_tasks.difference_update(cleanup_tasks)
+
+            preflight_tasks = tuple(self._late_preflight_tasks)
+            for task in preflight_tasks:
+                task.cancel()
+            if preflight_tasks:
+                await _drain_shutdown_tasks(preflight_tasks)
+                self._late_preflight_tasks.difference_update(preflight_tasks)
+
+            preflight_cleanup_tasks = tuple(self._late_preflight_cleanup_tasks)
+            if preflight_cleanup_tasks:
+                for task in preflight_cleanup_tasks:
+                    task.cancel()
+                await _drain_shutdown_tasks(preflight_cleanup_tasks)
+                self._late_preflight_cleanup_tasks.difference_update(preflight_cleanup_tasks)
+
+            reconciliation_tasks = tuple(self._durable_start_reconciliation_tasks)
+            if reconciliation_tasks:
+                # Drain every Adapter/Connector task first. A durable fence
+                # makes an unreadable start record restart-safe, but a short
+                # transient read can still converge it during normal shutdown.
+                # If the enclosing Application cleanup bound fires, only this
+                # no-dispatch reconciliation remains; it cannot keep a live
+                # Adapter running after Catalog disposal.
+                await _drain_shutdown_tasks(reconciliation_tasks)
+                self._durable_start_reconciliation_tasks.difference_update(reconciliation_tasks)
+
+    def preflight(
+        self,
+        *,
+        execution: RuntimeAdapterExecution,
+        invocation: AgentInvocation,
+        input_schema: Mapping[str, object] | None = None,
+    ) -> AgentCallEnvelope:
+        """Construct and bound the Adapter envelope before accepting a Run."""
+
+        return self._preflight_established(
+            execution=execution,
+            invocation=self.establish_deadline(invocation),
+            input_schema=input_schema,
+        )
 
     def preflight_input(
         self,
@@ -537,13 +772,10 @@ class InvocationRuntime:
         _validate_projected_input(projected_input, input_schema=input_schema)
         if _json_size(projected_input) > self._policy.effective_input_limit(execution.limits):
             raise InvocationPreflightRejectedError("invocation_input_limit_exceeded")
-        # Validate a supplied deadline before any Provider work begins. The
-        # Envelope itself is constructed after Context assembly so its default
-        # deadline starts with accepted Adapter execution.
-        _resolve_deadline(
-            invocation.deadline_at,
-            default_deadline_seconds=self._policy.default_deadline_seconds,
-        )
+        # The first pipeline step stamps a concrete absolute deadline. Direct
+        # Runtime callers may invoke this method independently, so establish
+        # and validate one here too; an existing deadline is never extended.
+        self.deadline_for(invocation).require_remaining()
         if not _artifact_refs_are_safe(
             invocation.artifact_refs,
             max_count=self._policy.effective_artifact_count_limit(execution.limits),
@@ -578,7 +810,8 @@ class InvocationRuntime:
         input_schema: Mapping[str, object] | None = None,
         output_schema: Mapping[str, object] | None = None,
     ) -> AgentInvocationResult:
-        envelope = self.preflight(
+        invocation = self.establish_deadline(invocation)
+        envelope = self._preflight_established(
             execution=execution,
             invocation=invocation,
             input_schema=input_schema,
@@ -589,6 +822,105 @@ class InvocationRuntime:
             invocation=invocation,
             agent_id=agent_id,
             output_schema=output_schema,
+        )
+
+    async def execute_legacy_v2(
+        self,
+        *,
+        invoke: Callable[[], Awaitable[AgentInvocationResult]],
+        invocation: AgentInvocation,
+        agent_id: str,
+    ) -> AgentInvocationResult:
+        """Bound a retained ``invoke_v2`` Adapter by the shared deadline.
+
+        ``legacy_v2`` remains a transition protocol, but it is still an
+        accepted Invocation path. It therefore cannot reset or bypass the
+        process-owned deadline merely because it does not consume an
+        ``AgentCallEnvelope`` yet.
+        """
+
+        deadline = self.deadline_for(invocation)
+        remaining = deadline.remaining_seconds()
+        if remaining <= 0:
+            return self.project_failure(
+                invocation=invocation,
+                agent_id=agent_id,
+                failure=RawInvocationFailure.for_category(
+                    "deadline_exceeded",
+                    retryable=False,
+                ),
+                completion_certainty="certain",
+            )
+        try:
+            result = await _await_runtime_value(
+                invoke(),
+                timeout=remaining,
+                observe_late_task=lambda task: self._observe_late_adapter_task(
+                    task,
+                    late_task_cleanup=None,
+                ),
+            )
+        except asyncio.CancelledError as exc:
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
+                invocation=invocation,
+                agent_id=agent_id,
+                exc=exc,
+                completion_certainty="unknown",
+            )
+        except TimeoutError as exc:
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
+                invocation=invocation,
+                agent_id=agent_id,
+                exc=exc,
+                completion_certainty="unknown",
+            )
+        except Exception as exc:
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
+                invocation=invocation,
+                agent_id=agent_id,
+                exc=exc,
+                completion_certainty="unknown",
+            )
+        if deadline.remaining_seconds() <= 0:
+            return self.project_failure(
+                invocation=invocation,
+                agent_id=agent_id,
+                failure=RawInvocationFailure.for_category(
+                    "deadline_exceeded",
+                    retryable=False,
+                ),
+                completion_certainty="unknown",
+            )
+        if not isinstance(result, AgentInvocationResult):
+            return self.project_failure(
+                invocation=invocation,
+                agent_id=agent_id,
+                failure=RawInvocationFailure.for_category(
+                    "invalid_response",
+                    retryable=False,
+                ),
+            )
+        if result.status in {"completed", "blocked", "clarify"}:
+            # ``blocked``/``clarify`` are controlled non-terminal Adapter
+            # outcomes rather than evidence of a transport failure. They
+            # remain valid across the temporary legacy_v2 bridge after the
+            # shared deadline check above.
+            return result
+        # A retained v2 Adapter has already crossed the dispatch boundary.
+        # Its public result is an old compatibility shape, so it cannot
+        # attest that a remote side effect did not happen. Re-project it
+        # through the closed Runtime failure vocabulary and forbid redispatch.
+        category = _legacy_failure_category(result)
+        return self.project_failure(
+            invocation=invocation,
+            agent_id=agent_id,
+            failure=RawInvocationFailure.for_category(category, retryable=False),
+            completion_certainty=(
+                "unknown" if category in {"remote_failure", "deadline_exceeded"} else None
+            ),
         )
 
     async def execute_preflighted(
@@ -612,7 +944,8 @@ class InvocationRuntime:
         # and the Adapter gets a deep copy, but this local value also protects
         # the terminal decision from a hostile ``object.__setattr__`` bypass.
         deadline_at = envelope.deadline_at
-        remaining = (deadline_at - datetime.now(UTC)).total_seconds()
+        deadline = InvocationDeadline(deadline_at=deadline_at, _clock=self._clock)
+        remaining = deadline.remaining_seconds()
         if remaining <= 0:
             return self.project_failure(
                 invocation=invocation,
@@ -621,9 +954,10 @@ class InvocationRuntime:
                     "deadline_exceeded",
                     retryable=False,
                 ),
+                completion_certainty="certain",
             )
         try:
-            outcome = await _await_runtime_outcome(
+            outcome = await _await_runtime_value(
                 execution.invoke(envelope.model_copy(deep=True)),
                 timeout=remaining,
                 observe_late_task=lambda task: self._observe_late_adapter_task(
@@ -632,34 +966,39 @@ class InvocationRuntime:
                 ),
             )
         except asyncio.CancelledError as exc:
-            # An accepted execution must never leave its Run in ``running``.
-            # This is a safe failure projection, not a claim that a remote
-            # side effect was cancelled; later control semantics add a more
-            # precise completion-certainty contract.
-            return self.project_exception(
+            # An accepted Adapter may already have dispatched remote work. A
+            # cancellation is never evidence that its side effect stopped.
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
                 invocation=invocation,
                 agent_id=agent_id,
                 exc=exc,
+                completion_certainty="unknown",
             )
         except TimeoutError as exc:
-            return self.project_exception(
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
                 invocation=invocation,
                 agent_id=agent_id,
                 exc=exc,
+                completion_certainty="unknown",
             )
         except _InvalidRuntimeAdapterOutcome as exc:
-            return self.project_exception(
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
                 invocation=invocation,
                 agent_id=agent_id,
                 exc=exc,
             )
         except Exception as exc:
-            return self.project_exception(
+            return self._project_exception_or_expired_deadline(
+                deadline=deadline,
                 invocation=invocation,
                 agent_id=agent_id,
                 exc=exc,
+                completion_certainty="unknown",
             )
-        if datetime.now(UTC) > deadline_at:
+        if deadline.remaining_seconds() <= 0:
             # A task that completed in the same event-loop turn as the timer
             # cannot be permitted to turn an expired absolute deadline into a
             # success merely because scheduling observed its result first.
@@ -670,12 +1009,21 @@ class InvocationRuntime:
                     "deadline_exceeded",
                     retryable=False,
                 ),
+                completion_certainty="unknown",
             )
         if outcome.failure is not None:
             return self.project_failure(
                 invocation=invocation,
                 agent_id=agent_id,
                 failure=outcome.failure,
+                # A remote/deadline failure can occur after the request left
+                # Core. Closed local unavailable/rejected categories retain
+                # their documented retry semantics instead.
+                completion_certainty=(
+                    "unknown"
+                    if outcome.failure.category in {"remote_failure", "deadline_exceeded"}
+                    else None
+                ),
             )
         output_size = _json_size_or_none(outcome.output)
         if (
@@ -712,16 +1060,45 @@ class InvocationRuntime:
             agent_id=agent_id,
         )
 
+    def _project_exception_or_expired_deadline(
+        self,
+        *,
+        deadline: InvocationDeadline,
+        invocation: AgentInvocation,
+        agent_id: str,
+        exc: BaseException,
+        completion_certainty: Literal["certain", "unknown"] | None = None,
+    ) -> AgentInvocationResult:
+        """Let an elapsed absolute deadline win over a same-turn exception."""
+
+        if deadline.remaining_seconds() <= 0:
+            return self.project_failure(
+                invocation=invocation,
+                agent_id=agent_id,
+                failure=RawInvocationFailure.for_category(
+                    "deadline_exceeded",
+                    retryable=False,
+                ),
+                completion_certainty="unknown",
+            )
+        return self.project_exception(
+            invocation=invocation,
+            agent_id=agent_id,
+            exc=exc,
+            completion_certainty=completion_certainty,
+        )
+
     def project_exception(
         self,
         *,
         invocation: AgentInvocation,
         agent_id: str,
         exc: BaseException,
+        completion_certainty: Literal["certain", "unknown"] | None = None,
     ) -> AgentInvocationResult:
         """Map an Adapter exception without trusting its message or details."""
 
-        if isinstance(exc, TimeoutError):
+        if isinstance(exc, TimeoutError | InvocationDeadlineExceededError):
             failure = RawInvocationFailure.for_category(
                 "deadline_exceeded",
                 retryable=False,
@@ -740,6 +1117,7 @@ class InvocationRuntime:
             invocation=invocation,
             agent_id=agent_id,
             failure=failure,
+            completion_certainty=completion_certainty,
         )
 
     def project_failure(
@@ -748,9 +1126,24 @@ class InvocationRuntime:
         invocation: AgentInvocation,
         agent_id: str,
         failure: RawInvocationFailure,
+        completion_certainty: Literal["certain", "unknown"] | None = None,
     ) -> AgentInvocationResult:
         """Create the only public projection for an accepted Adapter failure."""
 
+        # Timeout/cancel uncertainty is never an automatic redispatch signal.
+        # Adapter code may report a safe category, but it cannot turn a
+        # possibly side-effecting deadline outcome into a retryable one.
+        retryable = (
+            False
+            if failure.category == "deadline_exceeded" or completion_certainty == "unknown"
+            else failure.retryable
+        )
+        details: JsonDict = {
+            "category": failure.category,
+            "retryable": retryable,
+        }
+        if completion_certainty is not None:
+            details["completion_certainty"] = completion_certainty
         return AgentInvocationResult(
             run_id=invocation.run_id,
             agent_id=agent_id,
@@ -759,10 +1152,7 @@ class InvocationRuntime:
             error=ErrorDetail(
                 code=failure.code,
                 message=_PUBLIC_FAILURE_MESSAGE,
-                details={
-                    "category": failure.category,
-                    "retryable": failure.retryable,
-                },
+                details=details,
             ),
         )
 
@@ -793,6 +1183,79 @@ class InvocationRuntime:
                 ),
             )
         return result
+
+    def retain_accepted_execution(self, task: asyncio.Future[object]) -> None:
+        """Keep an accepted server-side execution alive after client disconnect.
+
+        The task owns the whole Connector scope and Run/Result completion
+        sequence.  It is intentionally retained only after acceptance; a
+        disconnected client cannot turn that accepted work into a remote
+        cancellation request.
+        """
+
+        self._accepted_execution_tasks.add(task)
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            self._accepted_execution_tasks.discard(completed)
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                # The task itself owns safe Run convergence. Never surface a
+                # private Adapter or Connector exception from a detached call.
+                return
+
+        task.add_done_callback(consume)
+
+    def retain_durable_start_reconciliation(self, task: asyncio.Future[object]) -> None:
+        """Strongly retain a no-dispatch start-outcome reconciliation task."""
+
+        self._durable_start_reconciliation_tasks.add(task)
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            self._durable_start_reconciliation_tasks.discard(completed)
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                return
+
+        task.add_done_callback(consume)
+
+    def _observe_late_preflight_task(
+        self,
+        task: asyncio.Future[object],
+        late_task_cleanup: LateInvocationTaskCleanup | None,
+    ) -> None:
+        """Retain a cancelled Context/Connector task until it really stops."""
+
+        self._late_preflight_tasks.add(task)
+        cleanup = late_task_cleanup(task) if late_task_cleanup is not None else None
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            self._late_preflight_tasks.discard(completed)
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                pass
+            finally:
+                if cleanup is not None:
+                    self._observe_late_preflight_cleanup(cleanup)
+
+        task.add_done_callback(consume)
+
+    def _observe_late_preflight_cleanup(self, cleanup: Awaitable[None]) -> None:
+        """Retain deferred Connector release after a late preflight task."""
+
+        task = asyncio.ensure_future(cleanup)
+        self._late_preflight_cleanup_tasks.add(task)
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            self._late_preflight_cleanup_tasks.discard(completed)
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                return
+
+        task.add_done_callback(consume)
 
     def _observe_late_adapter_task(
         self,
@@ -837,6 +1300,37 @@ class _InvalidRuntimeAdapterOutcome(Exception):
     """Internal marker; its details never cross the Runtime boundary."""
 
 
+async def _drain_shutdown_tasks(tasks: tuple[asyncio.Future[object], ...]) -> None:
+    """Drain a cancellation batch without making caller cancellation unbounded.
+
+    A Connector/Adapter supplied by a deployment is allowed to suppress
+    ``CancelledError``. When the Application Runtime's cleanup deadline
+    cancels :meth:`InvocationRuntime.stop`, shielding the gather lets that
+    caller return immediately while the Runtime's strong task sets continue
+    to own the late work. The Application Runtime then records the bounded
+    cleanup timeout instead of waiting forever and blocking Catalog disposal.
+    """
+
+    drain = asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        await asyncio.shield(drain)
+    except asyncio.CancelledError:
+        # Keep the gather alive long enough to consume its task outcomes. The
+        # individual Futures remain strongly retained by InvocationRuntime
+        # until their own callbacks discard them.
+        drain.add_done_callback(_consume_shutdown_drain)
+        raise
+
+
+def _consume_shutdown_drain(completed: asyncio.Future[object]) -> None:
+    """Retrieve detached shutdown outcomes without rendering private errors."""
+
+    try:
+        completed.result()
+    except (asyncio.CancelledError, Exception):
+        return
+
+
 def _untrusted_outcome_field_value(field: str, value: object) -> object:
     """Turn known bypassable Pydantic child instances back into raw values.
 
@@ -860,6 +1354,20 @@ def _untrusted_outcome_field_value(field: str, value: object) -> object:
     return value
 
 
+def _legacy_failure_category(result: AgentInvocationResult) -> InvocationFailureCategory:
+    """Map retained v2 result codes back into the closed Runtime vocabulary."""
+
+    code = result.error.code if result.error is not None else None
+    categories: dict[str, InvocationFailureCategory] = {
+        "invocation_unavailable": "unavailable",
+        "invocation_deadline_exceeded": "deadline_exceeded",
+        "invocation_rejected": "rejected",
+        "invocation_remote_failure": "remote_failure",
+        "invocation_invalid_response": "invalid_response",
+    }
+    return categories.get(code or "", "remote_failure")
+
+
 def _declared_model_values(model: object, fields: tuple[str, ...]) -> dict[str, object]:
     values = object.__getattribute__(model, "__dict__")
     return {field: values[field] for field in fields if field in values}
@@ -869,15 +1377,11 @@ def _build_call_envelope(
     invocation: AgentInvocation,
     *,
     input_schema: Mapping[str, object] | None = None,
-    deadline_seconds: float = 30.0,
+    deadline_at: datetime,
     principal_claims: frozenset[InvocationPrincipalClaim] = frozenset(),
     principal_attribute_keys: frozenset[str] = frozenset(),
 ) -> AgentCallEnvelope:
     idempotency_key = _canonical_plan_idempotency_key(invocation)
-    deadline_at = _resolve_deadline(
-        invocation.deadline_at,
-        default_deadline_seconds=deadline_seconds,
-    )
     return AgentCallEnvelope(
         execution_id=invocation.run_id,
         request_id=invocation.request_id,
@@ -899,16 +1403,35 @@ def _resolve_deadline(
     deadline_at: datetime | None,
     *,
     default_deadline_seconds: float,
+    now: datetime,
 ) -> datetime:
-    now = datetime.now(UTC)
+    now = _as_utc(now)
     if deadline_at is None:
         return now + timedelta(seconds=default_deadline_seconds)
     if deadline_at.tzinfo is None or deadline_at.utcoffset() is None:
         raise InvocationPreflightRejectedError("invocation_deadline_invalid")
     resolved = deadline_at.astimezone(UTC)
     if resolved <= now:
-        raise InvocationPreflightRejectedError("invocation_deadline_exceeded")
+        raise InvocationDeadlineExceededError()
     return min(resolved, now + timedelta(seconds=default_deadline_seconds))
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Invocation clock must return an aware datetime")
+    return value.astimezone(UTC)
+
+
+def _close_awaitable(awaitable: object) -> None:
+    """Avoid an unawaited coroutine warning on an already-expired deadline."""
+
+    cancel = getattr(awaitable, "cancel", None)
+    if callable(cancel):
+        cancel()
+        return
+    closer = getattr(awaitable, "close", None)
+    if callable(closer):
+        closer()
 
 
 def _project_declared_input(
@@ -1208,12 +1731,12 @@ def _artifact_metadata_value_is_safe(key: str, value: object) -> bool:
     return False
 
 
-async def _await_runtime_outcome(
-    awaitable: Awaitable[RawInvocationOutcome],
+async def _await_runtime_value(
+    awaitable: Awaitable[_DeadlineValue],
     *,
     timeout: float,
     observe_late_task: Callable[[asyncio.Future[object]], None],
-) -> RawInvocationOutcome:
+) -> _DeadlineValue:
     """Return at the deadline even if an Adapter suppresses cancellation.
 
     ``asyncio.wait_for`` waits for a cancelled child to finish.  Runtime

@@ -270,8 +270,18 @@ Run；required Context Provider/受控 Handle 不可用时同样在受理前以�
 `invocation_invalid_response`。Artifact 的 metadata 是闭合安全投影：仅 `size_bytes`、`content_type`
 和 `sha256`；title 只能是逻辑 locator。`artifact://`/`memory://` URI 是无 path 的 opaque locator，
 HTTPS URI 只能使用无 port/query/fragment/credentials 的安全 authority/path segments，不能传递正文、
-Header 或凭据。deadline 到达时 Core
-立即返回安全失败，即使 Adapter 吞掉取消并在后台迟到完成也不会延长该调用或覆盖终态。
+Header 或凭据。deadline 到达时，若尚未有该调用在 deadline 前原子提交的终态，Core 立即返回安全失败；
+即使 Adapter 吞掉取消并在后台迟到完成也不会延长该调用或覆盖 deadline 终态。已在 deadline 前提交、
+但 ACK 丢失的终态只能按同一 Run/Turn 读回，不会被响应侧的迟到时钟改写。
+
+Invocation 在进入执行管线时即固定唯一的绝对 `deadline_at`；同一事实会传给 Connector
+Resolver、Context 预检、Envelope 与 Adapter。每个嵌套操作只能消费剩余时间，不能重新取得
+完整 timeout。若 deadline 在受理前耗尽，HTTP 返回既有错误信封的 `504`
+`invocation_deadline_exceeded`，且不创建 Run、Result、Ticket 或 Adapter 派发。若 Run 已受理，
+终态 `AgentInvocationResult.error.details` 保持 `category=deadline_exceeded`、`retryable=false`，并
+记录 `completion_certainty`：Adapter 尚未开始时为 `certain`；已可能派发但远端完成未知时为
+`unknown`。`unknown` 不是自动重试、重新派发或远端 exactly-once 的证明。客户端断连只会结束该
+客户端等待；已受理 Run 继续在服务端收敛，除非另有受治理的控制事实。
 
 请求中的 `memory_context` 或 `knowledge_context` 只是 Core 组装受治理 Context 的候选；v2 Runtime
 Adapter 不会沿用其完整对象。`controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、

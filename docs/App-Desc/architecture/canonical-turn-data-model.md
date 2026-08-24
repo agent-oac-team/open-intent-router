@@ -66,10 +66,21 @@ invocation 使用两个短事务，外部 Agent 调用不持有数据库 transac
    请求级 Connector：只投影允许的输入、身份、Context reference、Artifact reference 与 deadline；
    Connector 的 endpoint/credentials 与 Envelope 分离，且必须与 tenant、Adapter key、逻辑 reference
    精确匹配。输入/Context/Artifact 上限、Connector 或 required Context 不满足时不创建 Run、不 claim
-   Plan Step，也不调用 Adapter；预检通过后才 claim Step 并把可信 Plan 幂等事实附入同一 Envelope。
-2. `start_run` 插入预生成 Run，并按 owner/state version 把 Turn 更新为 `running`、关联 Run。
-3. Agent 调用在事务外执行；已受理的输出越界或非法时映射为安全 `invalid_response` 终态。
-4. `complete_run` 更新终态 Run、插入 Result、完成 Turn 并插入唯一 Outbox。
+   Plan Step，也不调用 Adapter；预检通过后才 claim Step 并把可信 Plan 幂等事实附入同一 Envelope。该
+   deadline 在入口一次固定；任一预接收操作耗尽预算时不得写 Run、Result 或不可恢复的 Step 状态。
+2. 对 Plan Step，短 lease Claim 在 `start_run` 前会被原子 fence 为非过期 Claim，并持久化唯一 execution
+   key；Run ID 由该 key 确定。fence 后同一 Step 只能读取、恢复或收口这个 Run，不能因 worker 重启、
+   ACK 丢失或 lease 到期再派发 Adapter。恢复先读取该确定性 Run：已存在 Run 只收敛既有终态；可确认
+   不存在时才用同一 ID 继续 start；读状态不确定时保持 fence 并返回安全 unavailable。
+3. `start_run` 插入预生成 Run，并按 owner/state version 把 Turn 更新为 `running`、关联 Run。开始写入
+   也受同一绝对 deadline 的提交栅栏保护：超时/确认丢失只能按该稳定 Run ID 对账，不能猜测未提交或
+   创建另一条 Run。
+4. Agent 调用在事务外执行；已受理的输出越界或非法时映射为安全 `invalid_response` 终态。
+5. `complete_run` 更新终态 Run、插入 Result、完成 Turn 并插入唯一 Outbox。若已受理调用到 deadline
+   时尚无已提交的终态，终态必须是 `deadline_exceeded`；若 Adapter 或写入可能已发生，其安全 details
+   标记 `completion_certainty=unknown`，迟到成功不得覆盖该终态。终态事务本身在实际 commit 前复核
+   deadline；若它已在 deadline 前原子提交、但 ACK 在之后丢失或迟到，则只能按同一 Turn/Run 读回该
+   已提交 bundle，不能凭响应时钟把真实成功改写为合成 timeout。
 
 非 Canonical 的 direct-invoke 同样保持短写入边界，但不创建 Turn 或 Outbox：先短事务写入
 `running` Run，随后在事务外执行 Runtime Adapter，最后以一个短事务同时更新该 Run 并插入唯一

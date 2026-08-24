@@ -2,11 +2,12 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from math import ceil
 from uuid import uuid4
 
 from app.core.config import Settings
-from app.core.errors import InvocationError
+from app.core.errors import InvocationDeadlineExceededError, InvocationError
 from app.core.memory_runtime import MemoryRuntimePolicy
 from app.plugins.knowledge import KnowledgeProvider
 from app.schemas.agent_context import (
@@ -103,6 +104,7 @@ class AgentContextAssemblyService:
         assembly_session: ContextAssemblySession | None = None,
         knowledge_context_handle: str | None = None,
         knowledge_context_trace_id: str | None = None,
+        deadline_at: datetime | None = None,
     ) -> AgentRuntimeContext:
         defer_knowledge_to_invocation = caller_type == "router"
         existing_memory_context = self._filter_task_memory_context(
@@ -195,7 +197,7 @@ class AgentContextAssemblyService:
             _stable_json(base_input), self.settings.context_chars_per_token
         )
         available_tokens = max(1, self.settings.context_agent_token_budget - base_tokens)
-        result = await self.pipeline.assemble(
+        pipeline_assembly = self.pipeline.assemble(
             request=route_request,
             purpose="agent_execution",
             consumer=f"agent:{agent.agent_id}",
@@ -215,6 +217,20 @@ class AgentContextAssemblyService:
             ),
             assembly_session=session,
         )
+        if deadline_at is None:
+            result = await pipeline_assembly
+        else:
+            remaining = (deadline_at.astimezone(UTC) - datetime.now(UTC)).total_seconds()
+            if remaining <= 0:
+                raise InvocationDeadlineExceededError()
+            try:
+                result = await asyncio.wait_for(pipeline_assembly, timeout=remaining)
+            except TimeoutError:
+                # Context has consumed the same absolute Invocation deadline,
+                # not an independent provider timeout. Preserve the stable
+                # pre-acceptance error while Connector-specific timeouts keep
+                # their existing unavailable projection.
+                raise InvocationDeadlineExceededError() from None
         memory_context = _memory_context_from_result(
             result,
             existing=existing_memory_context,

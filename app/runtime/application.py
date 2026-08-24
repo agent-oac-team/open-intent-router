@@ -110,6 +110,10 @@ class ApplicationRuntime:
         self._databases: Mapping[str, ManagedDatabase] = {}
         self._entered_databases: list[ManagedDatabase] = []
         self._started_background_runtimes: list[object] = []
+        # A deployment hook can suppress cancellation forever. Keep any
+        # timed-out cleanup task strongly referenced and observed instead of
+        # making the process shutdown exceed its configured bound.
+        self._abandoned_cleanup_tasks: set[asyncio.Task[object]] = set()
         self._container: ApplicationContainer | None = None
         self._readiness_runtime = RuntimeReadinessRuntime(
             runtime_catalog,
@@ -214,6 +218,7 @@ class ApplicationRuntime:
         self._readiness_runtime.attach_snapshot_runtime(None)
         failures = 0
         cancellation: asyncio.CancelledError | None = None
+        dependent_dispose_blocked = False
         for name, operation in [
             *(
                 ("background_runtime", background_runtime.stop)
@@ -222,6 +227,15 @@ class ApplicationRuntime:
             *(("database", database.aclose) for database in reversed(self._entered_databases)),
             ("runtime_catalog", self._runtime_catalog.stop),
         ]:
+            if name in {"database", "runtime_catalog"} and dependent_dispose_blocked:
+                # A background Runtime (notably InvocationRuntime) still
+                # owns a cancellation-defiant task that can use persistence,
+                # a Catalog Adapter, or a request-scoped Connector. Never
+                # dispose any dependency underneath it merely to make cleanup
+                # look complete; the process supervisor owns the retained
+                # dependency graph after this bounded failure path.
+                logger.warning("application_cleanup_dependency_retained component=%s", name)
+                continue
             cleanup_task = asyncio.create_task(operation())
             try:
                 await asyncio.wait_for(
@@ -240,8 +254,10 @@ class ApplicationRuntime:
                     )
                 except TimeoutError:
                     failures += 1
-                    cleanup_task.cancel()
-                    await asyncio.gather(cleanup_task, return_exceptions=True)
+                    if self._abandon_cleanup_task(cleanup_task, component=name):
+                        dependent_dispose_blocked = (
+                            dependent_dispose_blocked or name == "background_runtime"
+                        )
                     logger.warning("application_cleanup_timeout component=%s", name)
                 except Exception as cleanup_error:
                     failures += 1
@@ -252,8 +268,10 @@ class ApplicationRuntime:
                     )
             except TimeoutError:
                 failures += 1
-                cleanup_task.cancel()
-                await asyncio.gather(cleanup_task, return_exceptions=True)
+                if self._abandon_cleanup_task(cleanup_task, component=name):
+                    dependent_dispose_blocked = (
+                        dependent_dispose_blocked or name == "background_runtime"
+                    )
                 logger.warning("application_cleanup_timeout component=%s", name)
             except Exception as exc:
                 failures += 1
@@ -269,6 +287,28 @@ class ApplicationRuntime:
         if cancellation is not None:
             raise cancellation
         return failures
+
+    def _abandon_cleanup_task(self, task: asyncio.Task[object], *, component: str) -> bool:
+        """Bound cleanup after a cancellation-defiant component times out.
+
+        Python cannot forcibly terminate a coroutine that suppresses
+        ``CancelledError``.  Retaining it prevents garbage collection and the
+        callback consumes its eventual outcome, while this Application
+        Runtime continues reverse cleanup within its configured deadline.
+        """
+
+        task.cancel()
+        if task.done():
+            _consume_abandoned_cleanup(task)
+            return False
+        self._abandoned_cleanup_tasks.add(task)
+
+        def consume(completed: asyncio.Task[object]) -> None:
+            self._abandoned_cleanup_tasks.discard(completed)
+            _consume_abandoned_cleanup(completed, component=component)
+
+        task.add_done_callback(consume)
+        return True
 
 
 def _unique_databases(databases: Mapping[str, ManagedDatabase]) -> list[ManagedDatabase]:
@@ -290,3 +330,21 @@ def _runtime_unavailable_report() -> RuntimeReadinessReport:
         registry_status="error",
         active_source=None,
     )
+
+
+def _consume_abandoned_cleanup(
+    task: asyncio.Task[object],
+    *,
+    component: str | None = None,
+) -> None:
+    """Consume a detached cleanup task without logging private exceptions."""
+
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.warning(
+            "application_abandoned_cleanup_failed component=%s",
+            component or "unknown",
+        )

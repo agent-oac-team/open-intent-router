@@ -1,9 +1,11 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
+from app.core.errors import InvocationDeadlineExceededError
 from app.core.security import memory_identity_signature
 from app.dependencies import (
     get_chat_history_service,
+    get_invocation_service,
     get_memory_observability_service,
     get_memory_service,
     get_router_service,
@@ -18,11 +20,49 @@ from app.services.memory_service import MemoryService
 from tests.fakes.native_principal import native_principal_headers
 
 
+class _DeadlineRejectedInvocationService:
+    async def invoke(self, _payload):
+        raise InvocationDeadlineExceededError()
+
+
 def test_health_endpoint() -> None:
     with TestClient(create_app()) as client:
         response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_invoke_preaccept_deadline_uses_the_stable_504_error_envelope(
+    non_lifespan_test_client,
+) -> None:
+    app = create_app()
+    app.dependency_overrides[get_invocation_service] = _DeadlineRejectedInvocationService
+    client = non_lifespan_test_client(app)
+
+    response = client.post(
+        "/api/v1/invoke",
+        headers=native_principal_headers(
+            secret="", subject="deadline-user", tenant="deadline-tenant", signed=False
+        ),
+        json={
+            "request_id": "deadline-request",
+            "session_id": "deadline-session",
+            "agent_id": "deadline-agent",
+            "user": {
+                "id": "deadline-user",
+                "attributes": {"tenant_id": "deadline-tenant"},
+            },
+            "input": {"text": "expire before acceptance"},
+        },
+    )
+
+    assert response.status_code == 504
+    assert response.json() == {
+        "error": {
+            "code": "invocation_deadline_exceeded",
+            "message": "Invocation deadline exceeded.",
+        }
+    }
 
 
 def test_append_session_message_endpoint_stores_agent_reply(non_lifespan_test_client) -> None:

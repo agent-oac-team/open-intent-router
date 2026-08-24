@@ -1,5 +1,6 @@
 import asyncio
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -7,6 +8,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from app.core.config import Settings
+from app.db.models import AgentResultModel
 from app.repositories.database import DatabaseResultRepository, DatabaseRunRepository
 from app.repositories.invocation_completion import (
     DatabaseInvocationCompletionStore,
@@ -75,7 +77,8 @@ class _SessionScopeTracker:
     factory: object
     active_scopes: int = 0
     raise_after_next_exit: bool = False
-    raise_on_next_flush: bool = False
+    raise_on_next_result_flush: bool = False
+    after_next_flush: Callable[[], None] | None = None
 
     def __call__(self):
         return _TrackedSession(self.factory(), self)
@@ -105,10 +108,17 @@ class _TrackedSession:
         return getattr(self._session, name)
 
     async def flush(self, *args: object, **kwargs: object) -> object:
-        if self._tracker.raise_on_next_flush:
-            self._tracker.raise_on_next_flush = False
+        if self._tracker.raise_on_next_result_flush and any(
+            isinstance(item, AgentResultModel) for item in self._session.new
+        ):
+            self._tracker.raise_on_next_result_flush = False
             raise OperationalError("flush", {}, RuntimeError("simulated transient flush failure"))
-        return await self._session.flush(*args, **kwargs)
+        result = await self._session.flush(*args, **kwargs)
+        if self._tracker.after_next_flush is not None:
+            callback = self._tracker.after_next_flush
+            self._tracker.after_next_flush = None
+            callback()
+        return result
 
 
 class _FailOnceResultRepository(MemoryResultRepository):
@@ -260,10 +270,16 @@ async def test_accepted_runtime_failure_categories_converge_to_one_safe_terminal
 
     assert result.status == "failed"
     assert result.error is not None
+    expected_details = {
+        "category": category,
+        "retryable": False if category in {"deadline_exceeded", "remote_failure"} else retryable,
+    }
+    if category in {"deadline_exceeded", "remote_failure"}:
+        expected_details["completion_certainty"] = "unknown"
     assert result.error.model_dump() == {
         "code": code,
         "message": "Agent invocation could not be completed.",
-        "details": {"category": category, "retryable": retryable},
+        "details": expected_details,
     }
     assert len(adapter.calls) == 1
     assert len(runs.runs) == len(results.results) == 1
@@ -275,6 +291,34 @@ async def test_accepted_runtime_failure_categories_converge_to_one_safe_terminal
     assert results.results[0].error == result.error.model_dump()
 
     await catalog.aclose()
+
+
+async def test_deadline_outcome_with_possible_dispatch_is_never_projected_retryable() -> None:
+    adapter = _RuntimeOutcomeAdapter(
+        RawInvocationOutcome(
+            failure=RawInvocationFailure(
+                category="deadline_exceeded",
+                code="invocation_deadline_exceeded",
+                retryable=True,
+            )
+        )
+    )
+    runs = MemoryRunRepository()
+    results = MemoryResultRepository()
+    catalog, service = await _runtime_service(adapter=adapter, runs=runs, results=results)
+    try:
+        result = await service.invoke(_request())
+
+        assert result.error is not None
+        assert result.error.details == {
+            "category": "deadline_exceeded",
+            "retryable": False,
+            "completion_certainty": "unknown",
+        }
+        assert len(adapter.calls) == 1
+        assert len(runs.runs) == len(results.results) == 1
+    finally:
+        await catalog.aclose()
 
 
 async def test_accepted_runtime_exception_is_redacted_and_still_has_one_terminal_result() -> None:
@@ -291,7 +335,11 @@ async def test_accepted_runtime_exception_is_redacted_and_still_has_one_terminal
     assert result.error.model_dump() == {
         "code": "invocation_remote_failure",
         "message": "Agent invocation could not be completed.",
-        "details": {"category": "remote_failure", "retryable": False},
+        "details": {
+            "category": "remote_failure",
+            "retryable": False,
+            "completion_certainty": "unknown",
+        },
     }
     persisted = "\n".join(
         [
@@ -521,7 +569,13 @@ async def test_accepted_runtime_failure_persists_one_database_run_and_result(
     assert stored_results[0].run_id == result.run_id
     assert result.error is not None
     assert result.error.code == code
-    assert result.error.details == {"category": category, "retryable": retryable}
+    expected_details = {
+        "category": category,
+        "retryable": False if category in {"deadline_exceeded", "remote_failure"} else retryable,
+    }
+    if category in {"deadline_exceeded", "remote_failure"}:
+        expected_details["completion_certainty"] = "unknown"
+    assert result.error.details == expected_details
     assert stored_results[0].error == result.error.model_dump()
 
     await catalog.aclose()
@@ -635,7 +689,7 @@ async def test_accepted_database_completion_retries_flush_without_reinvoking_ada
     runs = DatabaseRunRepository(tracker)  # type: ignore[arg-type]
     results = DatabaseResultRepository(tracker)  # type: ignore[arg-type]
     catalog, service = await _runtime_service(adapter=adapter, runs=runs, results=results)
-    tracker.raise_on_next_flush = True
+    tracker.raise_on_next_result_flush = True
 
     result = await service.invoke(_request())
 

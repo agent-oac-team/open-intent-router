@@ -1,10 +1,11 @@
 import asyncio
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, datetime
 
-from app.core.errors import RegistryVersionConflict
+from app.core.errors import InvocationDeadlineExceededError, RegistryVersionConflict
 from app.core.redaction import redact_value
-from app.repositories.interfaces import PlanCancelTransition
+from app.repositories.interfaces import PlanCancelTransition, PlanExecutionClaimFence
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
@@ -188,11 +189,40 @@ class MemoryRunRepository:
         # two service instances using these repositories cannot both turn the
         # same accepted Run into a terminal record.
         self._invocation_completion_lock = asyncio.Lock()
+        self._run_start_lock = asyncio.Lock()
 
     async def add_run(self, run: AgentRun) -> AgentRun:
+        if run.run_id in self.runs:
+            raise ValueError("Agent run already exists")
         stored = AgentRun.model_validate(run.model_dump(mode="python"))
         self.runs[run.run_id] = stored
         return stored.model_copy(deep=True)
+
+    async def add_run_if_absent(
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, bool]:
+        """Atomically reveal whether this worker owns the stable Run start."""
+
+        async with self._run_start_lock:
+            existing = self.runs.get(run.run_id)
+            if existing is not None:
+                return existing.model_copy(deep=True), False
+            _require_run_start_commit_allowed(may_commit)
+            snapshot = dict(self.runs)
+            # Delegate the actual write through ``add_run`` so a repository
+            # implementation keeps one insertion seam for commit/ack-loss
+            # handling.  The shared start lock still makes the absence check
+            # and first write atomic for separate service instances.
+            try:
+                stored = await self.add_run(run)
+                _require_run_start_commit_allowed(may_commit)
+                return stored, True
+            except Exception:
+                self.runs = snapshot
+                raise
 
     async def update_run(self, run: AgentRun) -> AgentRun:
         existing = self.runs.get(run.run_id)
@@ -313,7 +343,11 @@ def _validate_run_identity(existing: AgentRun, incoming: AgentRun) -> None:
 class MemoryPlanRepository:
     def __init__(self) -> None:
         self.plans: dict[str, Plan] = {}
-        self.execution_claims: dict[str, tuple[str, str, datetime, int, str, int]] = {}
+        # step_id, claim_id, lease expiry, Plan state version, deterministic
+        # execution key, attempt.  A ``None`` expiry is a durable start fence,
+        # not an expired lease; its key lets a restarted worker reconstruct the
+        # exact Run identity before it considers dispatching again.
+        self.execution_claims: dict[str, tuple[str, str, datetime | None, int, str, int]] = {}
         self.execution_attempts: dict[str, int] = {}
         self.formation_published_version: dict[str, int] = {}
         self._lock = asyncio.Lock()
@@ -456,7 +490,7 @@ class MemoryPlanRepository:
         tenant_id: str,
         user_id: str,
         claim_id: str,
-        lease_expires_at: datetime,
+        lease_expires_at: datetime | None,
         now: datetime,
         formation_suppressed: bool = False,
     ) -> Plan | None:
@@ -470,7 +504,9 @@ class MemoryPlanRepository:
             ):
                 return None
             existing_claim = self.execution_claims.get(plan_id)
-            expired = bool(existing_claim and existing_claim[2] <= now)
+            expired = bool(
+                existing_claim and existing_claim[2] is not None and existing_claim[2] <= now
+            )
             if existing_claim and not expired:
                 return None
             step = next((item for item in plan.steps if item.step_id == step_id), None)
@@ -567,6 +603,63 @@ class MemoryPlanRepository:
         claim = self.execution_claims.get(plan_id)
         return claim[4] if claim is not None and claim[1] == claim_id else None
 
+    async def get_execution_claim_fence(
+        self,
+        plan_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> PlanExecutionClaimFence | None:
+        async with self._lock:
+            plan = self.plans.get(plan_id)
+            claim = self.execution_claims.get(plan_id)
+            if (
+                plan is None
+                or plan.tenant_id != tenant_id
+                or plan.user_id != user_id
+                or claim is None
+                or claim[2] is not None
+            ):
+                return None
+            return PlanExecutionClaimFence(
+                step_id=claim[0],
+                claim_id=claim[1],
+                execution_key=claim[4],
+            )
+
+    async def fence_step_claim(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        claim_id: str,
+    ) -> bool:
+        """Make a pre-start Claim non-expiring until its Run outcome is known."""
+
+        async with self._lock:
+            plan = self.plans.get(plan_id)
+            claim = self.execution_claims.get(plan_id)
+            if (
+                plan is None
+                or plan.tenant_id != tenant_id
+                or plan.user_id != user_id
+                or claim is None
+                or claim[0] != step_id
+                or claim[1] != claim_id
+            ):
+                return False
+            self.execution_claims[plan_id] = (
+                claim[0],
+                claim[1],
+                None,
+                claim[3],
+                claim[4],
+                claim[5],
+            )
+            return True
+
     async def renew_step_claim(
         self,
         plan_id: str,
@@ -586,13 +679,17 @@ class MemoryPlanRepository:
                 or plan.user_id != user_id
                 or claim is None
                 or claim[1] != claim_id
-                or claim[2] <= now
+                or (claim[2] is not None and claim[2] <= now)
             ):
                 return False
             self.execution_claims[plan_id] = (
                 claim[0],
                 claim[1],
-                lease_expires_at,
+                # A fenced claim intentionally remains non-expiring until
+                # the terminal Plan transition clears it. A heartbeat proves
+                # the owner is live but must not reopen a crash window where
+                # the old Run can be redispatched after process restart.
+                claim[2] if claim[2] is None else lease_expires_at,
                 claim[3],
                 claim[4],
                 claim[5],
@@ -621,3 +718,10 @@ def _run_source_order(run: AgentRun) -> int:
 def _execution_key(plan_id: str, step_id: str, attempt: int) -> str:
     identity = "\x1f".join((plan_id, step_id, str(attempt)))
     return f"plan_exec_{hashlib.sha256(identity.encode()).hexdigest()[:32]}"
+
+
+def _require_run_start_commit_allowed(may_commit: Callable[[], bool] | None) -> None:
+    """Abort a pre-acceptance Run mutation once its deadline elapsed."""
+
+    if may_commit is not None and not may_commit():
+        raise InvocationDeadlineExceededError()

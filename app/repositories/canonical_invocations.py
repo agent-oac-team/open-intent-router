@@ -1,13 +1,16 @@
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import InvocationDeadlineExceededError
 from app.db.models import AgentResultModel, AgentRunModel, CanonicalTurnModel
 from app.repositories.database import _result_from_row, _run_from_row, _run_values
+from app.repositories.invocation_commit_guard import guard_invocation_commit
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
 from app.repositories.native_definition_migration_fence import (
     require_native_definition_migration_fence_open,
@@ -37,28 +40,57 @@ class DatabaseCanonicalInvocationStore:
         self.session_factory = session_factory
         self.completion = DatabaseTurnTransactionCoordinator(session_factory)
 
-    async def start_run(self, run: AgentRun) -> tuple[AgentRun, CanonicalTurn, AgentResult | None]:
+    async def start_run(
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, CanonicalTurn, AgentResult | None, bool]:
         _validate_run_owner(run)
-        async with self.session_factory() as session, session.begin():
-            await require_native_definition_migration_fence_open(session, kind="new_execution")
-            turn_row = await session.scalar(
-                select(CanonicalTurnModel)
-                .where(
-                    CanonicalTurnModel.request_id == run.request_id,
-                    CanonicalTurnModel.tenant_id == run.tenant_id,
-                    CanonicalTurnModel.user_id == run.user_id,
+        turn: CanonicalTurn | None = None
+        try:
+            async with self.session_factory() as session, session.begin():
+                guard_invocation_commit(session, may_commit)
+                await require_native_definition_migration_fence_open(session, kind="new_execution")
+                turn_row = await session.scalar(
+                    select(CanonicalTurnModel)
+                    .where(
+                        CanonicalTurnModel.request_id == run.request_id,
+                        CanonicalTurnModel.tenant_id == run.tenant_id,
+                        CanonicalTurnModel.user_id == run.user_id,
+                    )
+                    .with_for_update()
                 )
-                .with_for_update()
-            )
-            turn = _validate_start_turn(turn_row, run)
-            replay = await _database_replay(session, turn)
-            if replay is not None:
-                return replay
-            attached_run, attached_turn = _attach_run(run, turn)
-            session.add(AgentRunModel(**_run_values(attached_run)))
-            _apply_active_turn(turn_row, attached_turn)
-            await session.flush()
-            return attached_run, attached_turn, None
+                turn = _validate_start_turn(turn_row, run)
+                replay = await _database_replay(session, turn)
+                if replay is not None:
+                    return *replay, False
+                _require_terminal_commit_allowed(may_commit)
+                attached_run, attached_turn = _attach_run(run, turn)
+                session.add(AgentRunModel(**_run_values(attached_run)))
+                _apply_active_turn(turn_row, attached_turn)
+                await session.flush()
+                # The database transaction has not committed yet. Recheck the
+                # caller's absolute deadline after all potentially slow
+                # writes so a pre-acceptance timeout rolls this Run/Turn edge
+                # back instead of creating a late durable Run.
+                _require_terminal_commit_allowed(may_commit)
+                return attached_run, attached_turn, None, True
+        except IntegrityError:
+            # A fenced Plan execution uses a deterministic Run id.  A second
+            # request can therefore arrive through a different Canonical Turn
+            # after the first worker has committed its Run.  This is not an
+            # acknowledgement loss for the second worker: return an explicit
+            # non-owner outcome before its Turn mutation commits, so it cannot
+            # terminalize or dispatch the winner's Run.
+            async with self.session_factory() as session:
+                existing_row = await session.get(AgentRunModel, run.run_id)
+                if existing_row is None:
+                    raise
+                existing = _run_from_row(existing_row)
+            if turn is None:  # pragma: no cover - insert follows turn validation.
+                raise
+            return existing, turn, None, False
 
     async def complete_run(
         self,
@@ -67,6 +99,7 @@ class DatabaseCanonicalInvocationStore:
         result: AgentResult,
         response_text: str,
         eligibility: FormationEligibilitySnapshot,
+        may_commit: Callable[[], bool] | None = None,
     ) -> tuple[AgentRun, AgentResult, CanonicalTurn]:
         async with self.session_factory() as session:
             turn_row = await session.get(CanonicalTurnModel, run.turn_id)
@@ -81,13 +114,27 @@ class DatabaseCanonicalInvocationStore:
             eligibility=eligibility,
         )
         try:
-            await self.completion.complete(bundle)
-        except IntegrityError:
-            replay = await self._terminal_replay(bundle.turn)
+            await self.completion.complete(bundle, may_commit=may_commit)
+        except Exception:
+            # The transaction coordinator can lose its acknowledgement after
+            # the atomic Run/Result/Turn/Outbox commit. Re-read the canonical
+            # terminal bundle before surfacing the write error, just as the
+            # direct Invocation completion store does. A missing or unreadable
+            # replay deliberately preserves the original failure.
+            replay = await self._terminal_replay_after_error(bundle.turn)
             if replay is not None:
                 return replay
             raise
         return bundle.run, bundle.result, bundle.turn
+
+    async def _terminal_replay_after_error(
+        self,
+        turn: CanonicalTurn,
+    ) -> tuple[AgentRun, AgentResult, CanonicalTurn] | None:
+        try:
+            return await self._terminal_replay(turn)
+        except (IntegrityError, OperationalError):
+            return None
 
     async def _terminal_replay(
         self, turn: CanonicalTurn
@@ -121,7 +168,12 @@ class MemoryCanonicalInvocationStore:
         self.outbox_repository = outbox_repository
         self._lock = asyncio.Lock()
 
-    async def start_run(self, run: AgentRun) -> tuple[AgentRun, CanonicalTurn, AgentResult | None]:
+    async def start_run(
+        self,
+        run: AgentRun,
+        *,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, CanonicalTurn, AgentResult | None, bool]:
         _validate_run_owner(run)
         async with self._lock:
             turn = await self.turn_repository.get_by_request(
@@ -132,16 +184,35 @@ class MemoryCanonicalInvocationStore:
             turn = _validate_start_turn(turn, run)
             replay = await self._start_replay(turn)
             if replay is not None:
-                return replay
+                return *replay, False
+            _require_terminal_commit_allowed(may_commit)
             attached_run, attached_turn = _attach_run(run, turn)
-            await self.run_repository.add_run(attached_run)
-            stored_turn = await self.turn_repository.update_if_version(
-                attached_turn, expected_version=turn.state_version
+            snapshots = (
+                dict(self.run_repository.runs),
+                dict(self.turn_repository.turns),
             )
-            if stored_turn is None:
-                self.run_repository.runs.pop(attached_run.run_id, None)
-                raise CanonicalInvocationConflict("Canonical Turn changed concurrently")
-            return attached_run, stored_turn, None
+            try:
+                await self.run_repository.add_run(attached_run)
+            except ValueError:
+                # See the database path above: a shared stable Plan Run id
+                # may already belong to another Canonical Turn/worker.  No
+                # turn update has happened yet, so exposing it as non-owner
+                # leaves the competing Turn untouched.
+                existing = await self.run_repository.get_run(attached_run.run_id)
+                if existing is None:
+                    raise
+                return existing, turn, None, False
+            try:
+                stored_turn = await self.turn_repository.update_if_version(
+                    attached_turn, expected_version=turn.state_version
+                )
+                if stored_turn is None:
+                    raise CanonicalInvocationConflict("Canonical Turn changed concurrently")
+                _require_terminal_commit_allowed(may_commit)
+                return attached_run, stored_turn, None, True
+            except Exception:
+                self.run_repository.runs, self.turn_repository.turns = snapshots
+                raise
 
     async def complete_run(
         self,
@@ -150,8 +221,10 @@ class MemoryCanonicalInvocationStore:
         result: AgentResult,
         response_text: str,
         eligibility: FormationEligibilitySnapshot,
+        may_commit: Callable[[], bool] | None = None,
     ) -> tuple[AgentRun, AgentResult, CanonicalTurn]:
         async with self._lock:
+            _require_terminal_commit_allowed(may_commit)
             turn = await self.turn_repository.get(
                 run.turn_id or "",
                 tenant_id=run.tenant_id or "",
@@ -189,6 +262,7 @@ class MemoryCanonicalInvocationStore:
                 if stored_turn is None:
                     raise CanonicalInvocationConflict("Canonical Turn changed concurrently")
                 await self.outbox_repository.add_idempotent(bundle.outbox)
+                _require_terminal_commit_allowed(may_commit)
             except Exception:
                 (
                     runs,
@@ -382,3 +456,10 @@ def _apply_active_turn(row: CanonicalTurnModel, turn: CanonicalTurn) -> None:
     row.state_version = turn.state_version
     row.references_text = dumps(turn.references.model_dump(mode="json"))
     row.updated_at = turn.updated_at
+
+
+def _require_terminal_commit_allowed(may_commit: Callable[[], bool] | None) -> None:
+    """Abort a terminal mutation after the invocation's own deadline."""
+
+    if may_commit is not None and not may_commit():
+        raise InvocationDeadlineExceededError()

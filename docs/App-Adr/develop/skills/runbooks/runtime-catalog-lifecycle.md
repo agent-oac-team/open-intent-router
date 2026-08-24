@@ -40,7 +40,9 @@ Adapter 的 `activate`、`dispose` 生命周期钩子和 `health_check` 都必�
 `APPLICATION_CLEANUP_TIMEOUT_SECONDS` 是 Application Runtime 对每个非 Catalog 清理步骤使用的
 最大等待时间，默认 `5` 秒，取值大于 `0` 且不大于 `60`。该 deadline 分别应用于已启动后台
 Runtime 的停止和每个唯一受管数据库目标的 dispose；某一步失败、超时或收到取消时，Runtime 仍会
-继续尝试后续清理。修改该值需要滚动重启，不支持请求期热更新。
+继续尝试不依赖该后台任务的后续清理。若后台 Runtime 在 deadline 后仍持有拒绝取消的任务，Application
+Runtime 记录失败并保留其可能使用的数据库与 Catalog，不会在迟到任务下方 dispose 依赖；进程监督器应
+终止/重启该实例。修改该值需要滚动重启，不支持请求期热更新。
 
 `DATABASE_PROBE_TIMEOUT_SECONDS` 是 `/ready` 对每个唯一 required Managed Database Target 执行
 轻量 `SELECT 1` probe 的最大等待时间，默认 `2` 秒，取值大于 `0` 且不大于 `60`。各目标并发且
@@ -61,6 +63,13 @@ Runtime 的停止和每个唯一受管数据库目标的 dispose；某一步失�
 立即将已受理调用收敛为安全 deadline failure，并取消/观察仍在运行的 Adapter task；Adapter 即使错误地
 吞掉取消也不能延长 HTTP/Core 等待时间，且这不表示远端副作用已被取消。以下 `INVOCATION_*`
 变量是部署硬上限，所有值在启动时由 Settings 校验，修改后必须滚动重启：
+
+同一绝对 deadline 在请求进入 Invocation 管线时建立，而不是在 Adapter 前重新开始；Connector
+Resolution、Context 预检、Envelope 和 Adapter 都只使用该值的剩余预算。受理前耗尽固定返回
+`504 invocation_deadline_exceeded`，不创建 Run/Result/Ticket 或派发 Adapter。受理后 timeout 的
+公共失败保留 `retryable=false`；若 Adapter 已可能派发远端工作，`error.details.completion_certainty`
+为 `unknown`，不得据此自动 retry 或重派。客户端断连不是控制请求，已受理 Run 会继续在服务器端完成；
+Context/Connector 任务若吞掉 deadline 取消，Runtime 同样强持有并在生命周期关闭前观察它们。
 
 | 变量 | 默认值 | 约束 |
 | --- | ---: | --- |
@@ -89,7 +98,9 @@ authority、没有 path；HTTPS 只允许无 port/query/fragment/credentials 的
 
 Invocation Runtime 作为 Application Runtime 的受管后台组件，在 Catalog dispose 前取消并 drain 已越过
 调用 deadline 的 Adapter task。Adapter 必须协作响应取消；一直吞掉取消会使受管 cleanup 在既有应用
-cleanup deadline 内失败，而不会被静默遗忘或以迟到成功覆盖已完成的 Run。
+cleanup deadline 内失败，而不会被静默遗忘或以迟到成功覆盖已完成的 Run。此时 Application Runtime
+保留数据库与 Catalog 给仍被强持有的任务，交由进程监督器终止实例；不得为了继续 shutdown 而让该任务
+在已 dispose 的 Adapter、Connector 或数据库上运行。
 
 ## Connector Resolver
 

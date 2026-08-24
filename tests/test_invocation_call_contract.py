@@ -6,12 +6,16 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import InvocationPreflightRejectedError
+from app.core.errors import InvocationDeadlineExceededError, InvocationPreflightRejectedError
+from app.repositories.canonical_invocations import MemoryCanonicalInvocationStore
+from app.repositories.database import DatabasePlanRepository
 from app.repositories.memory import (
     MemoryPlanRepository,
     MemoryResultRepository,
     MemoryRunRepository,
 )
+from app.repositories.turn_outbox import MemoryTurnOutboxRepository
+from app.repositories.turns import MemoryTurnRepository
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterContext,
@@ -29,13 +33,19 @@ from app.runtime.invocation import (
 from app.schemas.agent_context import AgentRuntimeContext
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import ArtifactRef
-from app.schemas.invocation import InvokeRequest
+from app.schemas.invocation import AgentInvocation, InvokeRequest
+from app.schemas.logs import AgentRun
 from app.schemas.plans import Plan
-from app.services.agent_context_service import KnowledgeRequirementError
+from app.schemas.turns import TurnUserInput
+from app.services.agent_context_service import (
+    AgentContextAssemblyService,
+    KnowledgeRequirementError,
+)
 from app.services.binding_resolution import BindingResolver
 from app.services.invocation_service import InvocationService
 from app.services.plan_service import PlanService
 from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
+from app.services.turn_service import TurnService
 
 
 async def _noop(_adapter: object) -> None:
@@ -142,6 +152,104 @@ class _RecordingContextAssembler:
     async def assemble(self, **kwargs: object) -> AgentRuntimeContext:
         self.inputs.append(dict(kwargs["invocation_input"]))
         return AgentRuntimeContext()
+
+
+@dataclass
+class _Clock:
+    """Deterministic UTC clock shared by every invocation pipeline phase."""
+
+    now: datetime
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, duration: timedelta) -> None:
+        self.now += duration
+
+
+@dataclass
+class _DeadlineAdvancingContextAssembler:
+    """Consumes controlled budget before the Adapter can be accepted."""
+
+    clock: _Clock
+    advance_by: timedelta
+    deadlines: list[datetime] = field(default_factory=list)
+
+    async def assemble(self, **kwargs: object) -> AgentRuntimeContext:
+        deadline_at = kwargs["deadline_at"]
+        assert isinstance(deadline_at, datetime)
+        self.deadlines.append(deadline_at)
+        self.clock.advance(self.advance_by)
+        return AgentRuntimeContext()
+
+
+@dataclass
+class _DeadlineAdvancingFailureAdapter(_RecordingAdapter):
+    """Raises after consuming the last Adapter budget in one event-loop turn."""
+
+    clock: _Clock | None = None
+    advance_by: timedelta = timedelta(0)
+
+    async def execute(
+        self,
+        _binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append(envelope)
+        if self.clock is not None:
+            self.clock.advance(self.advance_by)
+        raise RuntimeError("adapter failed after the deadline")
+
+
+@dataclass
+class _BlockingAdapter(_RecordingAdapter):
+    """Lets a test cancel only the client waiter after Run acceptance."""
+
+    started: asyncio.Event = field(default_factory=asyncio.Event)
+    allow_completion: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def execute(
+        self,
+        _binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append(envelope)
+        self.started.set()
+        await self.allow_completion.wait()
+        return self.response
+
+
+@dataclass
+class _AcknowledgementDelayedCompletionStore:
+    """Expose a post-commit acknowledgement delay without changing storage."""
+
+    delegate: object
+    clock: _Clock
+    advance_by: timedelta
+
+    async def complete(self, **kwargs: object):
+        stored = await self.delegate.complete(**kwargs)  # type: ignore[attr-defined]
+        self.clock.advance(self.advance_by)
+        return stored
+
+
+@dataclass
+class _DeadlineAdvancingCanonicalStore:
+    """Make a competing canonical start acknowledge after this caller expires."""
+
+    delegate: MemoryCanonicalInvocationStore
+    clock: _Clock
+    advance_by: timedelta
+
+    async def start_run(self, *args: object, **kwargs: object):
+        stored = await self.delegate.start_run(*args, **kwargs)
+        self.clock.advance(self.advance_by)
+        return stored
+
+    async def complete_run(self, *args: object, **kwargs: object):
+        return await self.delegate.complete_run(*args, **kwargs)
 
 
 def _definition(
@@ -423,11 +531,636 @@ async def test_absolute_deadline_bounds_an_accepted_adapter_call() -> None:
     assert result.status == "failed"
     assert result.error is not None
     assert result.error.code == "invocation_deadline_exceeded"
+    assert result.error.details == {
+        "category": "deadline_exceeded",
+        "retryable": False,
+        "completion_certainty": "unknown",
+    }
     assert len(adapter.calls) == 1
     assert adapter.calls[0].deadline_at.tzinfo is not None
     assert len(runs.runs) == len(results.results) == 1
+    run = await runs.get_run(result.run_id)
+    assert run is not None
+    assert run.deadline_at == adapter.calls[0].deadline_at
+    assert run.error == result.error.model_dump()
+    assert results.results[0].error == result.error.model_dump()
 
     await catalog.aclose()
+
+
+async def test_terminal_commit_before_deadline_keeps_its_durable_success_after_ack_delay() -> None:
+    """A late acknowledgement cannot turn an on-time terminal commit into a lie."""
+
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(max_input_bytes=512, default_deadline_seconds=1),
+        clock=clock,
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    service.completion_store = _AcknowledgementDelayedCompletionStore(
+        delegate=service.completion_store,
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+
+    try:
+        result = await service.invoke(_request(text="commit before acknowledgement"))
+
+        assert result.status == "completed"
+        assert result.error is None
+        stored_run = await runs.get_run(result.run_id)
+        assert stored_run is not None and stored_run.status == "completed"
+        assert len(results.results) == 1
+    finally:
+        await catalog.aclose()
+
+
+async def test_pipeline_stamps_one_deadline_before_context_and_never_resets_it() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    assembler = _DeadlineAdvancingContextAssembler(
+        clock=clock,
+        advance_by=timedelta(milliseconds=900),
+    )
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=1,
+        ),
+        clock=clock,
+    )
+    catalog, service, runs, _results = await _service(
+        adapter=adapter,
+        runtime=runtime,
+        agent_context_service=assembler,
+    )
+
+    try:
+        result = await service.invoke(_request(text="within the input limit"))
+
+        expected_deadline = datetime(2030, 1, 1, 0, 0, 1, tzinfo=UTC)
+        assert result.status == "completed"
+        assert assembler.deadlines == [expected_deadline]
+        assert [call.deadline_at for call in adapter.calls] == [expected_deadline]
+        run = await runs.get_run(result.run_id)
+        assert run is not None
+        assert run.deadline_at == expected_deadline
+    finally:
+        await catalog.aclose()
+
+
+async def test_context_preflight_expiry_returns_504_without_accepting_a_run() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    assembler = _DeadlineAdvancingContextAssembler(
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=1,
+            ),
+            clock=clock,
+        ),
+        agent_context_service=assembler,
+    )
+
+    try:
+        with pytest.raises(InvocationDeadlineExceededError) as raised:
+            await service.invoke(_request(text="within the input limit"))
+
+        assert raised.value.status_code == 504
+        assert raised.value.code == "invocation_deadline_exceeded"
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_context_remaining_budget_timeout_maps_to_the_stable_preaccept_504() -> None:
+    adapter = _RecordingAdapter()
+    context_service = AgentContextAssemblyService(
+        Settings(storage_backend="memory"),
+        memory_service=object(),
+    )
+
+    async def slow_pipeline(**_kwargs: object) -> object:
+        await asyncio.sleep(0.1)
+        raise AssertionError("Context pipeline should have timed out")
+
+    context_service.pipeline.assemble = slow_pipeline  # type: ignore[method-assign]
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(max_input_bytes=512, default_deadline_seconds=0.01)
+        ),
+        agent_context_service=context_service,
+    )
+
+    try:
+        with pytest.raises(InvocationDeadlineExceededError) as raised:
+            await service.invoke(_request(text="within the input limit"))
+
+        assert raised.value.status_code == 504
+        assert raised.value.code == "invocation_deadline_exceeded"
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_slow_plan_preflight_consumes_the_same_deadline_before_run_acceptance() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=1,
+            ),
+            clock=clock,
+        ),
+    )
+
+    async def slow_active_plan(*_args: object) -> None:
+        clock.advance(timedelta(seconds=2))
+        return None
+
+    service._active_plan_for_invocation = slow_active_plan  # type: ignore[method-assign]
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await service.invoke(_request(text="within the input limit"))
+
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_accepted_pre_dispatch_deadline_is_certain_and_skips_adapter_call() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=1,
+        ),
+        clock=clock,
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    original_publish = service._publish_run
+    advanced = False
+
+    async def advance_after_acceptance(*args: object, **kwargs: object) -> None:
+        nonlocal advanced
+        if not advanced:
+            advanced = True
+            clock.advance(timedelta(seconds=2))
+        await original_publish(*args, **kwargs)
+
+    service._publish_run = advance_after_acceptance  # type: ignore[method-assign]
+    try:
+        result = await service.invoke(_request(text="within the input limit"))
+
+        assert result.status == "failed"
+        assert result.error is not None
+        assert result.error.code == "invocation_deadline_exceeded"
+        assert result.error.details == {
+            "category": "deadline_exceeded",
+            "retryable": False,
+            "completion_certainty": "certain",
+        }
+        assert adapter.calls == []
+        assert len(runs.runs) == len(results.results) == 1
+        run = await runs.get_run(result.run_id)
+        assert run is not None
+        assert run.deadline_at == datetime(2030, 1, 1, 0, 0, 1, tzinfo=UTC)
+        assert run.error == result.error.model_dump()
+        assert results.results[0].error == result.error.model_dump()
+    finally:
+        await catalog.aclose()
+
+
+async def test_late_terminal_write_converges_to_durable_unknown_deadline_failure() -> None:
+    """A completion write cannot commit an Adapter success after its deadline."""
+
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=1,
+            ),
+            clock=clock,
+        ),
+    )
+    original_complete = service.completion_store.complete
+    completion_attempts = 0
+
+    async def advance_before_terminal_commit(*args: object, **kwargs: object):
+        nonlocal completion_attempts
+        completion_attempts += 1
+        clock.advance(timedelta(seconds=2))
+        return await original_complete(*args, **kwargs)
+
+    service.completion_store.complete = advance_before_terminal_commit  # type: ignore[method-assign]
+    try:
+        result = await service.invoke(_request(text="within the input limit"))
+
+        assert result.status == "failed"
+        assert result.error is not None
+        assert result.error.code == "invocation_deadline_exceeded"
+        assert result.error.details == {
+            "category": "deadline_exceeded",
+            "retryable": False,
+            "completion_certainty": "unknown",
+        }
+        assert len(adapter.calls) == 1
+
+        for _ in range(20):
+            if results.results:
+                break
+            await asyncio.sleep(0)
+        assert completion_attempts >= 2
+        assert len(runs.runs) == len(results.results) == 1
+        stored_run = next(iter(runs.runs.values()))
+        assert stored_run.status == "failed"
+        assert stored_run.error == result.error.model_dump()
+        assert results.results[0].status == "failed"
+        assert results.results[0].error == result.error.model_dump()
+    finally:
+        await catalog.aclose()
+
+
+async def test_same_turn_adapter_exception_after_deadline_is_unknown_deadline_failure() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _DeadlineAdvancingFailureAdapter(
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=1,
+            ),
+            clock=clock,
+        ),
+    )
+    try:
+        result = await service.invoke(_request(text="within the input limit"))
+
+        assert result.status == "failed"
+        assert result.error is not None
+        assert result.error.code == "invocation_deadline_exceeded"
+        assert result.error.details == {
+            "category": "deadline_exceeded",
+            "retryable": False,
+            "completion_certainty": "unknown",
+        }
+        assert len(adapter.calls) == 1
+        assert len(runs.runs) == len(results.results) == 1
+        assert next(iter(runs.runs.values())).error == result.error.model_dump()
+    finally:
+        await catalog.aclose()
+
+
+async def test_client_disconnect_does_not_cancel_an_accepted_run() -> None:
+    adapter = _BlockingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=5,
+        )
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    try:
+        client_waiter = asyncio.create_task(service.invoke(_request(text="within the input limit")))
+        await asyncio.wait_for(adapter.started.wait(), timeout=1)
+
+        client_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client_waiter
+
+        adapter.allow_completion.set()
+        for _ in range(20):
+            if results.results and not runtime._accepted_execution_tasks:
+                break
+            await asyncio.sleep(0)
+
+        assert len(adapter.calls) == 1
+        assert len(runs.runs) == len(results.results) == 1
+        completed_run = next(iter(runs.runs.values()))
+        assert completed_run.status == "completed"
+        assert results.results[0].status == "completed"
+        assert runtime._accepted_execution_tasks == set()
+    finally:
+        adapter.allow_completion.set()
+        await catalog.aclose()
+
+
+async def test_client_disconnect_during_run_acceptance_keeps_the_commit_window_owned() -> None:
+    """A cancellation must not split durable Run creation from convergence."""
+
+    adapter = _BlockingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=5,
+        )
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    add_started = asyncio.Event()
+    allow_add = asyncio.Event()
+    original_add = runs.add_run
+
+    async def gated_add(run):
+        add_started.set()
+        await allow_add.wait()
+        return await original_add(run)
+
+    runs.add_run = gated_add  # type: ignore[method-assign]
+    try:
+        client_waiter = asyncio.create_task(service.invoke(_request(text="within the input limit")))
+        await asyncio.wait_for(add_started.wait(), timeout=1)
+
+        client_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client_waiter
+
+        # The task is retained even though the durable insert was still
+        # awaiting: it now owns both possible commit outcomes.
+        assert runtime._accepted_execution_tasks
+        allow_add.set()
+        await asyncio.wait_for(adapter.started.wait(), timeout=1)
+        adapter.allow_completion.set()
+        for _ in range(20):
+            if results.results and not runtime._accepted_execution_tasks:
+                break
+            await asyncio.sleep(0)
+
+        assert len(adapter.calls) == 1
+        assert len(runs.runs) == len(results.results) == 1
+        assert next(iter(runs.runs.values())).status == "completed"
+    finally:
+        allow_add.set()
+        adapter.allow_completion.set()
+        await catalog.aclose()
+
+
+async def test_deadline_during_run_start_rolls_back_the_preacceptance_mutation() -> None:
+    """A start write that reaches the deadline cannot leave a durable Run."""
+
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(max_input_bytes=512, default_deadline_seconds=1),
+        clock=clock,
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    original_add = runs.add_run
+
+    async def write_then_expire(run):
+        stored = await original_add(run)
+        clock.advance(timedelta(seconds=2))
+        return stored
+
+    runs.add_run = write_then_expire  # type: ignore[method-assign]
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await service.invoke(_request(text="within the input limit"))
+
+        for _ in range(20):
+            if not runtime._durable_start_reconciliation_tasks:
+                break
+            await asyncio.sleep(0)
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_shutdown_reconciles_a_run_committed_before_start_acknowledgement() -> None:
+    """A cancellation after ``add_run`` commits still produces one terminal Result."""
+
+    adapter = _BlockingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=5,
+        )
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    committed = asyncio.Event()
+    original_add = runs.add_run
+
+    async def commit_then_block(run):
+        stored = await original_add(run)
+        committed.set()
+        await asyncio.Future()
+        return stored
+
+    runs.add_run = commit_then_block  # type: ignore[method-assign]
+    try:
+        client_waiter = asyncio.create_task(service.invoke(_request(text="within the input limit")))
+        await asyncio.wait_for(committed.wait(), timeout=1)
+
+        client_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client_waiter
+        assert runtime._accepted_execution_tasks
+
+        await asyncio.wait_for(runtime.stop(), timeout=1)
+
+        assert len(runs.runs) == len(results.results) == 1
+        terminal_run = next(iter(runs.runs.values()))
+        assert terminal_run.status == "failed"
+        assert results.results[0].status == "failed"
+        assert runtime._accepted_execution_tasks == set()
+    finally:
+        adapter.allow_completion.set()
+        await catalog.aclose()
+
+
+async def test_shutdown_retries_a_transient_read_after_committed_run_start() -> None:
+    """A read outage is not evidence that a cancelled durable start rolled back."""
+
+    adapter = _BlockingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=5,
+        )
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    committed = asyncio.Event()
+    original_add = runs.add_run
+    original_get = runs.get_run
+    fail_first_read = True
+
+    async def commit_then_block(run):
+        stored = await original_add(run)
+        committed.set()
+        await asyncio.Future()
+        return stored
+
+    async def transiently_unavailable(run_id: str):
+        nonlocal fail_first_read
+        if fail_first_read:
+            fail_first_read = False
+            raise RuntimeError("temporary run read failure")
+        return await original_get(run_id)
+
+    runs.add_run = commit_then_block  # type: ignore[method-assign]
+    runs.get_run = transiently_unavailable  # type: ignore[method-assign]
+    try:
+        client_waiter = asyncio.create_task(service.invoke(_request(text="within the input limit")))
+        await asyncio.wait_for(committed.wait(), timeout=1)
+
+        client_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client_waiter
+
+        await asyncio.wait_for(runtime.stop(), timeout=1)
+
+        assert len(runs.runs) == len(results.results) == 1
+        assert next(iter(runs.runs.values())).status == "failed"
+        assert results.results[0].status == "failed"
+        assert runtime._accepted_execution_tasks == set()
+    finally:
+        adapter.allow_completion.set()
+        await catalog.aclose()
+
+
+async def test_failed_run_start_releases_its_plan_claim_only_after_a_readable_absence() -> None:
+    adapter = _RecordingAdapter()
+    plans = MemoryPlanRepository()
+    plan_service = PlanService(plans)
+    plan = await plan_service.save_plan(
+        Plan.model_validate(
+            {
+                "plan_id": "failed-start-plan",
+                "tenant_id": "tenant-1",
+                "user_id": "operator-1",
+                "session_id": "contract-session",
+                "status": "running",
+                "steps": [
+                    {
+                        "step_id": "failed-start-step",
+                        "agent_id": "contract-agent",
+                        "description": "Release only a definitely unstarted claim",
+                    }
+                ],
+            }
+        ),
+        publish=False,
+    )
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=5,
+            )
+        ),
+        plan_service=plan_service,
+    )
+
+    async def fail_before_commit(_run):
+        raise RuntimeError("run store unavailable before commit")
+
+    runs.add_run = fail_before_commit  # type: ignore[method-assign]
+    selection = service.snapshot_runtime.snapshot.select_for_user(
+        "contract-agent", _request(text="unused").user
+    )
+    assert selection is not None
+    try:
+        with pytest.raises(RuntimeError, match="run store unavailable"):
+            await service.invoke_agent(
+                agent_id="contract-agent",
+                session_id="contract-session",
+                user=_request(text="unused").user,
+                input={"text": "within the input limit"},
+                context={"plan_id": plan.plan_id},
+                selected_binding=selection,
+            )
+
+        for _ in range(10):
+            if plan.plan_id not in plans.execution_claims:
+                break
+            await asyncio.sleep(0)
+        restored = await plan_service.get_plan(
+            plan.plan_id,
+            tenant_id="tenant-1",
+            user_id="operator-1",
+        )
+        assert restored is not None
+        assert restored.steps[0].status == "pending"
+        assert plan.plan_id not in plans.execution_claims
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_shutdown_converges_a_detached_run_cancelled_during_publication() -> None:
+    """Lifecycle stop cannot leave an accepted detached Run in ``running``."""
+
+    adapter = _BlockingAdapter()
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=5,
+        )
+    )
+    catalog, service, runs, results = await _service(adapter=adapter, runtime=runtime)
+    publish_started = asyncio.Event()
+    allow_publish = asyncio.Event()
+    original_publish = service._publish_run
+    publish_count = 0
+
+    async def gated_publish(*args: object, **kwargs: object) -> None:
+        nonlocal publish_count
+        publish_count += 1
+        if publish_count == 1:
+            publish_started.set()
+            await allow_publish.wait()
+        await original_publish(*args, **kwargs)
+
+    service._publish_run = gated_publish  # type: ignore[method-assign]
+    try:
+        client_waiter = asyncio.create_task(service.invoke(_request(text="within the input limit")))
+        await asyncio.wait_for(publish_started.wait(), timeout=1)
+
+        client_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await client_waiter
+        assert runtime._accepted_execution_tasks
+
+        await asyncio.wait_for(runtime.stop(), timeout=1)
+
+        assert len(runs.runs) == len(results.results) == 1
+        terminal_run = next(iter(runs.runs.values()))
+        assert terminal_run.status == "failed"
+        assert results.results[0].status == "failed"
+        assert runtime._accepted_execution_tasks == set()
+    finally:
+        allow_publish.set()
+        adapter.allow_completion.set()
+        await catalog.aclose()
 
 
 async def test_accepted_structured_output_limit_becomes_one_safe_invalid_response() -> None:
@@ -1097,6 +1830,516 @@ async def test_plan_preflight_rejection_does_not_claim_or_start_the_step() -> No
     assert not results.results
 
     await catalog.aclose()
+
+
+async def test_plan_claim_timeout_does_not_create_a_run_or_dispatch_an_adapter() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    plans = MemoryPlanRepository()
+    plan_service = PlanService(plans)
+    plan = await plan_service.save_plan(
+        Plan.model_validate(
+            {
+                "plan_id": "deadline-plan",
+                "tenant_id": "tenant-1",
+                "user_id": "operator-1",
+                "session_id": "contract-session",
+                "status": "running",
+                "steps": [
+                    {
+                        "step_id": "deadline-step",
+                        "agent_id": "contract-agent",
+                        "description": "Run after the claim deadline",
+                    }
+                ],
+            }
+        ),
+        publish=False,
+    )
+    original_claim = plan_service.claim_step
+
+    async def late_claim(*args: object, **kwargs: object):
+        claimed = await original_claim(*args, **kwargs)
+        clock.advance(timedelta(seconds=2))
+        return claimed
+
+    plan_service.claim_step = late_claim  # type: ignore[method-assign]
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=1,
+            ),
+            clock=clock,
+        ),
+        plan_service=plan_service,
+    )
+    selection = service.snapshot_runtime.snapshot.select_for_user(
+        "contract-agent", _request(text="unused").user
+    )
+    assert selection is not None
+
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await service.invoke_agent(
+                agent_id="contract-agent",
+                session_id="contract-session",
+                user=_request(text="unused").user,
+                input={"text": "within the input limit"},
+                context={"plan_id": plan.plan_id},
+                selected_binding=selection,
+            )
+
+        # The claim completed just as the deadline expired. Its deferred
+        # compensation must restore the pre-acceptance Plan state instead of
+        # leaving a lease that blocks a later legitimate invocation.
+        for _ in range(10):
+            if plan.plan_id not in plans.execution_claims:
+                break
+            await asyncio.sleep(0)
+        restored = await plan_service.get_plan(
+            plan.plan_id,
+            tenant_id="tenant-1",
+            user_id="operator-1",
+        )
+        assert restored is not None
+        assert restored.steps[0].status == "pending"
+        assert plan.plan_id not in plans.execution_claims
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_expiry_after_plan_claim_releases_claim_before_run_acceptance() -> None:
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    adapter = _RecordingAdapter()
+    plans = MemoryPlanRepository()
+    plan_service = PlanService(plans)
+    plan = await plan_service.save_plan(
+        Plan.model_validate(
+            {
+                "plan_id": "post-claim-deadline-plan",
+                "tenant_id": "tenant-1",
+                "user_id": "operator-1",
+                "session_id": "contract-session",
+                "status": "running",
+                "steps": [
+                    {
+                        "step_id": "post-claim-deadline-step",
+                        "agent_id": "contract-agent",
+                        "description": "Expire after a claimed Step",
+                    }
+                ],
+            }
+        ),
+        publish=False,
+    )
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(
+            max_input_bytes=512,
+            default_deadline_seconds=1,
+        ),
+        clock=clock,
+    )
+    original_attach = runtime.attach_trusted_plan_idempotency
+
+    def expire_after_claim(
+        envelope: AgentCallEnvelope,
+        invocation: AgentInvocation,
+    ) -> AgentCallEnvelope:
+        attached = original_attach(envelope, invocation)
+        clock.advance(timedelta(seconds=2))
+        return attached
+
+    runtime.attach_trusted_plan_idempotency = expire_after_claim  # type: ignore[method-assign]
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=runtime,
+        plan_service=plan_service,
+    )
+    selection = service.snapshot_runtime.snapshot.select_for_user(
+        "contract-agent", _request(text="unused").user
+    )
+    assert selection is not None
+
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await service.invoke_agent(
+                agent_id="contract-agent",
+                session_id="contract-session",
+                user=_request(text="unused").user,
+                input={"text": "within the input limit"},
+                context={"plan_id": plan.plan_id},
+                selected_binding=selection,
+            )
+
+        for _ in range(10):
+            if plan.plan_id not in plans.execution_claims:
+                break
+            await asyncio.sleep(0)
+        restored = await plan_service.get_plan(
+            plan.plan_id,
+            tenant_id="tenant-1",
+            user_id="operator-1",
+        )
+        assert restored is not None
+        assert restored.steps[0].status == "pending"
+        assert plan.plan_id not in plans.execution_claims
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
+
+
+@pytest.mark.parametrize("backend", ["memory", "database"])
+async def test_fenced_plan_claim_without_run_restarts_with_its_stable_run_id(
+    backend, tmp_path, managed_database
+) -> None:
+    """A crash after fence commit can resume only the original Run identity."""
+
+    if backend == "memory":
+        repository = MemoryPlanRepository()
+        recovered_repository = repository
+    else:
+        settings = Settings(
+            storage_backend="database",
+            database_url=f"sqlite+aiosqlite:///{tmp_path / 'fenced-plan-restart.db'}",
+        )
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
+        repository = DatabasePlanRepository(session_factory)
+        # A new repository object models the restarted worker rather than a
+        # convenient in-memory continuation of the original service graph.
+        recovered_repository = DatabasePlanRepository(session_factory)
+    initial_plans = PlanService(repository)
+    plan = await initial_plans.save_plan(
+        Plan.model_validate(
+            {
+                "plan_id": f"fenced-restart-{backend}",
+                "tenant_id": "tenant-1",
+                "user_id": "operator-1",
+                "session_id": "contract-session",
+                "status": "running",
+                "steps": [
+                    {
+                        "step_id": "fenced-step",
+                        "agent_id": "contract-agent",
+                        "description": "Resume the fenced execution once",
+                    }
+                ],
+            }
+        ),
+        publish=False,
+    )
+    claimed = await initial_plans.claim_step(
+        plan.plan_id,
+        "fenced-step",
+        tenant_id="tenant-1",
+        user_id="operator-1",
+    )
+    assert claimed is not None
+    _, claim_id = claimed
+    execution_key = await initial_plans.get_execution_claim_key(plan.plan_id, claim_id=claim_id)
+    assert execution_key is not None
+    assert await initial_plans.fence_step_claim(
+        plan.plan_id,
+        "fenced-step",
+        tenant_id="tenant-1",
+        user_id="operator-1",
+        claim_id=claim_id,
+    )
+
+    recovered_plans = PlanService(recovered_repository)
+    fence = await recovered_plans.get_execution_claim_fence(
+        plan.plan_id,
+        tenant_id="tenant-1",
+        user_id="operator-1",
+    )
+    assert fence is not None
+    assert (fence.step_id, fence.claim_id, fence.execution_key) == (
+        "fenced-step",
+        claim_id,
+        execution_key,
+    )
+
+    adapter = _RecordingAdapter()
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(policy=InvocationRuntimePolicy(max_input_bytes=512)),
+        plan_service=recovered_plans,
+    )
+    selection = service.snapshot_runtime.snapshot.select_for_user(
+        "contract-agent", _request(text="unused").user
+    )
+    assert selection is not None
+    try:
+        result = await service.invoke_agent(
+            agent_id="contract-agent",
+            session_id="contract-session",
+            user=_request(text="unused").user,
+            input={"text": "within the input limit"},
+            context={"plan_id": plan.plan_id},
+            selected_binding=selection,
+        )
+
+        assert result.status == "completed"
+        assert result.run_id == f"run_{execution_key}"
+        assert set(runs.runs) == {f"run_{execution_key}"}
+        assert len(results.results) == len(adapter.calls) == 1
+        for _ in range(20):
+            if (
+                await recovered_plans.get_execution_claim_fence(
+                    plan.plan_id,
+                    tenant_id="tenant-1",
+                    user_id="operator-1",
+                )
+                is None
+            ):
+                break
+            await asyncio.sleep(0)
+        assert (
+            await recovered_plans.get_execution_claim_fence(
+                plan.plan_id,
+                tenant_id="tenant-1",
+                user_id="operator-1",
+            )
+            is None
+        )
+    finally:
+        await catalog.aclose()
+
+
+async def test_late_cross_turn_start_ack_never_terminalizes_the_winning_run() -> None:
+    """A losing Turn's deadline recovery must not settle a shared stable Run."""
+
+    clock = _Clock(datetime(2030, 1, 1, tzinfo=UTC))
+    plans = MemoryPlanRepository()
+    plan_service = PlanService(plans)
+    plan = await plan_service.save_plan(
+        Plan.model_validate(
+            {
+                "plan_id": "cross-turn-fenced-plan",
+                "tenant_id": "tenant-1",
+                "user_id": "operator-1",
+                "session_id": "contract-session",
+                "status": "running",
+                "steps": [
+                    {
+                        "step_id": "cross-turn-step",
+                        "agent_id": "contract-agent",
+                        "description": "Keep one stable Run across Turn contention",
+                    }
+                ],
+            }
+        ),
+        publish=False,
+    )
+    claimed = await plan_service.claim_step(
+        plan.plan_id,
+        "cross-turn-step",
+        tenant_id="tenant-1",
+        user_id="operator-1",
+        publish=False,
+    )
+    assert claimed is not None
+    _, claim_id = claimed
+    execution_key = await plan_service.get_execution_claim_key(plan.plan_id, claim_id=claim_id)
+    assert execution_key is not None
+    assert await plan_service.fence_step_claim(
+        plan.plan_id,
+        "cross-turn-step",
+        tenant_id="tenant-1",
+        user_id="operator-1",
+        claim_id=claim_id,
+    )
+
+    runtime = InvocationRuntime(
+        policy=InvocationRuntimePolicy(max_input_bytes=512, default_deadline_seconds=1),
+        clock=clock,
+    )
+    adapter = _RecordingAdapter()
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=runtime,
+        plan_service=plan_service,
+    )
+    turns = MemoryTurnRepository()
+    turn_service = TurnService(turns)
+    outbox = MemoryTurnOutboxRepository()
+    canonical = MemoryCanonicalInvocationStore(
+        run_repository=runs,
+        result_repository=results,
+        turn_repository=turns,
+        outbox_repository=outbox,
+    )
+    first = await turn_service.start_turn(
+        tenant_id="tenant-1",
+        user_id="operator-1",
+        session_id="contract-session",
+        request_id="cross-turn-winner",
+        source="host_chat",
+        user_input=TurnUserInput(text="winner"),
+    )
+    second = await turn_service.start_turn(
+        tenant_id="tenant-1",
+        user_id="operator-1",
+        session_id="contract-session",
+        request_id="cross-turn-loser",
+        source="host_chat",
+        user_input=TurnUserInput(text="loser"),
+    )
+    winning_run, _, _, created = await canonical.start_run(
+        AgentRun(
+            run_id=f"run_{execution_key}",
+            request_id=first.turn.request_id,
+            session_id=first.turn.session_id,
+            agent_id="contract-agent",
+            user_id="operator-1",
+            tenant_id="tenant-1",
+            plan_id=plan.plan_id,
+            step_id="cross-turn-step",
+            status="running",
+            invoker_type="contract_adapter",
+        )
+    )
+    assert created is True
+
+    # The losing request begins its fenced recovery before it observes the
+    # winner's commit. Its next canonical start sees the stable-id conflict,
+    # then receives the acknowledgement after its own deadline.
+    original_get_run = runs.get_run
+    hide_winner_once = True
+
+    async def get_run_with_stale_first_read(run_id: str):
+        nonlocal hide_winner_once
+        if run_id == winning_run.run_id and hide_winner_once:
+            hide_winner_once = False
+            return None
+        return await original_get_run(run_id)
+
+    runs.get_run = get_run_with_stale_first_read  # type: ignore[method-assign]
+    service.canonical_invocation_store = _DeadlineAdvancingCanonicalStore(
+        delegate=canonical,
+        clock=clock,
+        advance_by=timedelta(seconds=2),
+    )
+    selection = service.snapshot_runtime.snapshot.select_for_user(
+        "contract-agent", _request(text="unused").user
+    )
+    assert selection is not None
+
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await service.invoke_agent(
+                agent_id="contract-agent",
+                session_id="contract-session",
+                user=_request(text="unused").user,
+                input={"text": "do not settle another Turn's Run"},
+                request_id=second.turn.request_id,
+                context={
+                    "plan_id": plan.plan_id,
+                    "_canonical_turn_managed": True,
+                    "_canonical_response_text": "loser response",
+                },
+                selected_binding=selection,
+            )
+
+        for _ in range(20):
+            if not runtime._durable_start_reconciliation_tasks:
+                break
+            await asyncio.sleep(0)
+        stored_winner = await original_get_run(winning_run.run_id)
+        stored_loser_turn = await turns.get(
+            second.turn.turn_id,
+            tenant_id="tenant-1",
+            user_id="operator-1",
+        )
+        assert stored_winner is not None and stored_winner.status == "running"
+        assert stored_loser_turn is not None and stored_loser_turn.status.value == "pending"
+        assert results.results == []
+        assert adapter.calls == []
+    finally:
+        await catalog.aclose()
+
+
+async def test_cancelled_plan_claim_publication_is_compensated_before_run_acceptance() -> None:
+    adapter = _RecordingAdapter()
+    plans = MemoryPlanRepository()
+    plan_service = PlanService(plans)
+    plan = await plan_service.save_plan(
+        Plan.model_validate(
+            {
+                "plan_id": "claim-publication-plan",
+                "tenant_id": "tenant-1",
+                "user_id": "operator-1",
+                "session_id": "contract-session",
+                "status": "running",
+                "steps": [
+                    {
+                        "step_id": "claim-publication-step",
+                        "agent_id": "contract-agent",
+                        "description": "Block publication after Claim persistence",
+                    }
+                ],
+            }
+        ),
+        publish=False,
+    )
+    publication_started = asyncio.Event()
+
+    async def block_claim_publication(*_args: object, **_kwargs: object) -> None:
+        publication_started.set()
+        await asyncio.Future()
+
+    plan_service._publish = block_claim_publication  # type: ignore[method-assign]
+    catalog, service, runs, results = await _service(
+        adapter=adapter,
+        runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(
+                max_input_bytes=512,
+                default_deadline_seconds=0.01,
+            )
+        ),
+        plan_service=plan_service,
+    )
+    selection = service.snapshot_runtime.snapshot.select_for_user(
+        "contract-agent", _request(text="unused").user
+    )
+    assert selection is not None
+
+    try:
+        with pytest.raises(InvocationDeadlineExceededError):
+            await service.invoke_agent(
+                agent_id="contract-agent",
+                session_id="contract-session",
+                user=_request(text="unused").user,
+                input={"text": "within the input limit"},
+                context={"plan_id": plan.plan_id},
+                selected_binding=selection,
+            )
+
+        assert publication_started.is_set()
+        for _ in range(10):
+            if plan.plan_id not in plans.execution_claims:
+                break
+            await asyncio.sleep(0)
+        restored = await plan_service.get_plan(
+            plan.plan_id,
+            tenant_id="tenant-1",
+            user_id="operator-1",
+        )
+        assert restored is not None
+        assert restored.steps[0].status == "pending"
+        assert plan.plan_id not in plans.execution_claims
+        assert adapter.calls == []
+        assert runs.runs == {}
+        assert results.results == []
+    finally:
+        await catalog.aclose()
 
 
 async def test_definition_input_limit_can_only_tighten_the_deployment_limit() -> None:

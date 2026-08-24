@@ -342,7 +342,7 @@ async def test_real_postgresql_route_turn_to_recall_pork_preference(managed_data
         )
         store = DatabaseCanonicalInvocationStore(factory)
         now = datetime.now(UTC)
-        run, _, _ = await store.start_run(
+        run, _, _, _ = await store.start_run(
             AgentRun(
                 run_id=f"pg_route_memory_run_{suffix}",
                 request_id=request_id,

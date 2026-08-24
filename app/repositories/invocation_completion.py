@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import InvocationDeadlineExceededError
 from app.db.models import AgentResultModel, AgentRunModel
 from app.repositories.database import (
     DatabaseResultRepository,
@@ -19,6 +21,7 @@ from app.repositories.database import (
     _validate_run_identity,
 )
 from app.repositories.interfaces import InvocationCompletionStore
+from app.repositories.invocation_commit_guard import guard_invocation_commit
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
 from app.schemas.logs import AgentResult, AgentRun
 
@@ -63,11 +66,17 @@ class DatabaseInvocationCompletionStore:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def complete(self, *, run: AgentRun, result: AgentResult) -> tuple[AgentRun, AgentResult]:
+    async def complete(
+        self,
+        *,
+        run: AgentRun,
+        result: AgentResult,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, AgentResult]:
         _validate_completion_identity(run, result)
         for attempt in range(_COMPLETION_PERSISTENCE_ATTEMPTS):
             try:
-                return await self._complete_once(run=run, result=result)
+                return await self._complete_once(run=run, result=result, may_commit=may_commit)
             except Exception as exc:
                 replay = await self._read_terminal_replay_after_error(run)
                 if replay is not None:
@@ -89,8 +98,11 @@ class DatabaseInvocationCompletionStore:
         *,
         run: AgentRun,
         result: AgentResult,
+        may_commit: Callable[[], bool] | None,
     ) -> tuple[AgentRun, AgentResult]:
         async with self._session_factory() as session, session.begin():
+            guard_invocation_commit(session, may_commit)
+            _require_terminal_commit_allowed(may_commit)
             row = await session.scalar(
                 select(AgentRunModel).where(AgentRunModel.run_id == run.run_id).with_for_update()
             )
@@ -121,6 +133,10 @@ class DatabaseInvocationCompletionStore:
             session.add(result_row)
             await session.flush()
             await session.refresh(result_row)
+            # Recheck immediately before the transaction context commits. A
+            # caller-owned monotonic deadline is the authority for this
+            # invocation, including deterministic test clocks.
+            _require_terminal_commit_allowed(may_commit)
             return run, _result_from_row(result_row)
 
     async def _read_terminal_replay(self, run: AgentRun) -> tuple[AgentRun, AgentResult] | None:
@@ -153,10 +169,17 @@ class MemoryInvocationCompletionStore:
         self._result_repository = result_repository
         self._lock = run_repository._invocation_completion_lock
 
-    async def complete(self, *, run: AgentRun, result: AgentResult) -> tuple[AgentRun, AgentResult]:
+    async def complete(
+        self,
+        *,
+        run: AgentRun,
+        result: AgentResult,
+        may_commit: Callable[[], bool] | None = None,
+    ) -> tuple[AgentRun, AgentResult]:
         _validate_completion_identity(run, result)
         async with self._lock:
             for attempt in range(_COMPLETION_PERSISTENCE_ATTEMPTS):
+                _require_terminal_commit_allowed(may_commit)
                 existing = await self._run_repository.get_run(run.run_id)
                 if existing is None:
                     raise InvocationCompletionConflict("Accepted Run is unavailable")
@@ -176,6 +199,7 @@ class MemoryInvocationCompletionStore:
                 try:
                     stored_run = await self._run_repository.update_run(run)
                     stored_result = await self._result_repository.add_result(result)
+                    _require_terminal_commit_allowed(may_commit)
                 except Exception:
                     (
                         self._run_repository.runs,
@@ -228,6 +252,13 @@ def _validate_completion_identity(run: AgentRun, result: AgentResult) -> None:
     fields = ("session_id", "agent_id", "user_id", "tenant_id", "turn_id", "plan_id", "step_id")
     if any(getattr(result, field) != getattr(run, field) for field in fields):
         raise InvocationCompletionConflict("Result identity does not match Accepted Run")
+
+
+def _require_terminal_commit_allowed(may_commit: Callable[[], bool] | None) -> None:
+    """Abort a still-running terminal transaction once its call expired."""
+
+    if may_commit is not None and not may_commit():
+        raise InvocationDeadlineExceededError()
 
 
 def _validate_replay_identity(

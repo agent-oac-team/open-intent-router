@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, field
 from hashlib import sha256
 
@@ -18,6 +19,7 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
 )
+from app.runtime.invocation import InvocationRuntime, InvocationRuntimePolicy
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.execution_traces import ExecutionTraceQuery
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
@@ -51,6 +53,23 @@ class _V2Adapter:
         invocation: AgentInvocation,
     ) -> AgentInvocationResult:
         self.calls.append((definition, requirement, invocation))
+        return AgentInvocationResult(
+            run_id="adapter-controlled-run-id",
+            agent_id="adapter-controlled-agent-id",
+            status="completed",
+            output=self.output,
+        )
+
+
+class _SlowV2Adapter(_V2Adapter):
+    async def invoke_v2(
+        self,
+        definition: AgentDefinitionV2,
+        requirement: InvocationBindingRequirement,
+        invocation: AgentInvocation,
+    ) -> AgentInvocationResult:
+        self.calls.append((definition, requirement, invocation))
+        await asyncio.sleep(0.05)
         return AgentInvocationResult(
             run_id="adapter-controlled-run-id",
             agent_id="adapter-controlled-agent-id",
@@ -223,6 +242,7 @@ def _service(
     runs,
     results,
     traces: ExecutionTraceService | None = None,
+    invocation_runtime: InvocationRuntime | None = None,
 ) -> InvocationService:
     return InvocationService(
         registry=_NoRegistryReads(),
@@ -231,6 +251,7 @@ def _service(
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
         execution_traces=traces,
+        invocation_runtime=invocation_runtime,
     )
 
 
@@ -538,6 +559,38 @@ async def test_direct_invocation_uses_the_protocol_frozen_by_the_snapshot() -> N
     assert result.status == "completed"
     assert len(adapter.calls) == 1
     assert len(runs.runs) == len(results.results) == 1
+
+    await catalog.aclose()
+
+
+async def test_legacy_v2_invocation_uses_the_shared_deadline_after_acceptance() -> None:
+    adapter = _SlowV2Adapter()
+    catalog = await _catalog(adapter, invocation_runtime=False)
+    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
+    snapshot_runtime.load([_invocation_definition()], source="test")
+    runs = MemoryRunRepository()
+    results = MemoryResultRepository()
+    service = _service(
+        catalog=catalog,
+        snapshot_runtime=snapshot_runtime,
+        runs=runs,
+        results=results,
+        invocation_runtime=InvocationRuntime(
+            policy=InvocationRuntimePolicy(default_deadline_seconds=0.01)
+        ),
+    )
+
+    result = await service.invoke(_request())
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.code == "invocation_deadline_exceeded"
+    assert result.error.details == {
+        "category": "deadline_exceeded",
+        "retryable": False,
+        "completion_certainty": "unknown",
+    }
+    assert len(adapter.calls) == len(runs.runs) == len(results.results) == 1
 
     await catalog.aclose()
 
