@@ -10,18 +10,18 @@ from app.core.errors import RegistryVersionConflict
 from app.repositories.database import DatabaseAgentDefinitionRepository
 from app.repositories.memory import MemoryAgentDefinitionRepository
 from app.repositories.registry_audit import DatabaseRegistryAuditStore
-from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
+from app.schemas.agents import AccessPolicy, AgentDefinitionV2
 from app.schemas.registry_mutation import RegistryMutationCommand
 
 
-def _agent(description: str = "description") -> AgentDefinition:
-    return AgentDefinition(
+def _agent(description: str = "description") -> AgentDefinitionV2:
+    return AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id="agent-1",
         name="Agent",
         description=description,
-        type="mock",
         access_policy=AccessPolicy(any_entitlements=["workspace.ops.access"]),
-        invocation=InvocationSpec(type="mock"),
+        handling={"kind": "invocation", "adapter_key": "mock", "config": {"function": "run"}},
     )
 
 

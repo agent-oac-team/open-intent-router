@@ -30,7 +30,7 @@
 - Agent Registry 的文件、数据库、混合模式设计。
 - SQLite 本地默认数据库，以及兼容 PostgreSQL 的 SQLAlchemy 模型。
 - OpenAI-compatible LLM Client 和 Mock LLM。
-- 基础 Invoker：`mock`、`http`、`local_function`、`ui_handoff`。
+- 受版本约束的 Runtime Catalog 与 v2 Definition Handling（`invocation`、`external_execution`、`ui_handoff`）。
 - 会话消息、Agent 事件、Agent Run / Result、Plan 和 Route Log。
 - Governed Context Pipeline，以及 Router / Agent 的预算、投影和 Trace。
 - Canonical Turn、Transactional Outbox、Delegated Run 和幂等收口。
@@ -290,6 +290,6 @@ Workflow 文件只会产生 GitHub checks；要让它们真正阻止合并，需
 ## 设计原则
 
 - 核心模型保持通用，不绑定具体业务系统或第三方 Agent 平台。
-- 平台相关字段放入 `invocation.config`、`provider_config` 或 `metadata`，避免污染核心 Schema。
+- Native Definition 只保存逻辑 Binding 引用和受限 Handling 配置；平台私有字段留在 Runtime Adapter 或 Host Adapter。
 - 数据库注册表用于生产环境，本地文件注册表用于开发、测试和故障兜底。
 - 路由决策、Agent 调用和事件记录分层实现，方便后续替换 LLM、Invoker 或 Registry Source。

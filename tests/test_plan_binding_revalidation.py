@@ -24,14 +24,14 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
 )
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.plans import Plan, PlanExecutionRequest, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
 from app.schemas.security import NativePrincipal
 from app.services.binding_resolution import BindingResolver
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.plan_bindings import freeze_plan_step_binding
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
@@ -47,22 +47,6 @@ from app.services.turn_service import TurnService
 class _NoRegistryReads:
     async def available_definitions(self, _user):  # pragma: no cover - assertion path
         raise AssertionError("v2 Plan execution must use the current Registry Snapshot")
-
-
-class _LegacyRegistry:
-    def __init__(self, definition: AgentDefinition) -> None:
-        self.definition = definition
-
-    async def available_definitions(self, _user: UserContext) -> list[AgentDefinition]:
-        return [self.definition]
-
-    async def get_definition(self, agent_id: str) -> AgentDefinition | None:
-        return self.definition if agent_id == self.definition.agent_id else None
-
-
-class _EmptyLegacyRegistry:
-    async def available_definitions(self, _user: UserContext) -> list[AgentDefinition]:
-        return []
 
 
 class _ProtocolBrokenAdapter:
@@ -262,7 +246,6 @@ async def _executor(
         registry=_NoRegistryReads(),
         run_repository=runs,
         result_repository=results,
-        invokers=catalog,
         plan_service=plan_service,
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
@@ -331,7 +314,6 @@ async def test_v2_plan_execution_keeps_one_captured_snapshot_for_all_steps() -> 
         registry=_NoRegistryReads(),
         run_repository=runs,
         result_repository=results,
-        invokers=catalog,
         plan_service=plan_service,
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
@@ -415,7 +397,6 @@ async def test_confirm_and_execute_reuses_its_preflight_snapshot_after_reload() 
         registry=_NoRegistryReads(),
         run_repository=runs,
         result_repository=results,
-        invokers=catalog,
         plan_service=plan_service,
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
@@ -885,149 +866,53 @@ async def test_v2_plan_never_falls_back_to_legacy_registry_when_snapshot_is_unav
     await catalog.aclose()
 
 
-async def test_legacy_plan_keeps_legacy_execution_when_no_v2_snapshot_is_loaded() -> None:
-    settings = Settings(storage_backend="memory")
-    definition = AgentDefinition.model_validate(
-        {
-            "agent_id": "legacy-plan-agent",
-            "name": "Legacy Plan Agent",
-            "description": "A legacy execution path.",
-            "type": "mock",
-            "access_policy": {"allow_roles": ["operator"], "allow_tenants": ["*"]},
-            "input_schema": {
-                "type": "object",
-                "required": ["text"],
-                "properties": {"text": {"type": "string"}},
-            },
-            "output_schema": {
-                "type": "object",
-                "properties": {"summary": {"type": "string"}},
-            },
-            "invocation": {"type": "mock", "config": {"response": {"summary": "ok"}}},
-        }
-    )
-    empty_snapshot = RegistrySnapshotRuntime(RegistrySnapshotBuilder(None))
-    plans = MemoryPlanRepository()
-    plan_service = PlanService(plans)
-    plan = await plan_service.save_plan(
-        Plan(
-            plan_id="legacy-plan",
-            user_id="plan-user",
-            tenant_id="plan-tenant",
-            session_id="plan-session",
-            status="running",
-            steps=[
-                PlanStep(
-                    step_id="legacy-step",
-                    agent_id=definition.agent_id,
-                    description="Use the legacy invoker.",
-                )
-            ],
-        )
-    )
-    runs = MemoryRunRepository()
-    results = MemoryResultRepository()
-    registry = _LegacyRegistry(definition)
-    invocation = InvocationService(
-        registry=registry,
-        run_repository=runs,
-        result_repository=results,
-        invokers=build_default_invoker_registry(settings),
-        plan_service=plan_service,
-        snapshot_runtime=empty_snapshot,
-    )
-    executor = PlanExecutor(
-        plan_service=plan_service,
-        registry=registry,
-        invocation_service=invocation,
-    )
-
-    response = await executor.execute(
-        plan.plan_id,
-        user=_user(),
-        input_values={"text": "run legacy plan"},
-    )
-
-    assert response.plan.status == "completed"
-    assert response.results[0]["output"] == {"summary": "ok"}
-    assert len(runs.runs) == 1
-    assert len(results.results) == 1
-
-
-async def test_legacy_plan_keeps_legacy_execution_when_a_v2_snapshot_is_loaded() -> None:
-    settings = Settings(storage_backend="memory")
-    legacy_definition = AgentDefinition.model_validate(
-        {
-            "agent_id": "legacy-plan-agent",
-            "name": "Legacy Plan Agent",
-            "description": "A legacy execution path.",
-            "type": "mock",
-            "access_policy": {"allow_roles": ["operator"], "allow_tenants": ["*"]},
-            "input_schema": {
-                "type": "object",
-                "required": ["text"],
-                "properties": {"text": {"type": "string"}},
-            },
-            "output_schema": {
-                "type": "object",
-                "properties": {"summary": {"type": "string"}},
-            },
-            "invocation": {"type": "mock", "config": {"response": {"summary": "ok"}}},
-        }
-    )
+async def test_native_executor_rejects_an_unfrozen_legacy_plan_before_execution() -> None:
     adapter = _Adapter()
     catalog = await _catalog(adapter)
-    loaded_snapshot = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    # The migration boundary can temporarily contain a v2 and legacy Agent
-    # with the same logical id.  An old Plan must still execute the legacy
-    # Agent, not silently switch its handling to the v2 binding.
-    loaded_snapshot.load([_definition(agent_id=legacy_definition.agent_id)], source="v2-only")
+    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
+    snapshot_runtime.load([_definition()], source="v2-only")
     plans = MemoryPlanRepository()
     plan_service = PlanService(plans)
     plan = await plan_service.save_plan(
         Plan(
-            plan_id="legacy-plan-with-snapshot",
+            plan_id="unfrozen-plan",
             user_id="plan-user",
             tenant_id="plan-tenant",
             session_id="plan-session",
             status="running",
             steps=[
                 PlanStep(
-                    step_id="legacy-step",
-                    agent_id=legacy_definition.agent_id,
-                    description="Use the legacy invoker.",
+                    step_id="unfrozen-step",
+                    agent_id="plan-agent",
+                    description="A pre-v2 Step without a frozen Binding.",
                 )
             ],
         )
     )
     runs = MemoryRunRepository()
     results = MemoryResultRepository()
-    registry = _LegacyRegistry(legacy_definition)
-    invocation = InvocationService(
-        registry=registry,
-        run_repository=runs,
-        result_repository=results,
-        invokers=build_default_invoker_registry(settings),
-        plan_service=plan_service,
-        snapshot_runtime=loaded_snapshot,
-    )
-    executor = PlanExecutor(
-        plan_service=plan_service,
-        registry=registry,
-        invocation_service=invocation,
+    executor = await _executor(
+        catalog=catalog,
+        snapshot_runtime=snapshot_runtime,
+        plans=plans,
+        runs=runs,
+        results=results,
     )
 
-    response = await executor.execute(
-        plan.plan_id,
-        user=_user(),
-        input_values={"text": "run legacy plan"},
-    )
+    with pytest.raises(PlanBindingUnavailableError) as exc_info:
+        await executor.execute(
+            plan.plan_id,
+            user=_user(),
+            input_values={"text": "do not infer a legacy invoker"},
+        )
 
-    assert response.plan.status == "completed"
-    assert response.results[0]["output"] == {"summary": "ok"}
-    assert len(runs.runs) == 1
-    assert len(results.results) == 1
+    assert exc_info.value.details == {
+        "reason_code": "legacy_plan_step_unsupported",
+        "agent_ids": ["plan-agent"],
+    }
     assert adapter.calls == []
+    assert runs.runs == {}
+    assert results.results == []
 
     await catalog.aclose()
 
@@ -1312,95 +1197,7 @@ async def test_controlled_v2_plan_keeps_one_captured_snapshot_across_turn_start(
     await catalog.aclose()
 
 
-async def test_controlled_legacy_plan_uses_the_current_legacy_candidate_set() -> None:
-    legacy_definition = AgentDefinition.model_validate(
-        {
-            "agent_id": "legacy-controlled-agent",
-            "name": "Legacy Controlled Agent",
-            "description": "Continues an existing legacy Plan.",
-            "type": "mock",
-            "access_policy": {"allow_roles": ["operator"], "allow_tenants": ["*"]},
-            "input_schema": {
-                "type": "object",
-                "required": ["text"],
-                "properties": {"text": {"type": "string"}},
-            },
-            "output_schema": {"type": "object", "properties": {}},
-            "invocation": {"type": "mock", "config": {}},
-        }
-    )
-    adapter = _Adapter()
-    catalog = await _catalog(adapter)
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_definition()], source="v2-only")
-    plans = MemoryPlanRepository()
-    plan_service = PlanService(plans)
-    plan = await plan_service.save_plan(
-        Plan(
-            plan_id="legacy-controlled-plan",
-            user_id="plan-user",
-            tenant_id="plan-tenant",
-            session_id="plan-session",
-            status="running",
-            current_step_id="legacy-controlled-step",
-            steps=[
-                PlanStep(
-                    step_id="legacy-controlled-step",
-                    agent_id=legacy_definition.agent_id,
-                    description="Continue through the legacy Agent.",
-                )
-            ],
-        )
-    )
-    turns = MemoryTurnRepository()
-    router = RouterService(
-        settings=Settings(storage_backend="memory"),
-        registry=_LegacyRegistry(legacy_definition),
-        llm_client=_PlanLLM(),
-        plan_service=plan_service,
-        snapshot_runtime=snapshot_runtime,
-        turn_service=TurnService(turns),
-    )
-
-    response = await router.route(
-        RouteRequest.model_validate(
-            {
-                "request_id": "legacy-controlled-route",
-                "session_id": "plan-session",
-                "source": "plan_control",
-                "plan_id": plan.plan_id,
-                "user": _user().model_dump(mode="json"),
-                "input": {"text": "continue"},
-            }
-        )
-    )
-
-    selected = response.selected_definition(legacy_definition.agent_id)
-    assert selected == legacy_definition
-    assert response.selected_binding(legacy_definition.agent_id) is None
-    assert response.invocation is not None
-    assert response.invocation.agent_id == legacy_definition.agent_id
-
-    await catalog.aclose()
-
-
-async def test_controlled_mixed_plan_keeps_the_legacy_candidate_set_for_later_steps() -> None:
-    legacy_definition = AgentDefinition.model_validate(
-        {
-            "agent_id": "legacy-next-agent",
-            "name": "Legacy Next Agent",
-            "description": "Completes a migration-era later Step.",
-            "type": "mock",
-            "access_policy": {"allow_roles": ["operator"], "allow_tenants": ["*"]},
-            "input_schema": {
-                "type": "object",
-                "required": ["text"],
-                "properties": {"text": {"type": "string"}},
-            },
-            "output_schema": {"type": "object", "properties": {}},
-            "invocation": {"type": "mock", "config": {}},
-        }
-    )
+async def test_controlled_native_route_rejects_unfrozen_step_before_creating_a_turn() -> None:
     adapter = _Adapter()
     catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
@@ -1411,27 +1208,18 @@ async def test_controlled_mixed_plan_keeps_the_legacy_candidate_set_for_later_st
     plan_service = PlanService(plans)
     plan = await plan_service.save_plan(
         Plan(
-            plan_id="mixed-controlled-plan",
+            plan_id="unfrozen-controlled-plan",
             user_id="plan-user",
             tenant_id="plan-tenant",
             session_id="plan-session",
             status="running",
-            current_step_id="v2-current-step",
+            current_step_id="unfrozen-step",
             steps=[
-                freeze_plan_step_binding(
-                    PlanStep(
-                        step_id="v2-current-step",
-                        agent_id="plan-agent",
-                        description="Run the current v2 Step.",
-                        status="running",
-                    ),
-                    selection,
-                ),
                 PlanStep(
-                    step_id="legacy-later-step",
-                    agent_id=legacy_definition.agent_id,
-                    description="Then run the current legacy Step.",
-                    depends_on=["v2-current-step"],
+                    step_id="unfrozen-step",
+                    agent_id="plan-agent",
+                    description="A pre-v2 controlled Step without a frozen Binding.",
+                    status="running",
                 ),
             ],
         )
@@ -1439,7 +1227,7 @@ async def test_controlled_mixed_plan_keeps_the_legacy_candidate_set_for_later_st
     turns = MemoryTurnRepository()
     router = RouterService(
         settings=Settings(storage_backend="memory"),
-        registry=_LegacyRegistry(legacy_definition),
+        registry=_NoRegistryReads(),
         llm_client=_PlanLLM(),
         plan_service=plan_service,
         snapshot_runtime=snapshot_runtime,
@@ -1447,78 +1235,11 @@ async def test_controlled_mixed_plan_keeps_the_legacy_candidate_set_for_later_st
         turn_service=TurnService(turns),
     )
 
-    response = await router.route(
-        RouteRequest.model_validate(
-            {
-                "request_id": "mixed-controlled-route",
-                "session_id": "plan-session",
-                "source": "plan_control",
-                "plan_id": plan.plan_id,
-                "user": _user().model_dump(mode="json"),
-                "input": {"text": "continue"},
-            }
-        )
-    )
-
-    assert response.decision.target_agent_id == "plan-agent"
-    assert response.selected_legacy_definitions == {legacy_definition.agent_id: legacy_definition}
-    assert len(turns.turns) == 1
-
-    await catalog.aclose()
-
-
-async def test_controlled_mixed_plan_rejects_missing_legacy_candidate_before_turn() -> None:
-    adapter = _Adapter()
-    catalog = await _catalog(adapter)
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_definition()], source="v2-current-step")
-    selection = snapshot_runtime.snapshot.select_for_user("plan-agent", _user())
-    assert selection is not None
-    plans = MemoryPlanRepository()
-    plan_service = PlanService(plans)
-    plan = await plan_service.save_plan(
-        Plan(
-            plan_id="mixed-missing-legacy-plan",
-            user_id="plan-user",
-            tenant_id="plan-tenant",
-            session_id="plan-session",
-            status="running",
-            current_step_id="v2-current-step",
-            steps=[
-                freeze_plan_step_binding(
-                    PlanStep(
-                        step_id="v2-current-step",
-                        agent_id="plan-agent",
-                        description="Run the current v2 Step.",
-                        status="running",
-                    ),
-                    selection,
-                ),
-                PlanStep(
-                    step_id="legacy-later-step",
-                    agent_id="missing-legacy-agent",
-                    description="A later legacy Step that lost availability.",
-                    depends_on=["v2-current-step"],
-                ),
-            ],
-        )
-    )
-    turns = MemoryTurnRepository()
-    router = RouterService(
-        settings=Settings(storage_backend="memory"),
-        registry=_EmptyLegacyRegistry(),
-        llm_client=_PlanLLM(),
-        plan_service=plan_service,
-        snapshot_runtime=snapshot_runtime,
-        binding_resolver=BindingResolver(catalog),
-        turn_service=TurnService(turns),
-    )
-
-    with pytest.raises(AgentUnavailableError):
+    with pytest.raises(PlanBindingUnavailableError) as exc_info:
         await router.route(
             RouteRequest.model_validate(
                 {
-                    "request_id": "mixed-missing-legacy-route",
+                    "request_id": "unfrozen-controlled-route",
                     "session_id": "plan-session",
                     "source": "plan_control",
                     "plan_id": plan.plan_id,
@@ -1529,6 +1250,10 @@ async def test_controlled_mixed_plan_rejects_missing_legacy_candidate_before_tur
         )
 
     assert turns.turns == {}
+    assert exc_info.value.details == {
+        "reason_code": "legacy_plan_step_unsupported",
+        "agent_ids": ["plan-agent"],
+    }
 
     await catalog.aclose()
 

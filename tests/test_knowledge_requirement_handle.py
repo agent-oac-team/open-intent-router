@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import InvocationError
-from app.invokers.registry import AgentInvokerRegistry
 from app.plugins.knowledge import KnowledgeProvider
 from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.memory import (
@@ -22,9 +21,9 @@ from app.schemas.agent_context import (
     KnowledgeContext,
     KnowledgeContextItem,
 )
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
-from app.schemas.invocation import AgentInvocationResult, InvokeRequest
+from app.schemas.invocation import InvokeRequest
 from app.schemas.knowledge_provider import (
     KnowledgeProviderRequest,
     KnowledgeProviderResult,
@@ -37,6 +36,7 @@ from app.services.knowledge_context_handle import (
 )
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
+from tests.support.v2_runtime import V2TestAdapter, attach_v2_runtime
 
 
 class StubKnowledgeProvider(KnowledgeProvider):
@@ -64,23 +64,10 @@ class SlowKnowledgeProvider(StubKnowledgeProvider):
         return self.result
 
 
-class RecordingInvoker:
-    def __init__(self) -> None:
-        self.invocations = []
-
-    async def invoke(self, definition, invocation) -> AgentInvocationResult:
-        self.invocations.append(invocation)
-        return AgentInvocationResult(
-            run_id=invocation.run_id,
-            agent_id=definition.agent_id,
-            status="completed",
-        )
-
-
-def _agent(base: AgentDefinition, knowledge: dict) -> AgentDefinition:
+def _agent(base: AgentDefinitionV2, knowledge: dict) -> AgentDefinitionV2:
     payload = base.model_dump(mode="json")
     payload["context"] = {"knowledge": knowledge}
-    return AgentDefinition.model_validate(payload)
+    return AgentDefinitionV2.model_validate(payload)
 
 
 def _service(
@@ -551,27 +538,32 @@ async def test_required_failure_prevents_invoker_call(summarizer_agent) -> None:
         repository=repository,
     )
     await registry.load()
-    invoker = RecordingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register(agent.type, invoker)
+    adapter = V2TestAdapter()
+    catalog = await attach_v2_runtime(registry, adapter=adapter)
     service = InvocationService(
         registry=registry,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=invokers,
         agent_context_service=_service(None),
     )
 
     with pytest.raises(InvocationError) as error:
-        await service.invoke_agent(
-            agent_id=agent.agent_id,
-            session_id="session-1",
-            user=UserContext(id="user-1", attributes={"tenant_id": "tenant-1"}),
-            input={"text": "refund policy"},
+        await service.invoke(
+            InvokeRequest(
+                agent_id=agent.agent_id,
+                session_id="session-1",
+                user=UserContext(
+                    id="user-1",
+                    roles=["operator"],
+                    attributes={"tenant_id": "tenant-1"},
+                ),
+                input={"text": "refund policy"},
+            )
         )
 
     assert error.value.code == "knowledge_unavailable"
-    assert invoker.invocations == []
+    assert adapter.invocations == []
+    await catalog.aclose()
 
 
 async def test_public_invoke_consumes_controlled_handle_before_invoker(
@@ -598,9 +590,8 @@ async def test_public_invoke_consumes_controlled_handle_before_invoker(
         repository=repository,
     )
     await registry.load()
-    invoker = RecordingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register(agent.type, invoker)
+    adapter = V2TestAdapter()
+    catalog = await attach_v2_runtime(registry, adapter=adapter)
     handles = KnowledgeContextHandleService(ttl_seconds=30)
     context = _knowledge_context()
     provider = StubKnowledgeProvider(
@@ -615,7 +606,6 @@ async def test_public_invoke_consumes_controlled_handle_before_invoker(
         registry=registry,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=invokers,
         agent_context_service=_service(provider, handle_service=handles),
     )
     handle = await service.issue_controlled_knowledge_context_handle(
@@ -645,7 +635,8 @@ async def test_public_invoke_consumes_controlled_handle_before_invoker(
     )
 
     assert result.status == "completed"
-    assert invoker.invocations[0].knowledge_context.items[0].item_id == "refund-policy"
-    assert invoker.invocations[0].knowledge_context_handle is None
-    assert invoker.invocations[0].knowledge_context_trace_id is None
+    assert adapter.invocations[0].knowledge_context.items[0].item_id == "refund-policy"
+    assert adapter.invocations[0].knowledge_context_handle is None
+    assert adapter.invocations[0].knowledge_context_trace_id is None
     assert handles.active_handle_count == 0
+    await catalog.aclose()

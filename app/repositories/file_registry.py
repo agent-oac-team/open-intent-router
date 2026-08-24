@@ -3,19 +3,20 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from app.core.errors import RegistryError
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 
 
 class FileRegistrySource:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
 
-    async def load(self) -> list[AgentDefinition]:
+    async def load(self) -> list[AgentDefinitionV2]:
         return self.load_sync()
 
-    def load_sync(self) -> list[AgentDefinition]:
+    def load_sync(self) -> list[AgentDefinitionV2]:
         if not self.path.exists():
             raise RegistryError(f"Registry file not found: {self.path}")
         data = self._read()
@@ -24,13 +25,18 @@ class FileRegistrySource:
             raise RegistryError("Registry file must contain an agents list")
 
         seen: set[str] = set()
-        agents: list[AgentDefinition] = []
+        agents: list[AgentDefinitionV2] = []
         for item in raw_agents:
             if not isinstance(item, dict):
                 raise RegistryError("Each registry item must be an object")
             item = dict(item)
             item["source"] = "file"
-            agent = AgentDefinition.model_validate(item)
+            try:
+                agent = AgentDefinitionV2.model_validate(item)
+            except ValidationError as exc:
+                raise RegistryError(
+                    "Registry file contains an invalid Native v2 Definition"
+                ) from exc
             if agent.agent_id in seen:
                 raise RegistryError(f"Duplicate agent_id in registry file: {agent.agent_id}")
             seen.add(agent.agent_id)

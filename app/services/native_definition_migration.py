@@ -42,10 +42,10 @@ from app.db.models import (
 from app.db.session import ensure_native_definition_migration_schema
 from app.repositories.json_utils import dumps, loads
 from app.schemas.agents import (
-    AgentDefinition,
     AgentDefinitionV2,
     ExternalExecutionHandling,
     InvocationHandling,
+    LegacyAgentDefinition,
     SafeHandlingConfiguration,
     UiHandoffHandling,
     is_safe_agent_identifier,
@@ -1669,13 +1669,13 @@ def _convert_record(record: _SourceRecord) -> AgentDefinitionV2:
         except (TypeError, ValidationError, ValueError) as exc:
             raise _DefinitionConversionError("definition_schema_invalid") from exc
     try:
-        legacy = AgentDefinition.model_validate(dict(record.payload))
+        legacy = LegacyAgentDefinition.model_validate(dict(record.payload))
     except (TypeError, ValidationError, ValueError) as exc:
         raise _DefinitionConversionError("legacy_definition_invalid") from exc
     return _legacy_to_v2(legacy)
 
 
-def _legacy_to_v2(legacy: AgentDefinition) -> AgentDefinitionV2:
+def _legacy_to_v2(legacy: LegacyAgentDefinition) -> AgentDefinitionV2:
     if legacy.invocation.provider_config:
         raise _DefinitionConversionError("legacy_provider_configuration_unsupported")
     payload = legacy.model_dump(

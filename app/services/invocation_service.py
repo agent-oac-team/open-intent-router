@@ -2,7 +2,6 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
-from inspect import isawaitable
 from uuid import uuid4
 
 from jsonschema import ValidationError as JsonSchemaValidationError
@@ -14,11 +13,8 @@ from app.core.errors import (
     InvocationError,
 )
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
-from app.invokers.local_function import LocalFunctionRegistry
-from app.invokers.registry import AgentInvokerRegistry
-from app.runtime.catalog import RuntimeAdapterContext, build_default_runtime_descriptors
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2, AgentHandlingKind
+from app.schemas.agents import AgentDefinitionV2, AgentHandlingKind
 from app.schemas.common import ErrorDetail
 from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
@@ -53,7 +49,6 @@ class InvocationService:
         registry: AgentRegistryService,
         run_repository,
         result_repository,
-        invokers: AgentInvokerRegistry,
         agent_context_service=None,
         plan_service=None,
         turn_capture: TurnCaptureSink | None = None,
@@ -67,10 +62,23 @@ class InvocationService:
         binding_resolver: BindingResolver | None = None,
         execution_traces: ExecutionTraceService | None = None,
     ) -> None:
-        self.registry = registry
+        # The service no longer reads Native Registry records directly. Keep
+        # this argument temporarily so host composition can be migrated
+        # independently.  A composition may publish an already-built Snapshot
+        # and resolver beside that service; every execution path below still
+        # consumes the resulting Snapshot selection instead of reading Registry
+        # records or dispatching by a legacy type.
+        published_snapshot_runtime = getattr(registry, "snapshot_runtime", None)
+        published_binding_resolver = getattr(registry, "binding_resolver", None)
+        if snapshot_runtime is None and isinstance(
+            published_snapshot_runtime, RegistrySnapshotRuntime
+        ):
+            snapshot_runtime = published_snapshot_runtime
+        if binding_resolver is None and isinstance(published_binding_resolver, BindingResolver):
+            binding_resolver = published_binding_resolver
+        del registry
         self.run_repository = run_repository
         self.result_repository = result_repository
-        self.invokers = invokers
         self.agent_context_service = agent_context_service
         self.plan_service = plan_service
         self.turn_capture = turn_capture
@@ -92,53 +100,29 @@ class InvocationService:
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
         snapshot_runtime = self.snapshot_runtime
-        if snapshot_runtime is not None and snapshot_runtime.snapshot is not None:
-            selection = snapshot_runtime.preflight_for_user(request.agent_id, request.user)
-            if selection is None:
-                raise AgentUnavailableError(f"Agent is not available: {request.agent_id}")
-            if self.binding_resolver is None:
-                raise InvocationBindingUnavailableError(
-                    "Invocation Binding is unavailable",
-                    details={"reason_code": "binding_resolver_unavailable"},
-                )
-            resolved = self.binding_resolver.resolve_direct_invocation(selection)
-            invocation = AgentInvocation(
-                run_id=f"run_{uuid4().hex}",
-                request_id=request.request_id,
-                session_id=request.session_id,
-                agent_id=request.agent_id,
-                user=request.user,
-                input=request.input,
-                context=_v2_direct_invocation_context(request.context),
-                memory_context=request.memory_context or MemoryContext(),
-                knowledge_context=request.knowledge_context or KnowledgeContext(),
-                knowledge_context_handle=request.knowledge_context_handle,
-                knowledge_context_trace_id=request.knowledge_context_trace_id,
+        if snapshot_runtime is None or snapshot_runtime.snapshot is None:
+            raise InvocationBindingUnavailableError(
+                "Registry Snapshot is unavailable for Invocation",
+                details={"reason_code": "registry_snapshot_unavailable"},
             )
-            return await self._invoke_resolved_binding(resolved, invocation)
-
-        definitions = await self.registry.available_definitions(request.user)
-        definition = next(
-            (item for item in definitions if item.agent_id == request.agent_id),
-            None,
-        )
-        if definition is None:
+        selection = snapshot_runtime.preflight_for_user(request.agent_id, request.user)
+        if selection is None:
             raise AgentUnavailableError(f"Agent is not available: {request.agent_id}")
-        run_id = f"run_{uuid4().hex}"
+        resolved = self.resolve_direct_binding(selection)
         invocation = AgentInvocation(
-            run_id=run_id,
+            run_id=f"run_{uuid4().hex}",
             request_id=request.request_id,
             session_id=request.session_id,
             agent_id=request.agent_id,
             user=request.user,
             input=request.input,
-            context=request.context,
+            context=_v2_direct_invocation_context(request.context),
             memory_context=request.memory_context or MemoryContext(),
             knowledge_context=request.knowledge_context or KnowledgeContext(),
             knowledge_context_handle=request.knowledge_context_handle,
             knowledge_context_trace_id=request.knowledge_context_trace_id,
         )
-        return await self._invoke_definition(definition, invocation)
+        return await self._invoke_resolved_binding(resolved, invocation)
 
     async def issue_controlled_knowledge_context_handle(
         self,
@@ -150,13 +134,19 @@ class InvocationService:
         caller_id: str | None = None,
     ) -> str:
         """Prepare a trusted one-time Knowledge Context for a later Invocation."""
-        definition = await self.registry.get_definition(agent_id)
-        if definition is None:
+        snapshot_runtime = self.snapshot_runtime
+        if snapshot_runtime is None or snapshot_runtime.snapshot is None:
+            raise InvocationBindingUnavailableError(
+                "Registry Snapshot is unavailable for Invocation",
+                details={"reason_code": "registry_snapshot_unavailable"},
+            )
+        selection = snapshot_runtime.preflight_for_user(agent_id, user)
+        if selection is None:
             raise InvocationError(f"Agent not found: {agent_id}")
         if self.agent_context_service is None:
             raise InvocationError("Agent Context service is not configured")
         return await self.agent_context_service.issue_controlled_knowledge_handle(
-            agent=definition,
+            agent=selection.definition,
             user=user,
             variables=variables,
             trace_id=trace_id,
@@ -174,7 +164,7 @@ class InvocationService:
         request_id: str | None = None,
         knowledge_context_handle: str | None = None,
         knowledge_context_trace_id: str | None = None,
-        selected_definition: AgentDefinition | AgentDefinitionV2 | None = None,
+        selected_definition: AgentDefinitionV2 | None = None,
         selected_binding: RegistrySnapshotSelection | None = None,
         resolved_binding: ResolvedInvocationBinding | None = None,
     ) -> AgentInvocationResult:
@@ -193,9 +183,12 @@ class InvocationService:
             ):
                 raise InvocationError("Selected Binding does not match invocation target")
         else:
-            definition = selected_definition or await self.registry.get_definition(agent_id)
+            definition = selected_definition
         if definition is None:
-            raise InvocationError(f"Agent not found: {agent_id}")
+            raise InvocationBindingUnavailableError(
+                "Invocation Binding is unavailable",
+                details={"reason_code": "plan_binding_unavailable"},
+            )
         if definition.agent_id != agent_id:
             raise InvocationError("Selected Agent definition does not match invocation target")
         invocation = AgentInvocation(
@@ -216,12 +209,10 @@ class InvocationService:
                 self.resolve_direct_binding(selected_binding),
                 invocation,
             )
-        if isinstance(definition, AgentDefinitionV2):
-            raise InvocationBindingUnavailableError(
-                "Invocation Binding is unavailable",
-                details={"reason_code": "plan_binding_unavailable"},
-            )
-        return await self._invoke_definition(definition, invocation)
+        raise InvocationBindingUnavailableError(
+            "Invocation Binding is unavailable",
+            details={"reason_code": "plan_binding_unavailable"},
+        )
 
     def resolve_direct_binding(
         self,
@@ -265,42 +256,16 @@ class InvocationService:
             },
         )
         selection = route_response.selected_binding(preview.agent_id)
-        if isinstance(selection, RegistrySnapshotSelection):
-            if selection.definition.agent_id != preview.agent_id:
-                raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
-            if self.binding_resolver is None:
-                raise InvocationBindingUnavailableError(
-                    "Invocation Binding is unavailable",
-                    details={"reason_code": "binding_resolver_unavailable"},
-                )
-            return await self._invoke_resolved_binding(
-                self.binding_resolver.resolve_direct_invocation(selection),
-                invocation,
-            )
-        definition = route_response.selected_definition(preview.agent_id)
-        if definition is None:
-            raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
-        if isinstance(definition, AgentDefinitionV2):
+        if not isinstance(selection, RegistrySnapshotSelection):
             raise InvocationBindingUnavailableError(
                 "Invocation Binding is unavailable",
                 details={"reason_code": "route_binding_unavailable"},
             )
-        return await self._invoke_definition(definition, invocation)
-
-    async def _invoke_definition(
-        self,
-        definition,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        async def invoke(prepared_invocation: AgentInvocation) -> AgentInvocationResult:
-            invoker = self.invokers.get(definition.type)
-            return await self._invoke_with_claim_heartbeat(invoker, definition, prepared_invocation)
-
-        return await self._execute_accepted_invocation(
-            definition,
+        if selection.definition.agent_id != preview.agent_id:
+            raise AgentUnavailableError(f"Agent is not available: {preview.agent_id}")
+        return await self._invoke_resolved_binding(
+            self.resolve_direct_binding(selection),
             invocation,
-            invoker_type=definition.type,
-            execute=invoke,
         )
 
     async def _invoke_resolved_binding(
@@ -310,6 +275,10 @@ class InvocationService:
     ) -> AgentInvocationResult:
         definition = resolved.definition
         binding_snapshot = resolved.persistence_snapshot
+
+        async def execute(prepared_invocation: AgentInvocation) -> AgentInvocationResult:
+            return await self._invoke_with_claim_heartbeat(resolved.invoke, prepared_invocation)
+
         return await self._execute_accepted_invocation(
             definition,
             invocation,
@@ -324,20 +293,20 @@ class InvocationService:
                 "adapter_contract_version": binding_snapshot.adapter_contract_version,
                 "adapter_implementation_version": binding_snapshot.adapter_implementation_version,
             },
-            execute=resolved.invoke,
+            execute=execute,
         )
 
     async def _execute_accepted_invocation(
         self,
-        definition: AgentDefinition | AgentDefinitionV2,
+        definition: AgentDefinitionV2,
         invocation: AgentInvocation,
         *,
         invoker_type: str,
         execute: Callable[[AgentInvocation], Awaitable[AgentInvocationResult]],
-        agent_revision: int | None = None,
-        handling_kind: AgentHandlingKind | None = None,
-        binding_snapshot: InvocationBindingSnapshot | None = None,
-        binding_trace_facts: dict[str, object] | None = None,
+        agent_revision: int,
+        handling_kind: AgentHandlingKind,
+        binding_snapshot: InvocationBindingSnapshot,
+        binding_trace_facts: dict[str, object],
     ) -> AgentInvocationResult:
         invocation = await self._with_agent_context(definition, invocation)
         request_suppressed = request_prohibits_memory(invocation)
@@ -616,7 +585,7 @@ class InvocationService:
 
     async def _with_agent_context(
         self,
-        definition,
+        definition: AgentDefinitionV2,
         invocation: AgentInvocation,
     ) -> AgentInvocation:
         active_plan = None
@@ -709,12 +678,16 @@ class InvocationService:
             }
         )
 
-    async def _invoke_with_claim_heartbeat(self, invoker, definition, invocation):
+    async def _invoke_with_claim_heartbeat(
+        self,
+        execute: Callable[[AgentInvocation], Awaitable[AgentInvocationResult]],
+        invocation: AgentInvocation,
+    ) -> AgentInvocationResult:
         plan_id = _context_str(invocation.context, "plan_id")
         claim_id = _context_str(invocation.context, "plan_execution_claim_id")
         tenant_id = invocation.user.tenant_id
         if not plan_id or not claim_id or not tenant_id or self.plan_service is None:
-            return await invoker.invoke(definition, invocation)
+            return await execute(invocation)
         stopped = asyncio.Event()
 
         async def heartbeat() -> None:
@@ -739,7 +712,7 @@ class InvocationService:
 
         task = asyncio.create_task(heartbeat(), name=f"plan-claim-heartbeat:{plan_id}")
         try:
-            return await invoker.invoke(definition, invocation)
+            return await execute(invocation)
         finally:
             stopped.set()
             await task
@@ -767,18 +740,10 @@ class InvocationService:
         )
 
 
-def build_default_invoker_registry(settings, local_functions: LocalFunctionRegistry | None = None):
-    registry = AgentInvokerRegistry()
-    context = RuntimeAdapterContext(settings=settings, local_functions=local_functions)
-    for descriptor in build_default_runtime_descriptors():
-        invoker = descriptor.factory(context)
-        if isawaitable(invoker):
-            raise RuntimeError("Default Runtime Adapter factory must be synchronous")
-        registry.register(descriptor.key, invoker)
-    return registry
-
-
-def _validate_output(definition, result: AgentInvocationResult) -> AgentInvocationResult:
+def _validate_output(
+    definition: AgentDefinitionV2,
+    result: AgentInvocationResult,
+) -> AgentInvocationResult:
     schema = definition.output_schema.model_dump(exclude_none=True)
     if result.output is None or not schema.get("properties"):
         return result
@@ -798,7 +763,11 @@ def _validate_output(definition, result: AgentInvocationResult) -> AgentInvocati
     return result
 
 
-def build_invocation_input(definition, text: str | None = None, values: dict | None = None) -> dict:
+def build_invocation_input(
+    definition: AgentDefinitionV2,
+    text: str | None = None,
+    values: dict | None = None,
+) -> dict:
     input_values = dict(values or {})
     if text and "text" in definition.input_schema.required and not input_values.get("text"):
         input_values["text"] = text
@@ -809,7 +778,10 @@ def build_invocation_input(definition, text: str | None = None, values: dict | N
     return input_values
 
 
-def missing_required_inputs(definition, invocation_input: dict) -> list[str]:
+def missing_required_inputs(
+    definition: AgentDefinitionV2,
+    invocation_input: dict,
+) -> list[str]:
     return [item for item in definition.input_schema.required if not invocation_input.get(item)]
 
 

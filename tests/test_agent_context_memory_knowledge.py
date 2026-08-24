@@ -15,16 +15,18 @@ from app.schemas.agent_context import (
     KnowledgeCitation,
     KnowledgeContextItem,
 )
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
+from app.schemas.invocation import InvokeRequest
 from app.schemas.knowledge_provider import KnowledgeProviderResult
 from app.schemas.memory import MemoryItem, MemoryRecallRequest, MemoryWriteCandidate
 from app.schemas.routing import RouteRequest
 from app.services.agent_context_service import AgentContextAssemblyService
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
+from tests.support.v2_runtime import attach_v2_runtime
 
 
 def test_agent_context_schema_accepts_valid_prefetch_modes(summarizer_agent) -> None:
@@ -43,7 +45,7 @@ def test_agent_context_schema_accepts_valid_prefetch_modes(summarizer_agent) -> 
         },
     }
 
-    agent = AgentDefinition.model_validate(payload)
+    agent = AgentDefinitionV2.model_validate(payload)
 
     assert agent.context.memory.mode == "prefetch"
     assert agent.context.memory.scopes == ["user_preference", "stable_fact", "task_memory"]
@@ -56,13 +58,13 @@ def test_agent_context_schema_rejects_invalid_scope_and_missing_template(summari
     invalid_scope["context"] = {"memory": {"mode": "prefetch", "scopes": ["private_guess"]}}
 
     with pytest.raises(ValidationError):
-        AgentDefinition.model_validate(invalid_scope)
+        AgentDefinitionV2.model_validate(invalid_scope)
 
     missing_template = summarizer_agent.model_dump(mode="json")
     missing_template["context"] = {"knowledge": {"mode": "controlled_retrieval"}}
 
     with pytest.raises(ValidationError):
-        AgentDefinition.model_validate(missing_template)
+        AgentDefinitionV2.model_validate(missing_template)
 
 
 async def test_memory_recall_empty_success_scope_ttl_conflict_and_cleanup() -> None:
@@ -164,7 +166,7 @@ async def test_memory_timeout_degrades_in_agent_context(summarizer_agent) -> Non
     )
     payload = summarizer_agent.model_dump(mode="json")
     payload["context"] = {"memory": {"mode": "prefetch", "scopes": ["user_preference"]}}
-    agent = AgentDefinition.model_validate(payload)
+    agent = AgentDefinitionV2.model_validate(payload)
     invocation_input = {"text": "hello"}
 
     runtime = await service.assemble(
@@ -226,14 +228,15 @@ async def test_router_preview_defers_knowledge_body_until_invocation(summarizer_
         registry=registry,
         run_repository=run_repository,
         result_repository=MemoryResultRepository(),
-        invokers=build_default_invoker_registry(settings),
         agent_context_service=context_service,
     )
-    result = await invocation_service.invoke_agent(
-        agent_id=agent.agent_id,
-        session_id="s1",
-        user=UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"}),
-        input={"text": "risk rating"},
+    result = await invocation_service.invoke(
+        InvokeRequest(
+            agent_id=agent.agent_id,
+            session_id="s1",
+            user=UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"}),
+            input={"text": "risk rating"},
+        )
     )
 
     assert result.status == "completed"
@@ -272,7 +275,7 @@ async def test_controlled_retrieval_template_allowed_variables_and_denied_source
             },
         }
     }
-    agent = AgentDefinition.model_validate(payload)
+    agent = AgentDefinitionV2.model_validate(payload)
 
     context = await service.controlled_knowledge_retrieval(
         agent=agent,
@@ -319,15 +322,16 @@ async def test_context_pack_budget_truncates_memory_and_knowledge_items(summariz
     assert runtime.knowledge_context.items[0].content == "abcdefgh"
 
 
-async def _registry(settings: Settings, agent: AgentDefinition) -> AgentRegistryService:
+async def _registry(settings: Settings, agent: AgentDefinitionV2) -> AgentRegistryService:
     repository = MemoryAgentDefinitionRepository()
     await repository.upsert(agent)
     registry = AgentRegistryService(settings=settings, repository=repository)
     await registry.load()
+    await attach_v2_runtime(registry)
     return registry
 
 
-async def _context_agent(settings: Settings, summarizer_agent) -> AgentDefinition:
+async def _context_agent(settings: Settings, summarizer_agent) -> AgentDefinitionV2:
     payload = summarizer_agent.model_dump(mode="json")
     payload["context"] = {
         "memory": {
@@ -341,7 +345,7 @@ async def _context_agent(settings: Settings, summarizer_agent) -> AgentDefinitio
             "max_items": settings.knowledge_default_max_items,
         },
     }
-    return AgentDefinition.model_validate(payload)
+    return AgentDefinitionV2.model_validate(payload)
 
 
 class FixedTargetLLM:

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.registry_audit import RegistryAuditRecord
 
 RegistryMutationOperation = Literal["create", "update", "enable", "disable", "delete"]
@@ -16,7 +16,7 @@ class RegistryMutationCommand:
     actor_id: str
     source: str
     expected_revision: int
-    definition: AgentDefinition | None = None
+    definition: AgentDefinitionV2 | None = None
     revision_id: str = field(default_factory=lambda: f"registry_revision_{uuid4().hex}")
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -37,6 +37,6 @@ class RegistryMutationCommand:
 @dataclass(frozen=True)
 class RegistryMutationResult:
     operation: RegistryMutationOperation
-    before: AgentDefinition | None
-    after: AgentDefinition | None
+    before: AgentDefinitionV2 | None
+    after: AgentDefinitionV2 | None
     audit: RegistryAuditRecord

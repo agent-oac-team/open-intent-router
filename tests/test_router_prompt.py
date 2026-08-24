@@ -5,7 +5,7 @@ from app.prompts.router_prompt import (
     RouterPromptTemplate,
     route_response_schema_hint,
 )
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import CandidateAgentV2
 from app.schemas.common import UserContext
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteRequest
 from app.services.context_service import ContextService
@@ -65,7 +65,7 @@ def test_router_prompt_serializes_datetime_in_request() -> None:
             }
         ),
         candidates=[
-            CandidateAgent(agent_id="summarizer", name="Summarizer", description="Summarize text")
+            CandidateAgentV2(agent_id="summarizer", name="Summarizer", description="Summarize text")
         ],
         context=RouteContext(candidate_agent_ids=["summarizer"]),
     )
@@ -92,7 +92,7 @@ def test_router_prompt_includes_context_pack_debug_data() -> None:
     payload = LLMRouteInput(
         request=request,
         candidates=[
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="summarizer",
                 name="Summarizer",
                 description="Summarize text",

@@ -9,7 +9,6 @@ from app.runtime.catalog import (
     RuntimeAdapterDescriptor,
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
-    build_default_runtime_descriptors,
 )
 from app.schemas.agents import AgentDefinitionV2, InvocationHandling
 from app.schemas.common import UserContext
@@ -187,12 +186,9 @@ async def test_snapshot_runtime_swaps_only_complete_loads_and_preserves_selected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("adapter_key", ["http", "local_function"])
-async def test_snapshot_isolates_an_installed_legacy_only_adapter_from_v2_candidates(
-    adapter_key: str,
-) -> None:
-    descriptors = {item.key: item for item in build_default_runtime_descriptors()}
-    catalog = await _catalog(descriptors[adapter_key])
+async def test_snapshot_isolates_an_installed_adapter_without_v2_capability() -> None:
+    adapter_key = "non_v2_adapter"
+    catalog = await _catalog(_descriptor(adapter_key, v2_invocation=False))
     builder = RegistrySnapshotBuilder(catalog)
     definition = _definition(
         f"legacy-{adapter_key}-agent",
@@ -320,10 +316,13 @@ def test_snapshot_quarantines_an_unsafe_definition_identifier_without_exposing_i
     unsafe_agent_id: str,
 ) -> None:
     runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(None))
+    # Native schema validation rejects this at the boundary.  Keep a
+    # deliberately corrupt in-memory model here to verify the Snapshot is a
+    # second, safe boundary for pre-existing/corrupt stored data.
     definition = _definition(
-        unsafe_agent_id,
+        "safe-agent",
         {"kind": "ui_handoff", "route": "/safe"},
-    )
+    ).model_copy(update={"agent_id": unsafe_agent_id})
 
     runtime.load([definition], source="test")
 

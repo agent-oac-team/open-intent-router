@@ -464,7 +464,6 @@ def build_application_container(
         registry=registry,
         run_repository=repository_bundle["runs"],
         result_repository=repository_bundle["results"],
-        invokers=catalog,
         agent_context_service=agent_context,
         plan_service=plan_service,
         turn_capture=None,

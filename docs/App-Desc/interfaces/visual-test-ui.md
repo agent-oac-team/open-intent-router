@@ -42,6 +42,11 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev -- --port 5175
 - 查看后端健康状态、Registry 状态、LLM Provider、模型、Prompt 文件和 Evidence Provider 状态。
 - 查看 Agent 列表。
 - 创建、编辑、启用、禁用、删除 Agent Definition。
+- 管理端以 v2 `handling` 创建或编辑 `invocation`、`external_execution`、`ui_handoff` 三种处理方式；
+  普通 Agent 列表只显示安全的 `handling_kind`。管理员读取的 Handling 字符串会被后端脱敏，编辑时
+  必须重新填写相应的 Adapter、Connector、Executor 或内部路由引用。
+- 新建 `invocation` 不预填旧 `mock`：必须填写当前部署已注册、声明 `v2_invocation=true` 的
+  Adapter Key；未注册的 Binding 会被 Snapshot 安全隔离。
 - 通过 Agent 的 `description`、`capabilities`、`trigger`、`required_inputs` 配置意图识别元数据。
 - 在对话框中发送 route-only 或 route-and-invoke 请求。
 - 配置 `session_id`、`source`、用户角色、用户组、租户、当前 Agent 和前端上下文。
@@ -72,6 +77,11 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev -- --port 5175
 - `wealth_knowledge`：理财知识。
 
 这些配置用于演示中控接入形态，不代表生产子牙 Agent 清单。
+
+其中三个 `invocation` 示例引用 `example_v2_adapter`。启动前须由部署注册同名、且声明
+`v2_invocation=true` 的 Runtime Adapter；历史 Legacy `mock` Invoker 不会被 Native Catalog 激活为 v2 回退。
+未注册时 Snapshot 会安全隔离这三个 Definition，`system_usage_guide` 的 `ui_handoff` 仍可用于
+演示 Host 协作。不要把旧 Invoker 配置当作 Native v2 运行时配置。
 
 Admin 写操作策略：
 
@@ -181,7 +191,7 @@ Agent access 或 Memory subject isolation。
 
 推荐演示顺序：
 
-1. 话术生成：展示单意图路由和 mock 调用。
+1. 话术生成：展示单意图路由；配置 v2 Runtime Adapter 后可展示调用。
 2. 访前准备：展示另一个单意图能力。
 3. 系统指引：展示固定问题 Evidence 强命中和 `ui_handoff`。
 4. 多步骤计划：展示 `plan`、`execution_policy` 和 Plan 面板。

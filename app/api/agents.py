@@ -4,7 +4,7 @@ from app.core.security import bind_principal_user_context, require_native_princi
 from app.dependencies import get_registry_service
 from app.schemas.agents import (
     AgentListResponse,
-    AgentPublic,
+    AgentPublicV2,
     AvailableAgentsRequest,
     AvailableAgentsResponse,
 )
@@ -21,11 +21,11 @@ async def list_agents(
     return await registry.list_public()
 
 
-@router.get("/agents/{agent_id}", response_model=AgentPublic)
+@router.get("/agents/{agent_id}", response_model=AgentPublicV2)
 async def get_agent(
     agent_id: str,
     registry: AgentRegistryService = Depends(get_registry_service),
-) -> AgentPublic:
+) -> AgentPublicV2:
     agent = await registry.public_agent(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.core.redaction import SENSITIVE_KEYS, redact_value
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import CandidateAgentV2
 from app.schemas.common import JsonDict
 from app.schemas.context import (
     ContextBudget,
@@ -50,7 +50,7 @@ class ContextPipelineService:
         consumer: str,
         providers: list[ContextProvider],
         budget: ContextBudget | None = None,
-        candidate_agents: list[CandidateAgent] | None = None,
+        candidate_agents: list[CandidateAgentV2] | None = None,
         agent=None,
         sources: JsonDict | None = None,
         assembly_session=None,
@@ -89,7 +89,7 @@ class ContextPipelineService:
         request: RouteRequest,
         purpose: str,
         consumer: str,
-        candidate_agents: list[CandidateAgent],
+        candidate_agents: list[CandidateAgentV2],
         agent,
         sources: JsonDict,
         assembly_session,
@@ -172,7 +172,7 @@ class ContextPipelineService:
         consumer: str,
         candidates: list[ContextCandidate],
         budget: ContextBudget | None = None,
-        candidate_agents: list[CandidateAgent] | None = None,
+        candidate_agents: list[CandidateAgentV2] | None = None,
         provider_outcomes: list[ProviderOutcome] | None = None,
     ) -> ContextPipelineResult:
         request_id = request.request_id or f"req_{uuid4().hex}"
@@ -269,7 +269,7 @@ class ContextPipelineService:
     def _effective_budget(
         self,
         requested: ContextBudget,
-        candidate_agents: list[CandidateAgent],
+        candidate_agents: list[CandidateAgentV2],
     ) -> ContextBudget:
         candidate_tokens = _token_estimate(
             _stable_json([agent.model_dump(mode="json") for agent in candidate_agents]),

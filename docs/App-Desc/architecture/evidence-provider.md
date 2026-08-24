@@ -133,7 +133,7 @@ flowchart TD
 
 ## Agent Invocation Input
 
-`Agent invocation input` 是 OIR 调用目标 Agent 时传给 Invoker 的结构化输入对象。它不是用户原始文本本身，而是“用户输入 + 平台组装的运行上下文”的合并结果。
+`Agent invocation input` 是 OIR 调用目标 Agent 时传给 v2 Runtime Adapter 的结构化输入对象。它不是用户原始文本本身，而是“用户输入 + 平台组装的运行上下文”的合并结果。
 
 典型字段包括：
 
@@ -155,7 +155,9 @@ flowchart TD
 }
 ```
 
-不同 Invoker 会用同一个 invocation input 调用不同类型的 Agent：mock、本地函数、HTTP Agent、UI handoff 或后续 workflow node。这样 Agent 不需要知道 mem0、Milvus、PostgreSQL 或 Evidence Provider 的内部实现，只消费稳定的 `memory_context` / `knowledge_context` 合约。
+不同 v2 Runtime Adapter 可以消费同一个 invocation input；UI Handoff 和 External Execution 则由 Handling
+直接形成 Host 协作动作，不进入 Adapter。这样 Agent 不需要知道 mem0、Milvus、PostgreSQL 或
+Evidence Provider 的内部实现，只消费稳定的 `memory_context` / `knowledge_context` 合约。
 
 ## 安全与审计
 

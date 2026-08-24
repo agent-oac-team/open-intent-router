@@ -145,13 +145,17 @@ class AccessPolicy(StrictBaseModel):
         return True
 
 
-class InvocationSpec(StrictBaseModel):
+class LegacyInvocationSpec(StrictBaseModel):
+    """Private v1 migration input; never accepted by the Native Runtime."""
+
     type: AgentType
     config: JsonDict = Field(default_factory=dict)
     provider_config: JsonDict = Field(default_factory=dict)
 
 
-class UiHandoffSpec(StrictBaseModel):
+class LegacyUiHandoffSpec(StrictBaseModel):
+    """Private v1 migration input; never accepted by the Native Runtime."""
+
     mode: str = "none"
     route: str | None = None
     params: JsonDict = Field(default_factory=dict)
@@ -318,7 +322,10 @@ class CandidateAgentV2(StrictBaseModel):
     trigger: TriggerSpec = Field(default_factory=TriggerSpec)
     required_inputs: list[str] = Field(default_factory=list)
     priority: int = 0
-    handling_kind: AgentHandlingKind
+    # Candidate records are internal model input. Native Registry projections
+    # always set this from the Definition; the default keeps hand-authored
+    # prompt fixtures closed to the safest direct-invocation kind.
+    handling_kind: AgentHandlingKind = "invocation"
 
 
 class AgentAdminV2(AgentPublicV2):
@@ -326,7 +333,7 @@ class AgentAdminV2(AgentPublicV2):
 
 
 class AgentDefinitionV2(StrictBaseModel):
-    """The closed v2 Native Definition shape introduced alongside legacy v1 callers."""
+    """The only Native Runtime Agent Definition shape."""
 
     schema_version: Literal["oir-agent-v2"]
     agent_id: str = Field(min_length=1, max_length=128)
@@ -350,6 +357,15 @@ class AgentDefinitionV2(StrictBaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     handling: AgentHandling
+
+    @field_validator("agent_id")
+    @classmethod
+    def validate_agent_id(cls, value: str) -> str:
+        return _validate_reference(
+            value,
+            label="agent_id",
+            pattern=_AGENT_IDENTIFIER_PATTERN,
+        )
 
     @model_validator(mode="after")
     def require_declared_inputs_in_schema(self) -> "AgentDefinitionV2":
@@ -385,6 +401,9 @@ class AgentDefinitionV2(StrictBaseModel):
             handling_kind=self.handling.kind,
         )
 
+    def is_available_to(self, user: UserContext) -> bool:
+        return self.enabled and self.access_policy.allows(user)
+
     def to_candidate(self) -> CandidateAgentV2:
         return CandidateAgentV2(
             agent_id=self.agent_id,
@@ -405,7 +424,14 @@ class AgentDefinitionV2(StrictBaseModel):
         )
 
 
-class AgentDefinition(StrictBaseModel):
+class LegacyAgentDefinition(StrictBaseModel):
+    """Offline v1 source material for the controlled migration/rollback tool.
+
+    This shape is deliberately not part of Native API, Registry repository, or
+    Runtime service contracts.  It remains only so the release-gate tool can
+    parse a stopped old source and construct a private rollback snapshot.
+    """
+
     agent_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
@@ -422,8 +448,8 @@ class AgentDefinition(StrictBaseModel):
     optional_inputs: list[str] = Field(default_factory=list)
     input_schema: SchemaContract = Field(default_factory=SchemaContract)
     output_schema: SchemaContract = Field(default_factory=SchemaContract)
-    invocation: InvocationSpec
-    ui_handoff: UiHandoffSpec = Field(default_factory=UiHandoffSpec)
+    invocation: LegacyInvocationSpec
+    ui_handoff: LegacyUiHandoffSpec = Field(default_factory=LegacyUiHandoffSpec)
     context: AgentContextSpec = Field(default_factory=AgentContextSpec)
     priority: int = 0
     metadata: JsonDict = Field(default_factory=dict)
@@ -444,7 +470,7 @@ class AgentDefinition(StrictBaseModel):
         return data
 
     @model_validator(mode="after")
-    def validate_agent_definition(self) -> "AgentDefinition":
+    def validate_agent_definition(self) -> "LegacyAgentDefinition":
         if self.invocation.type != self.type:
             raise ValueError("invocation.type must match AgentDefinition.type")
         missing_from_schema = [
@@ -463,8 +489,8 @@ class AgentDefinition(StrictBaseModel):
     def is_available_to(self, user: UserContext) -> bool:
         return self.enabled and self.access_policy.allows(user)
 
-    def to_candidate(self) -> "CandidateAgent":
-        return CandidateAgent(
+    def to_candidate(self) -> "LegacyCandidateAgent":
+        return LegacyCandidateAgent(
             agent_id=self.agent_id,
             name=self.name,
             description=self.description,
@@ -475,8 +501,8 @@ class AgentDefinition(StrictBaseModel):
             priority=self.priority,
         )
 
-    def to_public(self) -> "AgentPublic":
-        return AgentPublic(
+    def to_public(self) -> "LegacyAgentPublic":
+        return LegacyAgentPublic(
             agent_id=self.agent_id,
             name=self.name,
             description=self.description,
@@ -503,7 +529,7 @@ class AgentDefinition(StrictBaseModel):
         )
 
 
-class CandidateAgent(StrictBaseModel):
+class LegacyCandidateAgent(StrictBaseModel):
     agent_id: str
     name: str
     description: str
@@ -514,7 +540,7 @@ class CandidateAgent(StrictBaseModel):
     priority: int = 0
 
 
-class AgentPublic(StrictBaseModel):
+class LegacyAgentPublic(StrictBaseModel):
     agent_id: str
     name: str
     description: str
@@ -531,7 +557,7 @@ class AgentPublic(StrictBaseModel):
     optional_inputs: list[str] = Field(default_factory=list)
     input_schema: SchemaContract = Field(default_factory=SchemaContract)
     output_schema: SchemaContract = Field(default_factory=SchemaContract)
-    ui_handoff: UiHandoffSpec = Field(default_factory=UiHandoffSpec)
+    ui_handoff: LegacyUiHandoffSpec = Field(default_factory=LegacyUiHandoffSpec)
     context: AgentContextSpec = Field(default_factory=AgentContextSpec)
     priority: int = 0
     metadata: JsonDict = Field(default_factory=dict)
@@ -541,7 +567,13 @@ class AgentPublic(StrictBaseModel):
 
 
 class AgentListResponse(StrictBaseModel):
-    agents: list[AgentPublic]
+    agents: list[AgentPublicV2]
+
+
+class AgentAdminListResponse(StrictBaseModel):
+    """Administrator-only Native Registry projection with redacted Handling details."""
+
+    agents: list[AgentAdminV2]
 
 
 class AvailableAgentsRequest(StrictBaseModel):
@@ -550,7 +582,7 @@ class AvailableAgentsRequest(StrictBaseModel):
 
 class AvailableAgentsResponse(StrictBaseModel):
     available_agents: list[str]
-    candidate_agents_for_llm: list[CandidateAgent]
+    candidate_agents_for_llm: list[CandidateAgentV2]
     source: str
     expires_in: int | None = None
 

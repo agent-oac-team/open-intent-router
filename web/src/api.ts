@@ -1,6 +1,8 @@
 import type {
+  AgentAdminListResponse,
   AgentDefinition,
   AgentListResponse,
+  AgentPublic,
   JsonRecord,
   KnowledgeDebugFilters,
   KnowledgeDebugResponse,
@@ -91,7 +93,7 @@ export const api = {
   runtimeConfig: () => request<RuntimeConfig>("/api/v1/runtime/config"),
   listAgents: () => request<AgentListResponse>("/api/v1/agents"),
   adminListAgents: (token: string) =>
-    request<AgentListResponse>("/api/v1/admin/agents", { headers: adminHeaders(token) }),
+    request<AgentAdminListResponse>("/api/v1/admin/agents", { headers: adminHeaders(token) }),
   upsertAgent: (agent: AgentDefinition, token: string) =>
     request<AgentDefinition>("/api/v1/admin/agents", {
       method: "POST",
@@ -105,7 +107,7 @@ export const api = {
       body: JSON.stringify(agent),
     }),
   setAgentEnabled: (agentId: string, enabled: boolean, token: string) =>
-    request<AgentDefinition>(`/api/v1/admin/agents/${encodeURIComponent(agentId)}/enabled`, {
+    request<AgentPublic>(`/api/v1/admin/agents/${encodeURIComponent(agentId)}/enabled`, {
       method: "PATCH",
       headers: adminHeaders(token),
       body: JSON.stringify({ enabled }),

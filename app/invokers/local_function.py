@@ -5,7 +5,7 @@ from inspect import isawaitable
 from typing import Any
 
 from app.core.errors import InvocationError
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import LegacyAgentDefinition
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 
 LocalFunction = Callable[[AgentInvocation], dict[str, Any] | Awaitable[dict[str, Any]]]
@@ -30,7 +30,7 @@ class LocalFunctionInvoker:
 
     async def invoke(
         self,
-        definition: AgentDefinition,
+        definition: LegacyAgentDefinition,
         invocation: AgentInvocation,
     ) -> AgentInvocationResult:
         function_name = definition.invocation.config.get("function")

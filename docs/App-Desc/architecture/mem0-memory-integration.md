@@ -143,7 +143,7 @@ flowchart TD
 
     A --> CP["Context Pack 预算与裁剪"]
     MC --> CP
-    CP --> INV["InvocationService / Agent Invoker"]
+    CP --> INV["InvocationService / v2 Runtime Adapter"]
     INV --> AG["目标 Agent / Tool / Workflow"]
     AG --> OUT["Agent 结果 / Plan 结果 / 对话回复"]
     OUT --> RESP["RouteResponse / InvocationResult 返回给 Host"]

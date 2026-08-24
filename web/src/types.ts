@@ -78,6 +78,7 @@ export type AccessPolicy = {
   deny_roles: string[];
   deny_groups: string[];
   deny_tenants: string[];
+  any_entitlements: string[];
   required_attributes: JsonRecord;
 };
 
@@ -106,13 +107,57 @@ export type AgentContextSpec = {
   metadata?: JsonRecord;
 };
 
-export type AgentDefinition = {
+export type HandlingKind = "invocation" | "external_execution" | "ui_handoff";
+
+export type SafeHandlingConfiguration = {
+  function?: string;
+  operation?: string;
+  task?: string;
+  tab?: string;
+  max_tokens?: number;
+  token_budget?: number;
+  timeout_ms?: number;
+  priority?: number;
+  limit?: number;
+  offset?: number;
+  page_size?: number;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  seed?: number;
+  dry_run?: boolean;
+  include_history?: boolean;
+  include_metadata?: boolean;
+};
+
+export type InvocationHandling = {
+  kind: "invocation";
+  adapter_key: string;
+  connector_ref?: string | null;
+  config: SafeHandlingConfiguration;
+};
+
+export type ExternalExecutionHandling = {
+  kind: "external_execution";
+  executor_ref: string;
+  params: SafeHandlingConfiguration;
+};
+
+export type UiHandoffHandling = {
+  kind: "ui_handoff";
+  route: string;
+  params: SafeHandlingConfiguration;
+};
+
+export type AgentHandling = InvocationHandling | ExternalExecutionHandling | UiHandoffHandling;
+
+export type AgentCommon = {
   agent_id: string;
   name: string;
   description: string;
   version?: string | null;
+  revision: number;
   enabled: boolean;
-  type: "http" | "local_function" | "mock" | "workflow" | "provider_platform" | "ui_handoff";
   capabilities: string[];
   domain?: string | null;
   tags: string[];
@@ -122,26 +167,39 @@ export type AgentDefinition = {
   optional_inputs: string[];
   input_schema: SchemaContract;
   output_schema: SchemaContract;
-  invocation: {
-    type: AgentDefinition["type"];
-    config: JsonRecord;
-    provider_config: JsonRecord;
-  };
-  ui_handoff: {
-    mode: string;
-    route?: string | null;
-    params: JsonRecord;
-  };
   context?: AgentContextSpec;
   priority: number;
-  metadata: JsonRecord;
   source: string;
   created_at?: string | null;
   updated_at?: string | null;
 };
 
+export type AgentPublic = AgentCommon & {
+  handling_kind: HandlingKind;
+};
+
+export type AgentDefinition = AgentCommon & {
+  schema_version: "oir-agent-v2";
+  handling: AgentHandling;
+};
+
+/**
+ * Administrator inventory intentionally redacts handling strings.  It is a
+ * display/edit-starting projection, not a round-trippable AgentDefinition:
+ * an operator must explicitly re-enter redacted binding values before saving.
+ */
+export type AgentAdmin = AgentPublic & {
+  handling: JsonRecord;
+};
+
+export type AgentListItem = AgentPublic | AgentAdmin;
+
 export type AgentListResponse = {
-  agents: AgentDefinition[];
+  agents: AgentPublic[];
+};
+
+export type AgentAdminListResponse = {
+  agents: AgentAdmin[];
 };
 
 export type UserContext = {

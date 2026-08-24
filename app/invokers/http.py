@@ -5,7 +5,7 @@ import httpx
 from app.core.config import Settings
 from app.core.errors import InvocationError
 from app.core.redaction import redact_value
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import LegacyAgentDefinition
 from app.schemas.common import ErrorDetail
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 
@@ -29,7 +29,7 @@ class HttpAgentInvoker:
 
     async def invoke(
         self,
-        definition: AgentDefinition,
+        definition: LegacyAgentDefinition,
         invocation: AgentInvocation,
     ) -> AgentInvocationResult:
         config = definition.invocation.config

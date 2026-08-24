@@ -12,7 +12,7 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
 )
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2, InvocationSpec
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.plans import NextAction
 from app.schemas.routing import (
@@ -113,28 +113,6 @@ class _ReplyWithUntrustedActionLLM:
                 params={"redirect": "untrusted"},
             ),
         )
-
-
-class _LegacyActionLLM(_TargetLLM):
-    async def route(self, payload: LLMRouteInput) -> RouteResponse:
-        return (await super().route(payload)).model_copy(
-            update={
-                "next_action": NextAction(
-                    type="open_ui",
-                    route="https://untrusted.example/legacy-redirect",
-                )
-            }
-        )
-
-
-class _LegacyRegistry:
-    def __init__(self, definition: AgentDefinition) -> None:
-        self.definition = definition
-        self.calls = 0
-
-    async def available_definitions(self, _user):
-        self.calls += 1
-        return [self.definition]
 
 
 async def _noop(_adapter: object) -> None:
@@ -254,7 +232,6 @@ def _invocation_service(
         registry=registry,
         run_repository=runs,
         result_repository=results,
-        invokers=catalog,
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
     )
@@ -622,30 +599,6 @@ async def test_route_v2_discards_untrusted_host_action_without_selected_agent() 
     assert registry.calls == 0
 
     await catalog.aclose()
-
-
-async def test_legacy_invocation_discards_untrusted_host_action() -> None:
-    legacy_definition = AgentDefinition(
-        agent_id="legacy-agent",
-        name="Legacy Agent",
-        description="A legacy invocation Agent.",
-        type="mock",
-        invocation=InvocationSpec(type="mock"),
-    )
-    registry = _LegacyRegistry(legacy_definition)
-    router = RouterService(
-        settings=Settings(storage_backend="memory"),
-        registry=registry,
-        llm_client=_LegacyActionLLM("legacy-agent"),
-    )
-
-    route = await router.route(_request())
-
-    assert route.invocation is not None
-    assert route.invocation.mode == "deferred"
-    assert route.next_action is None
-    assert "untrusted.example" not in route.model_dump_json()
-    assert registry.calls == 1
 
 
 async def test_route_v2_rejects_rebinding_a_ui_handoff_as_an_invocation() -> None:

@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from app.application.ports import (
     ExternalExecutorApplicationPort,
     RegistrySnapshotQuarantineInput,
+    RegistrySnapshotSourceInput,
+    RegistrySnapshotSourceState,
 )
 from app.core.errors import RegistryError
 from app.runtime.catalog import RuntimeCatalog
@@ -50,6 +52,20 @@ _SAFE_QUARANTINE_REASON_CODES = frozenset(
         "legacy_definition_unmappable",
     }
 )
+
+
+def map_native_registry_snapshot(
+    state: RegistrySnapshotSourceState,
+) -> RegistrySnapshotSourceInput:
+    """Map Native Registry state into the Core-owned process Snapshot.
+
+    Native Registry records are already parsed v2 Definitions.  Keeping this
+    mapper in Core makes the default app use the same lifecycle-owned Snapshot
+    fence as a Host-specific mapper, without reopening a request-time Registry
+    read path.
+    """
+
+    return RegistrySnapshotSourceInput(source="native_registry", definitions=state.agents)
 
 
 class RegistryDefinitionValidationError(RegistryError):

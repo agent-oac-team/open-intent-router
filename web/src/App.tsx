@@ -33,7 +33,10 @@ import { api, isApiError } from "./api";
 import { projectRoutingJourney } from "./journey";
 import type { JourneyNode, JourneyNodeId, JourneyNodeState } from "./journey";
 import type {
+  AgentAdminListResponse,
   AgentDefinition,
+  AgentHandling,
+  AgentListItem,
   AgentListResponse,
   ChatMessage,
   ConversationTurn,
@@ -59,12 +62,13 @@ import type {
 } from "./types";
 
 const blankAgent = (): AgentDefinition => ({
+  schema_version: "oir-agent-v2",
   agent_id: "demo_agent",
   name: "演示 Agent",
   description: "描述这个 Agent 能处理的用户意图和可调用能力。",
   version: "0.1.0",
+  revision: 0,
   enabled: true,
-  type: "mock",
   capabilities: ["演示能力"],
   domain: "ziya_demo",
   tags: ["demo"],
@@ -80,6 +84,7 @@ const blankAgent = (): AgentDefinition => ({
     deny_roles: [],
     deny_groups: [],
     deny_tenants: [],
+    any_entitlements: [],
     required_attributes: {},
   },
   required_inputs: ["text"],
@@ -94,15 +99,11 @@ const blankAgent = (): AgentDefinition => ({
     required: [],
     properties: {},
   },
-  invocation: {
-    type: "mock",
-    config: { response: { ok: true, message: "演示调用完成" } },
-    provider_config: {},
-  },
-  ui_handoff: {
-    mode: "none",
-    route: null,
-    params: {},
+  handling: {
+    kind: "invocation",
+    adapter_key: "",
+    connector_ref: null,
+    config: {},
   },
   context: {
     memory: { mode: "disabled", scopes: [], max_items: 5, metadata: {} },
@@ -110,7 +111,6 @@ const blankAgent = (): AgentDefinition => ({
     metadata: {},
   },
   priority: 0,
-  metadata: {},
   source: "database",
 });
 
@@ -161,7 +161,7 @@ type FormState = {
   agent_id: string;
   name: string;
   description: string;
-  type: AgentDefinition["type"];
+  handling_kind: AgentHandling["kind"];
   enabled: boolean;
   domain: string;
   version: string;
@@ -174,24 +174,30 @@ type FormState = {
   allow_roles: string;
   allow_groups: string;
   allow_tenants: string;
+  deny_roles: string;
+  deny_groups: string;
+  deny_tenants: string;
+  any_entitlements: string;
+  required_attributes: string;
   required_inputs: string;
   optional_inputs: string;
   input_schema: string;
   output_schema: string;
-  invocation_config: string;
-  provider_config: string;
-  ui_mode: string;
+  adapter_key: string;
+  connector_ref: string;
+  handling_config: string;
+  executor_ref: string;
+  handling_params: string;
   ui_route: string;
   ui_params: string;
   context: string;
-  metadata: string;
 };
 
 function App() {
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
   const [ready, setReady] = useState<ServiceReady | null>(null);
   const [health, setHealth] = useState<string>("unknown");
-  const [agents, setAgents] = useState<AgentDefinition[]>([]);
+  const [agents, setAgents] = useState<AgentListItem[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [agentEditorOpen, setAgentEditorOpen] = useState(false);
   const [form, setForm] = useState<FormState>(agentToForm(blankAgent()));
@@ -309,7 +315,7 @@ function App() {
     }
   }
 
-  function applyAgents(agentResult: AgentListResponse) {
+  function applyAgents(agentResult: AgentListResponse | AgentAdminListResponse) {
     setAgents(agentResult.agents);
     if (!selectedAgentId && agentResult.agents[0]) {
       setSelectedAgentId(agentResult.agents[0].agent_id);
@@ -334,10 +340,25 @@ function App() {
     setAgentEditorOpen(true);
   }
 
-  function openAgentEditor(agentId: string) {
-    setSelectedAgentId(agentId);
-    const agent = agents.find((item) => item.agent_id === agentId);
-    if (agent) setForm(agentToForm(agent));
+  async function openAgentEditor(agentId: string) {
+    const visibleAgent = agents.find((item) => item.agent_id === agentId);
+    try {
+      const response = await api.adminListAgents(adminToken);
+      const adminAgent = response.agents.find((item) => item.agent_id === agentId);
+      if (adminAgent) {
+        setAgents(response.agents);
+        setSelectedAgentId(agentId);
+        setForm(agentToForm(adminAgent));
+        setAgentEditorOpen(true);
+        return;
+      }
+    } catch {
+      setNotice("读取完整 Handling 配置需要有效的 Admin Token；请填写后刷新再保存。");
+    }
+    if (visibleAgent) {
+      setSelectedAgentId(agentId);
+      setForm(agentToForm(visibleAgent));
+    }
     setAgentEditorOpen(true);
   }
 
@@ -352,6 +373,9 @@ function App() {
       return;
     }
     try {
+      if (selectedAgent && !("handling" in selectedAgent)) {
+        throw new Error("请先用 Admin Token 刷新该 Agent，再编辑其 Handling 配置。");
+      }
       const agent = formToAgent(form);
       const saved = selectedAgent ? await api.updateAgent(agent, adminToken) : await api.upsertAgent(agent, adminToken);
       setNotice(`已保存 ${saved.agent_id}`);
@@ -362,7 +386,7 @@ function App() {
     }
   }
 
-  async function toggleAgent(agent: AgentDefinition) {
+  async function toggleAgent(agent: AgentListItem) {
     if (registryReadOnly) {
       setNotice("当前 Registry 是 file 模式，写操作不可用。");
       return;
@@ -1006,12 +1030,12 @@ function AgentPanel({
   onToggle,
   runtime,
 }: {
-  agents: AgentDefinition[];
+  agents: AgentListItem[];
   selectedAgentId: string;
-  onOpenAgent: (id: string) => void;
+  onOpenAgent: (id: string) => void | Promise<void>;
   onRefresh: () => void;
   onNew: () => void;
-  onToggle: (agent: AgentDefinition) => void;
+  onToggle: (agent: AgentListItem) => void;
   runtime: RuntimeConfig | null;
 }) {
   const registryReadOnly = runtime?.registry_mutation_mode === "read_only_file";
@@ -1068,7 +1092,7 @@ function AgentPanel({
               <strong>{agent.name}</strong>
               <small>{agent.agent_id} · {agent.description}</small>
             </span>
-            <span className="agent-type">{agent.type}</span>
+            <span className="agent-type">{agent.handling_kind}</span>
             <span
               className="toggle-chip"
               role="switch"
@@ -1151,13 +1175,10 @@ function AgentEditorModal({
         </div>
         <div className="form-grid three">
           <SelectField
-            label="类型"
-            value={form.type}
-            onChange={(value) => {
-              update("type", value);
-              update("ui_mode", value === "ui_handoff" ? "host_route" : form.ui_mode);
-            }}
-            options={["mock", "http", "local_function", "ui_handoff", "workflow", "provider_platform"]}
+            label="Handling"
+            value={form.handling_kind}
+            onChange={(value) => update("handling_kind", value)}
+            options={["invocation", "external_execution", "ui_handoff"]}
           />
           <TextField label="领域" value={form.domain} onChange={(value) => update("domain", value)} />
           <TextField label="优先级" value={form.priority} onChange={(value) => update("priority", value)} />
@@ -1190,6 +1211,24 @@ function AgentEditorModal({
           <TextField label="允许分组" value={form.allow_groups} onChange={(value) => update("allow_groups", value)} />
           <TextField label="允许租户" value={form.allow_tenants} onChange={(value) => update("allow_tenants", value)} />
         </div>
+        <div className="form-grid three">
+          <TextField label="拒绝角色" value={form.deny_roles} onChange={(value) => update("deny_roles", value)} />
+          <TextField label="拒绝分组" value={form.deny_groups} onChange={(value) => update("deny_groups", value)} />
+          <TextField label="拒绝租户" value={form.deny_tenants} onChange={(value) => update("deny_tenants", value)} />
+        </div>
+        <div className="form-grid two">
+          <TextField
+            label="任一所需 Entitlement"
+            value={form.any_entitlements}
+            onChange={(value) => update("any_entitlements", value)}
+          />
+          <TextAreaField
+            label="所需属性 JSON"
+            value={form.required_attributes}
+            onChange={(value) => update("required_attributes", value)}
+            rows={3}
+          />
+        </div>
         <div className="form-grid two">
           <TextField label="必填输入" value={form.required_inputs} onChange={(value) => update("required_inputs", value)} />
           <TextField label="可选输入" value={form.optional_inputs} onChange={(value) => update("optional_inputs", value)} />
@@ -1198,16 +1237,31 @@ function AgentEditorModal({
           <TextAreaField label="输入 Schema JSON" value={form.input_schema} onChange={(value) => update("input_schema", value)} rows={6} />
           <TextAreaField label="输出 Schema JSON" value={form.output_schema} onChange={(value) => update("output_schema", value)} rows={6} />
         </div>
-        <div className="form-grid three">
-          <TextAreaField label="调用配置" value={form.invocation_config} onChange={(value) => update("invocation_config", value)} rows={5} />
-          <TextAreaField label="Provider 配置" value={form.provider_config} onChange={(value) => update("provider_config", value)} rows={5} />
-          <TextAreaField label="元数据" value={form.metadata} onChange={(value) => update("metadata", value)} rows={5} />
-        </div>
-        <div className="form-grid three">
-          <TextField label="UI 模式" value={form.ui_mode} onChange={(value) => update("ui_mode", value)} />
-          <TextField label="UI 路由" value={form.ui_route} onChange={(value) => update("ui_route", value)} />
-          <TextAreaField label="UI 参数 JSON" value={form.ui_params} onChange={(value) => update("ui_params", value)} rows={3} />
-        </div>
+        {form.handling_kind === "invocation" ? (
+          <div className="form-grid three">
+            <TextField
+              label="已注册 v2 Adapter Key"
+              value={form.adapter_key}
+              onChange={(value) => update("adapter_key", value)}
+              placeholder="例如 example_v2_adapter"
+              required
+            />
+            <TextField label="Connector Ref（可选）" value={form.connector_ref} onChange={(value) => update("connector_ref", value)} />
+            <TextAreaField label="调用配置 JSON" value={form.handling_config} onChange={(value) => update("handling_config", value)} rows={5} />
+          </div>
+        ) : null}
+        {form.handling_kind === "external_execution" ? (
+          <div className="form-grid two">
+            <TextField label="Executor Ref" value={form.executor_ref} onChange={(value) => update("executor_ref", value)} />
+            <TextAreaField label="执行参数 JSON" value={form.handling_params} onChange={(value) => update("handling_params", value)} rows={5} />
+          </div>
+        ) : null}
+        {form.handling_kind === "ui_handoff" ? (
+          <div className="form-grid two">
+            <TextField label="内部 UI 路由" value={form.ui_route} onChange={(value) => update("ui_route", value)} />
+            <TextAreaField label="UI 参数 JSON" value={form.ui_params} onChange={(value) => update("ui_params", value)} rows={5} />
+          </div>
+        ) : null}
         <TextAreaField label="Context JSON" value={form.context} onChange={(value) => update("context", value)} rows={8} />
         <div className="submit-row">
           <span>{registryReadOnly ? "文件注册表只读" : registryMutationDisabled ? "管理写入已禁用" : isExisting ? "编辑现有 Agent" : "新增 Agent"}</span>
@@ -1471,7 +1525,7 @@ function StatusInspector({
   onRefreshMemoryTrace,
 }: {
   turn: ConversationTurn | null;
-  agents: AgentDefinition[];
+  agents: AgentListItem[];
   plan: JsonRecord | null;
   planId: string;
   setPlanId: (value: string) => void;
@@ -1561,7 +1615,7 @@ function StatusInspector({
   );
 }
 
-function JourneyTab({ turn, agents }: { turn: ConversationTurn | null; agents: AgentDefinition[] }) {
+function JourneyTab({ turn, agents }: { turn: ConversationTurn | null; agents: AgentListItem[] }) {
   const journey = useMemo(() => projectRoutingJourney(turn, agents), [turn, agents]);
   const [selectedNodeId, setSelectedNodeId] = useState<JourneyNodeId | null>(null);
   const [formationExpanded, setFormationExpanded] = useState(false);
@@ -3653,16 +3707,26 @@ function TextField({
   value,
   onChange,
   type = "text",
+  placeholder,
+  required = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
+  placeholder?: string;
+  required?: boolean;
 }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        required={required}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </label>
   );
 }
@@ -3764,12 +3828,58 @@ function parseJsonRecord(value: string, label: string): JsonRecord {
   }
 }
 
-function agentToForm(agent: AgentDefinition): FormState {
+function handlingRecord(agent: AgentListItem | AgentDefinition): JsonRecord {
+  return "handling" in agent ? (agent.handling as unknown as JsonRecord) : {};
+}
+
+function handlingKind(agent: AgentListItem | AgentDefinition): AgentHandling["kind"] {
+  const handling = handlingRecord(agent);
+  const kind = handling.kind ?? ("handling_kind" in agent ? agent.handling_kind : "invocation");
+  return kind === "external_execution" || kind === "ui_handoff" ? kind : "invocation";
+}
+
+function unredactedText(value: unknown): string {
+  return typeof value === "string" && value !== "***REDACTED***" ? value : "";
+}
+
+function removeRedactedValues(value: unknown): JsonValue | undefined {
+  if (value === "***REDACTED***") return undefined;
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      const safeItem = removeRedactedValues(item);
+      return safeItem === undefined ? [] : [safeItem];
+    });
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, item]) => {
+        const safeItem = removeRedactedValues(item);
+        return safeItem === undefined ? [] : [[key, safeItem]];
+      }),
+    ) as JsonRecord;
+  }
+  return undefined;
+}
+
+function safeHandlingJson(value: unknown): string {
+  const safeValue = removeRedactedValues(value);
+  return JSON.stringify(
+    safeValue && typeof safeValue === "object" && !Array.isArray(safeValue) ? safeValue : {},
+    null,
+    2,
+  );
+}
+
+function agentToForm(agent: AgentListItem | AgentDefinition): FormState {
+  const handling = handlingRecord(agent);
   return {
     agent_id: agent.agent_id,
     name: agent.name,
     description: agent.description,
-    type: agent.type,
+    handling_kind: handlingKind(agent),
     enabled: agent.enabled,
     domain: agent.domain || "",
     version: agent.version || "",
@@ -3782,18 +3892,51 @@ function agentToForm(agent: AgentDefinition): FormState {
     allow_roles: joinList(agent.access_policy?.allow_roles),
     allow_groups: joinList(agent.access_policy?.allow_groups),
     allow_tenants: joinList(agent.access_policy?.allow_tenants),
+    deny_roles: joinList(agent.access_policy?.deny_roles),
+    deny_groups: joinList(agent.access_policy?.deny_groups),
+    deny_tenants: joinList(agent.access_policy?.deny_tenants),
+    any_entitlements: joinList(agent.access_policy?.any_entitlements),
+    required_attributes: JSON.stringify(agent.access_policy?.required_attributes || {}, null, 2),
     required_inputs: joinList(agent.required_inputs),
     optional_inputs: joinList(agent.optional_inputs),
     input_schema: JSON.stringify(agent.input_schema || { type: "object", properties: {} }, null, 2),
     output_schema: JSON.stringify(agent.output_schema || { type: "object", properties: {} }, null, 2),
-    invocation_config: JSON.stringify(agent.invocation?.config || {}, null, 2),
-    provider_config: JSON.stringify(agent.invocation?.provider_config || {}, null, 2),
-    ui_mode: agent.ui_handoff?.mode || "none",
-    ui_route: agent.ui_handoff?.route || "",
-    ui_params: JSON.stringify(agent.ui_handoff?.params || {}, null, 2),
+    adapter_key: unredactedText(handling.adapter_key),
+    connector_ref: unredactedText(handling.connector_ref),
+    handling_config: safeHandlingJson(handling.config),
+    executor_ref: unredactedText(handling.executor_ref),
+    handling_params: safeHandlingJson(handling.params),
+    ui_route: unredactedText(handling.route),
+    ui_params: safeHandlingJson(handling.params),
     context: JSON.stringify(agent.context || { memory: { mode: "disabled" }, knowledge: { mode: "disabled" } }, null, 2),
-    metadata: JSON.stringify(agent.metadata || {}, null, 2),
   };
+}
+
+function formToHandling(form: FormState): AgentHandling {
+  if (form.handling_kind === "external_execution") {
+    return {
+      kind: "external_execution",
+      executor_ref: form.executor_ref.trim(),
+      params: parseJsonRecord(form.handling_params, "执行参数"),
+    } as AgentHandling;
+  }
+  if (form.handling_kind === "ui_handoff") {
+    return {
+      kind: "ui_handoff",
+      route: form.ui_route.trim(),
+      params: parseJsonRecord(form.ui_params, "UI 参数"),
+    } as AgentHandling;
+  }
+  const adapterKey = form.adapter_key.trim();
+  if (!adapterKey) {
+    throw new Error("Invocation Handling 必须填写已部署的 v2 Adapter Key。");
+  }
+  return {
+    kind: "invocation",
+    adapter_key: adapterKey,
+    connector_ref: form.connector_ref.trim() || null,
+    config: parseJsonRecord(form.handling_config, "调用配置"),
+  } as AgentHandling;
 }
 
 function formToAgent(form: FormState): AgentDefinition {
@@ -3802,12 +3945,13 @@ function formToAgent(form: FormState): AgentDefinition {
   const outputSchema = parseJsonRecord(form.output_schema, "output_schema") as AgentDefinition["output_schema"];
   inputSchema.required = inputSchema.required || requiredInputs;
   return {
+    schema_version: "oir-agent-v2",
     agent_id: form.agent_id.trim(),
     name: form.name.trim(),
     description: form.description.trim(),
     version: form.version.trim() || null,
+    revision: 0,
     enabled: form.enabled,
-    type: form.type,
     capabilities: splitList(form.capabilities),
     domain: form.domain.trim() || null,
     tags: splitList(form.tags),
@@ -3820,28 +3964,19 @@ function formToAgent(form: FormState): AgentDefinition {
       allow_roles: splitList(form.allow_roles),
       allow_groups: splitList(form.allow_groups),
       allow_tenants: splitList(form.allow_tenants),
-      deny_roles: [],
-      deny_groups: [],
-      deny_tenants: [],
-      required_attributes: {},
+      deny_roles: splitList(form.deny_roles),
+      deny_groups: splitList(form.deny_groups),
+      deny_tenants: splitList(form.deny_tenants),
+      any_entitlements: splitList(form.any_entitlements),
+      required_attributes: parseJsonRecord(form.required_attributes, "访问策略所需属性"),
     },
     required_inputs: requiredInputs,
     optional_inputs: splitList(form.optional_inputs),
     input_schema: inputSchema,
     output_schema: outputSchema,
-    invocation: {
-      type: form.type,
-      config: parseJsonRecord(form.invocation_config, "invocation.config"),
-      provider_config: parseJsonRecord(form.provider_config, "provider_config"),
-    },
-    ui_handoff: {
-      mode: form.ui_mode.trim() || "none",
-      route: form.ui_route.trim() || null,
-      params: parseJsonRecord(form.ui_params, "ui params"),
-    },
+    handling: formToHandling(form),
     context: parseJsonRecord(form.context, "context") as AgentDefinition["context"],
     priority: Number.parseInt(form.priority || "0", 10) || 0,
-    metadata: parseJsonRecord(form.metadata, "metadata"),
     source: "database",
   };
 }

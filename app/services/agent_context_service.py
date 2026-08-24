@@ -16,7 +16,7 @@ from app.schemas.agent_context import (
     MemoryContext,
     MemoryContextItem,
 )
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import JsonDict, UserContext
 from app.schemas.context import ContextAssemblySession, ContextBudget, ContextCandidate
 from app.schemas.knowledge_provider import (
@@ -64,7 +64,7 @@ class AgentContextAssemblyService:
     async def assemble_for_route(
         self,
         *,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         request: RouteRequest,
         invocation_input: JsonDict,
         active_plan=None,
@@ -87,7 +87,7 @@ class AgentContextAssemblyService:
     async def assemble(
         self,
         *,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         user: UserContext,
         session_id: str,
         query: str,
@@ -282,7 +282,7 @@ class AgentContextAssemblyService:
     async def controlled_knowledge_retrieval(
         self,
         *,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         user: UserContext,
         variables: Mapping[str, object],
         caller_id: str | None = None,
@@ -324,7 +324,7 @@ class AgentContextAssemblyService:
     async def issue_controlled_knowledge_handle(
         self,
         *,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         user: UserContext,
         variables: Mapping[str, object],
         trace_id: str,
@@ -360,7 +360,7 @@ class AgentContextAssemblyService:
     def _consume_knowledge_context_handle(
         self,
         *,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         user: UserContext,
         handle: str | None,
         trace_id: str | None,
@@ -407,7 +407,7 @@ class AgentContextAssemblyService:
 
     def _enforce_knowledge_requirement(
         self,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         context: KnowledgeContext,
     ) -> None:
         if agent.context.knowledge.requirement != "required":
@@ -453,7 +453,7 @@ class AgentContextAssemblyService:
 
     async def _memory_context(
         self,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         user: UserContext,
         query: str,
     ) -> MemoryContext:
@@ -484,7 +484,7 @@ class AgentContextAssemblyService:
 
     async def _knowledge_context(
         self,
-        agent: AgentDefinition,
+        agent: AgentDefinitionV2,
         user: UserContext,
         query: str,
         caller_type: str,

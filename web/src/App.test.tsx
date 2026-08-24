@@ -9,8 +9,9 @@ const mockAgent = {
   name: "话术生成",
   description: "根据沟通目标生成客户沟通话术。",
   version: "1.0.0",
+  revision: 1,
   enabled: true,
-  type: "mock",
+  handling_kind: "invocation",
   capabilities: ["话术生成"],
   domain: "ziya_demo",
   tags: ["话术"],
@@ -23,10 +24,11 @@ const mockAgent = {
     allow_roles: ["operator"],
     allow_groups: ["default"],
     allow_tenants: ["*"],
-    deny_roles: [],
-    deny_groups: [],
-    deny_tenants: [],
-    required_attributes: {},
+    deny_roles: ["suspended"],
+    deny_groups: ["restricted"],
+    deny_tenants: ["tenant_blocked"],
+    any_entitlements: ["advisor:write"],
+    required_attributes: { region: "CN" },
   },
   required_inputs: ["text"],
   optional_inputs: [],
@@ -40,18 +42,7 @@ const mockAgent = {
     required: [],
     properties: { draft: { type: "string" } },
   },
-  invocation: {
-    type: "mock",
-    config: { response: { draft: "ok" } },
-    provider_config: {},
-  },
-  ui_handoff: {
-    mode: "none",
-    route: null,
-    params: {},
-  },
   priority: 0,
-  metadata: {},
   source: "database",
 };
 
@@ -644,6 +635,7 @@ describe("意图路由测试台", () => {
   let turnTraceScenario: TurnTraceScenario = "recall_only";
   let turnTraceRequests = new Map<string, number>();
   let resolveSlowMemoryTrace: ((response: Response) => void) | null = null;
+  let adminAgentPayloads: Record<string, unknown>[] = [];
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -655,6 +647,7 @@ describe("意图路由测试台", () => {
     turnTraceScenario = "recall_only";
     turnTraceRequests = new Map();
     resolveSlowMemoryTrace = null;
+    adminAgentPayloads = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -701,6 +694,26 @@ describe("意图路由测试台", () => {
           });
         }
         if (url.endsWith("/api/v1/agents")) return json({ agents: [mockAgent] });
+        if (url.endsWith("/api/v1/admin/agents") && (!init?.method || init.method === "GET")) {
+          return json({
+            agents: [
+              {
+                ...mockAgent,
+                handling: { kind: "invocation", adapter_key: "example_v2_adapter", config: {} },
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/api/v1/admin/agents") && init?.method === "POST") {
+          const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+          adminAgentPayloads.push(payload);
+          return json(payload);
+        }
+        if (url.includes("/api/v1/admin/agents/") && init?.method === "PUT") {
+          const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+          adminAgentPayloads.push(payload);
+          return json(payload);
+        }
         if (url.includes("/api/v1/memories/debug")) {
           if (failMemoryDebug) return json({ detail: "memory debug down" }, 500);
           const requestId = new URL(url, "http://test.local").searchParams.get("request_id");
@@ -879,6 +892,71 @@ describe("意图路由测试台", () => {
     await userEvent.click(within(screen.getByLabelText("中控状态")).getByRole("tab", { name: /Route/i }));
     await waitFor(() => expect(screen.getAllByText("open_agent").length).toBeGreaterThan(0));
     expect(screen.getAllByText("script_writer").length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["invocation", { kind: "invocation", adapter_key: "example_v2_adapter", config: {} }],
+    ["external_execution", { kind: "external_execution", executor_ref: "oac-executor", params: {} }],
+    ["ui_handoff", { kind: "ui_handoff", route: "/host/demo", params: {} }],
+  ] as const)("以 v2 handling 创建 %s Agent", async (kind, expectedHandling) => {
+    render(<App />);
+
+    await screen.findByText("mock-router");
+    await userEvent.click(screen.getByRole("button", { name: "新增 Agent" }));
+    await userEvent.selectOptions(screen.getByLabelText("Handling"), kind);
+    if (kind === "invocation") {
+      await userEvent.type(screen.getByLabelText("已注册 v2 Adapter Key"), "example_v2_adapter");
+    }
+    if (kind === "external_execution") {
+      await userEvent.type(screen.getByLabelText("Executor Ref"), "oac-executor");
+    }
+    if (kind === "ui_handoff") {
+      await userEvent.type(screen.getByLabelText("内部 UI 路由"), "/host/demo");
+    }
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(adminAgentPayloads).toHaveLength(1));
+    expect(adminAgentPayloads[0]).toMatchObject({
+      schema_version: "oir-agent-v2",
+      handling: expectedHandling,
+    });
+    expect(adminAgentPayloads[0]).not.toHaveProperty("type");
+    expect(adminAgentPayloads[0]).not.toHaveProperty("invocation");
+    expect(adminAgentPayloads[0]).not.toHaveProperty("ui_handoff");
+  });
+
+  it("编辑 Agent 时保留完整访问策略", async () => {
+    render(<App />);
+
+    await screen.findByText("mock-router");
+    const agentPanel = screen.getByText("意图与 Agent").closest("section");
+    expect(agentPanel).not.toBeNull();
+    const agentRow = within(agentPanel!).getByText("话术生成").closest("button");
+    expect(agentRow).not.toBeNull();
+    await userEvent.click(agentRow!);
+    await screen.findByRole("dialog", { name: "Agent 配置" });
+
+    expect(screen.getByLabelText("拒绝角色")).toHaveValue("suspended");
+    expect(screen.getByLabelText("拒绝分组")).toHaveValue("restricted");
+    expect(screen.getByLabelText("拒绝租户")).toHaveValue("tenant_blocked");
+    expect(screen.getByLabelText("任一所需 Entitlement")).toHaveValue("advisor:write");
+    expect(screen.getByLabelText("所需属性 JSON")).toHaveValue('{\n  "region": "CN"\n}');
+
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(adminAgentPayloads).toHaveLength(1));
+    expect(adminAgentPayloads[0]).toMatchObject({
+      access_policy: {
+        allow_roles: ["operator"],
+        allow_groups: ["default"],
+        allow_tenants: ["*"],
+        deny_roles: ["suspended"],
+        deny_groups: ["restricted"],
+        deny_tenants: ["tenant_blocked"],
+        any_entitlements: ["advisor:write"],
+        required_attributes: { region: "CN" },
+      },
+    });
   });
 
   it("默认展示中控运行图并保留技术详情标签", async () => {

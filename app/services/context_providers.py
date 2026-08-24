@@ -8,7 +8,7 @@ from typing import Protocol
 from app.core.config import Settings
 from app.core.memory_runtime import MemoryRuntimePolicy
 from app.plugins.knowledge import KnowledgeProvider
-from app.schemas.agents import AgentDefinition, CandidateAgent
+from app.schemas.agents import AgentDefinitionV2, CandidateAgentV2
 from app.schemas.common import JsonDict
 from app.schemas.context import ContextCandidate
 from app.schemas.knowledge_provider import (
@@ -25,8 +25,8 @@ class ContextProviderContext:
     request: RouteRequest
     purpose: str
     consumer: str
-    candidate_agents: list[CandidateAgent] = field(default_factory=list)
-    agent: AgentDefinition | None = None
+    candidate_agents: list[CandidateAgentV2] = field(default_factory=list)
+    agent: AgentDefinitionV2 | None = None
     sources: JsonDict = field(default_factory=dict)
 
 

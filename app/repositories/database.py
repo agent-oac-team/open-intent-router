@@ -2,10 +2,11 @@ import hashlib
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import and_, case, delete, desc, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.errors import RegistryVersionConflict
+from app.core.errors import RegistryError, RegistryVersionConflict
 from app.core.redaction import redact_value
 from app.db.models import (
     AgentDefinitionModel,
@@ -25,7 +26,7 @@ from app.repositories.native_definition_migration_fence import (
     require_native_definition_migration_fence_open,
 )
 from app.repositories.plan_steps import plan_step_model
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
 from app.schemas.plans import Plan, PlanStep
@@ -38,7 +39,7 @@ class DatabaseAgentDefinitionRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
 
-    async def list(self, *, enabled_only: bool = False) -> list[AgentDefinition]:
+    async def list(self, *, enabled_only: bool = False) -> list[AgentDefinitionV2]:
         async with self.session_factory() as session:
             stmt = select(AgentDefinitionModel).order_by(
                 desc(AgentDefinitionModel.priority),
@@ -49,7 +50,7 @@ class DatabaseAgentDefinitionRepository:
             rows = (await session.execute(stmt)).scalars().all()
             return [_agent_from_row(row) for row in rows]
 
-    async def get(self, agent_id: str) -> AgentDefinition | None:
+    async def get(self, agent_id: str) -> AgentDefinitionV2 | None:
         async with self.session_factory() as session:
             row = await session.scalar(
                 select(AgentDefinitionModel).where(AgentDefinitionModel.agent_id == agent_id)
@@ -57,8 +58,8 @@ class DatabaseAgentDefinitionRepository:
             return _agent_from_row(row) if row else None
 
     async def upsert(
-        self, definition: AgentDefinition, *, expected_revision: int | None = None
-    ) -> AgentDefinition:
+        self, definition: AgentDefinitionV2, *, expected_revision: int | None = None
+    ) -> AgentDefinitionV2:
         async with self.session_factory() as session:
             await require_native_definition_migration_fence_open(session, kind="native_write")
             row = await session.scalar(
@@ -85,7 +86,7 @@ class DatabaseAgentDefinitionRepository:
 
     async def set_enabled(
         self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
-    ) -> AgentDefinition | None:
+    ) -> AgentDefinitionV2 | None:
         async with self.session_factory() as session:
             await require_native_definition_migration_fence_open(session, kind="native_write")
             row = await session.scalar(
@@ -97,6 +98,7 @@ class DatabaseAgentDefinitionRepository:
                 raise RegistryVersionConflict("Agent revision conflict")
             row.enabled = enabled
             row.revision += 1
+            _clear_retired_agent_columns(row)
             await session.commit()
             await session.refresh(row)
             return _agent_from_row(row)
@@ -148,6 +150,7 @@ class DatabaseAgentDefinitionRepository:
                     raise RegistryVersionConflict("Agent revision conflict")
                 row.enabled = command.operation == "enable"
                 row.revision = current_revision + 1
+                _clear_retired_agent_columns(row)
                 after = before.model_copy(
                     update={
                         "enabled": command.operation == "enable",
@@ -956,14 +959,19 @@ class DatabaseRouteLogRepository:
             return log
 
 
-def _agent_values(definition: AgentDefinition, *, source: str) -> dict:
+def _agent_values(definition: AgentDefinitionV2, *, source: str) -> dict:
     return {
         "agent_id": definition.agent_id,
         "name": definition.name,
         "description": definition.description,
         "version": definition.version,
         "revision": definition.revision,
-        "type": definition.type,
+        # The old columns survive solely for the controlled offline rollback
+        # snapshot.  A running Native v2 binary never reads them, and every
+        # ordinary write clears any old endpoint/configuration residue.
+        "type": "",
+        "schema_version": definition.schema_version,
+        "handling_text": dumps(definition.handling.model_dump(mode="json", exclude_none=True)),
         "enabled": definition.enabled,
         "domain": definition.domain,
         "capabilities_text": dumps(definition.capabilities),
@@ -974,20 +982,29 @@ def _agent_values(definition: AgentDefinition, *, source: str) -> dict:
         "optional_inputs_text": dumps(definition.optional_inputs),
         "input_schema_text": dumps(definition.input_schema.model_dump()),
         "output_schema_text": dumps(definition.output_schema.model_dump()),
-        "invocation_text": dumps(definition.invocation.model_dump()),
-        "ui_handoff_text": dumps(definition.ui_handoff.model_dump()),
+        "invocation_text": "{}",
+        "ui_handoff_text": "{}",
         "context_text": dumps(definition.context.model_dump()),
         "priority": definition.priority,
-        "metadata_text": dumps(definition.metadata),
+        "metadata_text": "{}",
         "source": source,
     }
+
+
+def _clear_retired_agent_columns(row: AgentDefinitionModel) -> None:
+    """Erase old Definition fields on every Native mutating write."""
+
+    row.type = ""
+    row.invocation_text = "{}"
+    row.ui_handoff_text = "{}"
+    row.metadata_text = "{}"
 
 
 def _mutation_audit(
     command: RegistryMutationCommand,
     *,
-    before: AgentDefinition | None,
-    after: AgentDefinition | None,
+    before: AgentDefinitionV2 | None,
+    after: AgentDefinitionV2 | None,
     revision: int,
 ) -> RegistryAuditRecord:
     return RegistryAuditRecord(
@@ -1003,33 +1020,36 @@ def _mutation_audit(
     )
 
 
-def _agent_from_row(row: AgentDefinitionModel) -> AgentDefinition:
-    return AgentDefinition(
-        agent_id=row.agent_id,
-        name=row.name,
-        description=row.description,
-        version=row.version,
-        revision=row.revision,
-        enabled=row.enabled,
-        type=row.type,
-        domain=row.domain,
-        capabilities=loads(row.capabilities_text, []),
-        tags=loads(row.tags_text, []),
-        trigger=loads(row.trigger_text, {}),
-        access_policy=loads(row.access_policy_text, {}),
-        required_inputs=loads(row.required_inputs_text, []),
-        optional_inputs=loads(row.optional_inputs_text, []),
-        input_schema=loads(row.input_schema_text, {}),
-        output_schema=loads(row.output_schema_text, {}),
-        invocation=loads(row.invocation_text, {}),
-        ui_handoff=loads(row.ui_handoff_text, {}),
-        context=loads(getattr(row, "context_text", "{}"), {}),
-        priority=row.priority,
-        metadata=loads(row.metadata_text, {}),
-        source=row.source,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
+def _agent_from_row(row: AgentDefinitionModel) -> AgentDefinitionV2:
+    try:
+        return AgentDefinitionV2.model_validate(
+            {
+                "schema_version": row.schema_version,
+                "agent_id": row.agent_id,
+                "name": row.name,
+                "description": row.description,
+                "version": row.version,
+                "revision": row.revision,
+                "enabled": row.enabled,
+                "domain": row.domain,
+                "capabilities": loads(row.capabilities_text, []),
+                "tags": loads(row.tags_text, []),
+                "trigger": loads(row.trigger_text, {}),
+                "access_policy": loads(row.access_policy_text, {}),
+                "required_inputs": loads(row.required_inputs_text, []),
+                "optional_inputs": loads(row.optional_inputs_text, []),
+                "input_schema": loads(row.input_schema_text, {}),
+                "output_schema": loads(row.output_schema_text, {}),
+                "context": loads(getattr(row, "context_text", "{}"), {}),
+                "priority": row.priority,
+                "handling": loads(row.handling_text, None),
+                "source": row.source,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+        )
+    except ValidationError as exc:
+        raise RegistryError("Database registry contains an invalid Native v2 Definition") from exc
 
 
 def _message_from_row(row: ChatMessageModel) -> ChatMessage:

@@ -4,18 +4,18 @@ import pytest
 from pydantic import ValidationError
 
 from app.repositories.file_registry import FileRegistrySource
-from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
+from app.schemas.agents import AccessPolicy, AgentDefinitionV2
 from app.schemas.common import UserContext
 
 
-def _agent(policy: AccessPolicy) -> AgentDefinition:
-    return AgentDefinition(
+def _agent(policy: AccessPolicy) -> AgentDefinitionV2:
+    return AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id="entitled-agent",
         name="Entitled Agent",
         description="Tests generic entitlement admission",
-        type="mock",
         access_policy=policy,
-        invocation=InvocationSpec(type="mock"),
+        handling={"kind": "invocation", "adapter_key": "mock", "config": {"function": "run"}},
     )
 
 

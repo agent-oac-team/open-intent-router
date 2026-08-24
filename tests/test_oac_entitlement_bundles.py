@@ -1,6 +1,11 @@
 import pytest
 
-from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
+from app.schemas.agents import (
+    AccessPolicy,
+    AgentDefinitionV2,
+    ExternalExecutionHandling,
+    UiHandoffHandling,
+)
 from host_adapters.oac.authz.bundles import (
     OAC_BUNDLE_CATALOG,
     BundleCatalog,
@@ -60,12 +65,13 @@ def test_existing_bundles_configure_provider_and_ui_agents_without_agent_mapping
         _wire(bot_id="", route_path="/new-agent", allowed_user_tags=["展业版"])
     )
 
-    assert provider.type == "provider_platform"
+    assert isinstance(provider.handling, ExternalExecutionHandling)
+    assert provider.handling.executor_ref == "bot-1"
     assert provider.access_policy.any_entitlements == [
         "workspace.operations.access",
         "workspace.sales_enablement.access",
     ]
-    assert ui.type == "ui_handoff"
+    assert isinstance(ui.handling, UiHandoffHandling)
     assert ui.access_policy.any_entitlements == ["workspace.sales_enablement.access"]
     assert registry_agent_from_native(provider).allowed_user_tags == ["运营版", "展业版"]
 
@@ -96,13 +102,13 @@ def test_registry_mapper_rejects_invalid_legacy_writes(wire: RegistryAgent) -> N
     ],
 )
 def test_registry_reverse_projection_fails_closed(policy: AccessPolicy) -> None:
-    agent = AgentDefinition(
+    agent = AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id="agent",
         name="Agent",
         description="Agent",
-        type="provider_platform",
         access_policy=policy,
-        invocation=InvocationSpec(type="provider_platform", provider_config={"bot_id": "bot-1"}),
+        handling=ExternalExecutionHandling(executor_ref="bot-1"),
     )
     with pytest.raises(RegistryPolicyProjectionError):
         registry_agent_from_native(agent)

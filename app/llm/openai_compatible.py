@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.core.errors import LLMError
 from app.prompts.router_prompt import RouterPromptTemplate
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import CandidateAgentV2
 from app.schemas.routing import LLMRouteInput, RouteResponse
 from app.services.plan_builder import build_ordered_plan_from_text
 
@@ -187,7 +187,7 @@ def _recover_single_agent_route(
 def _single_agent_candidate(
     normalized: dict,
     payload: LLMRouteInput,
-) -> CandidateAgent | None:
+) -> CandidateAgentV2 | None:
     candidate_by_id = {agent.agent_id: agent for agent in payload.candidates}
     decision = normalized.get("decision")
     if isinstance(decision, dict):
@@ -210,7 +210,7 @@ def _single_agent_candidate(
     return best_agent
 
 
-def _single_agent_score(text: str, agent: CandidateAgent) -> int:
+def _single_agent_score(text: str, agent: CandidateAgentV2) -> int:
     normalized_text = _normalize_text(text)
     for negative in agent.trigger.negative_examples:
         if _contains_phrase(normalized_text, negative):

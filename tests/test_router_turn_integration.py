@@ -20,7 +20,7 @@ from app.schemas.memory import (
     MemoryRecallRequest,
 )
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.memory_adapter import (
     MemoryIndexOperationResult,
     MemoryProviderOperationStatus,
@@ -213,7 +213,6 @@ async def test_route_and_invoke_completes_canonical_turn_and_creates_outbox(
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         canonical_invocation_store=MemoryCanonicalInvocationStore(
             run_repository=runs,
             result_repository=results,
@@ -286,7 +285,6 @@ async def test_route_invoke_pork_preference_reaches_index_and_recall_after_resta
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         canonical_invocation_store=MemoryCanonicalInvocationStore(
             run_repository=runs,
             result_repository=results,

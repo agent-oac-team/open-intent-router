@@ -218,7 +218,6 @@ def _service(
         registry=_NoRegistryReads(),
         run_repository=runs,
         result_repository=results,
-        invokers=catalog,
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
         execution_traces=traces,

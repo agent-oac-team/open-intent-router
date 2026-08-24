@@ -13,9 +13,9 @@ from app.repositories.memory import (
     MemoryRouteLogRepository,
     MemoryRunRepository,
 )
-from app.schemas.agents import AgentDefinition
-from app.services.registry_service import AgentRegistryService
+from app.schemas.agents import AgentDefinitionV2
 from tests.support.database import ManagedTestDatabases
+from tests.support.v2_runtime import SnapshotAwareRegistryService, activate_v2_test_catalog
 
 TEST_ENV_DEFAULTS = {
     "APP_ENV": "local",
@@ -89,13 +89,13 @@ def non_lifespan_test_client():
 
 
 @pytest.fixture
-def summarizer_agent() -> AgentDefinition:
-    return AgentDefinition.model_validate(
+def summarizer_agent() -> AgentDefinitionV2:
+    return AgentDefinitionV2.model_validate(
         {
+            "schema_version": "oir-agent-v2",
             "agent_id": "summarizer",
             "name": "Summarizer",
             "description": "Summarize text",
-            "type": "mock",
             "capabilities": ["summarize"],
             "trigger": {"keywords": ["summarize"]},
             "access_policy": {"allow_roles": ["operator"], "allow_tenants": ["*"]},
@@ -109,19 +109,23 @@ def summarizer_agent() -> AgentDefinition:
                 "type": "object",
                 "properties": {"summary": {"type": "string"}},
             },
-            "invocation": {"type": "mock", "config": {"response": {"summary": "ok"}}},
+            "handling": {
+                "kind": "invocation",
+                "adapter_key": "mock",
+                "config": {"function": "summarize"},
+            },
         }
     )
 
 
 @pytest.fixture
-def task_creator_agent() -> AgentDefinition:
-    return AgentDefinition.model_validate(
+def task_creator_agent() -> AgentDefinitionV2:
+    return AgentDefinitionV2.model_validate(
         {
+            "schema_version": "oir-agent-v2",
             "agent_id": "task_creator",
             "name": "Task Creator",
             "description": "Create a task or to-do item from user instructions.",
-            "type": "mock",
             "capabilities": ["create_task"],
             "trigger": {
                 "keywords": ["task", "todo"],
@@ -138,9 +142,10 @@ def task_creator_agent() -> AgentDefinition:
                 "type": "object",
                 "properties": {"task_id": {"type": "string"}, "title": {"type": "string"}},
             },
-            "invocation": {
-                "type": "mock",
-                "config": {"response": {"task_id": "task_mock_001", "title": "Mock task"}},
+            "handling": {
+                "kind": "invocation",
+                "adapter_key": "mock",
+                "config": {"function": "create_task"},
             },
         }
     )
@@ -162,6 +167,14 @@ def repositories():
 @pytest.fixture
 async def registry_service(settings, repositories, summarizer_agent):
     await repositories["registry"].upsert(summarizer_agent)
-    service = AgentRegistryService(settings=settings, repository=repositories["registry"])
-    await service.load()
-    return service
+    catalog = await activate_v2_test_catalog()
+    service = SnapshotAwareRegistryService(
+        settings=settings,
+        repository=repositories["registry"],
+        runtime_catalog=catalog,
+    )
+    try:
+        await service.load()
+        yield service
+    finally:
+        await catalog.aclose()

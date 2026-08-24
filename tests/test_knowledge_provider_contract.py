@@ -2,7 +2,7 @@ from app.core.config import Settings
 from app.plugins.knowledge import KnowledgeProvider
 from app.repositories.context_stores import MemoryItemRepository
 from app.schemas.agent_context import KnowledgeCitation, KnowledgeContextItem
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
 from app.schemas.knowledge_provider import (
     KnowledgeProviderRequest,
@@ -37,7 +37,7 @@ class RecordingKnowledgeProvider:
         )
 
 
-def _knowledge_agent(summarizer_agent) -> AgentDefinition:
+def _knowledge_agent(summarizer_agent) -> AgentDefinitionV2:
     payload = summarizer_agent.model_dump(mode="json")
     payload["context"] = {
         "knowledge": {
@@ -47,7 +47,7 @@ def _knowledge_agent(summarizer_agent) -> AgentDefinition:
             "max_items": 3,
         }
     }
-    return AgentDefinition.model_validate(payload)
+    return AgentDefinitionV2.model_validate(payload)
 
 
 def _memory_service(settings: Settings) -> MemoryService:

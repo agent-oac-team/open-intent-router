@@ -4,9 +4,8 @@ from typing import Any, Literal
 from pydantic import Field, PrivateAttr, model_validator
 
 from app.schemas.agents import (
-    AgentDefinition,
     AgentDefinitionV2,
-    CandidateAgent,
+    CandidateAgentV2,
     ExternalExecutionHandling,
 )
 from app.schemas.common import (
@@ -106,11 +105,8 @@ class InvocationPreview(StrictBaseModel):
 
 
 class RouteResponse(StrictBaseModel):
-    _selected_definitions: dict[str, AgentDefinition | AgentDefinitionV2] = PrivateAttr(
-        default_factory=dict
-    )
+    _selected_definitions: dict[str, AgentDefinitionV2] = PrivateAttr(default_factory=dict)
     _selected_bindings: dict[str, object] = PrivateAttr(default_factory=dict)
-    _selected_legacy_definitions: dict[str, AgentDefinition] | None = PrivateAttr(default=None)
     _routed_source_request: RouteRequest | None = PrivateAttr(default=None)
     _routed_source_request_id: str | None = PrivateAttr(default=None)
     _routed_user: UserContext | None = PrivateAttr(default=None)
@@ -136,10 +132,7 @@ class RouteResponse(StrictBaseModel):
 
     def bind_selected_definitions(
         self,
-        definitions: (
-            list[AgentDefinition | AgentDefinitionV2]
-            | dict[str, AgentDefinition | AgentDefinitionV2]
-        ),
+        definitions: list[AgentDefinitionV2] | dict[str, AgentDefinitionV2],
     ) -> "RouteResponse":
         self._ensure_execution_unbound()
         values = definitions.values() if isinstance(definitions, dict) else definitions
@@ -151,16 +144,6 @@ class RouteResponse(StrictBaseModel):
 
         self._ensure_execution_unbound()
         self._selected_bindings = dict(bindings)
-        return self
-
-    def bind_selected_legacy_definitions(
-        self,
-        definitions: Mapping[str, AgentDefinition],
-    ) -> "RouteResponse":
-        """Retain the legacy half of a mixed Candidate Set outside the wire payload."""
-
-        self._ensure_execution_unbound()
-        self._selected_legacy_definitions = dict(definitions)
         return self
 
     def bind_routed_execution(self, request: RouteRequest) -> "RouteResponse":
@@ -178,9 +161,7 @@ class RouteResponse(StrictBaseModel):
         target = self.decision.target_agent_id
         definition = self._selected_definitions.get(target) if target else None
         binding = self._selected_bindings.get(target) if target else None
-        if isinstance(definition, AgentDefinitionV2) and isinstance(
-            definition.handling, ExternalExecutionHandling
-        ):
+        if definition is not None and isinstance(definition.handling, ExternalExecutionHandling):
             self._routed_external_target_agent_id = target
             self._routed_external_declared = True
         if (
@@ -200,7 +181,7 @@ class RouteResponse(StrictBaseModel):
             raise RuntimeError("Routed execution capability is immutable")
 
     @property
-    def selected_definitions(self) -> dict[str, AgentDefinition | AgentDefinitionV2]:
+    def selected_definitions(self) -> dict[str, AgentDefinitionV2]:
         return dict(self._selected_definitions)
 
     @property
@@ -210,14 +191,7 @@ class RouteResponse(StrictBaseModel):
         return dict(self._selected_bindings)
 
     @property
-    def selected_legacy_definitions(self) -> dict[str, AgentDefinition] | None:
-        """Return the private legacy Candidate Set for immediate Plan execution."""
-
-        if self._selected_legacy_definitions is None:
-            return None
-        return dict(self._selected_legacy_definitions)
-
-    def selected_definition(self, agent_id: str) -> AgentDefinition | AgentDefinitionV2 | None:
+    def selected_definition(self, agent_id: str) -> AgentDefinitionV2 | None:
         return self._selected_definitions.get(agent_id)
 
     def selected_binding(self, agent_id: str) -> object | None:
@@ -287,18 +261,6 @@ class RouteResponse(StrictBaseModel):
 
         return self._routed_execution_bound and self._routed_external_declared
 
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_action_aliases(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            decision = data.get("decision")
-            context = data.get("context")
-            if isinstance(decision, dict) and decision.get("action") == "switch_agent":
-                decision["action"] = "open_agent"
-                if isinstance(context, dict):
-                    context["relation"] = "switch_agent"
-        return data
-
     @model_validator(mode="after")
     def validate_route_response(self) -> "RouteResponse":
         if self.decision.action == "show_plan" and self.plan is None:
@@ -314,7 +276,7 @@ class RouteResponse(StrictBaseModel):
 
 class LLMRouteInput(StrictBaseModel):
     request: RouteRequest
-    candidates: list[CandidateAgent]
+    candidates: list[CandidateAgentV2]
     context: RouteContext
     projection: ContextProjection | None = None
 

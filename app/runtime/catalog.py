@@ -15,10 +15,6 @@ from jsonschema import Draft202012Validator, SchemaError
 
 from app.core.config import Settings
 from app.core.errors import RuntimeCatalogUnavailableError
-from app.invokers.http import HttpAgentInvoker
-from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
-from app.invokers.mock import MockAgentInvoker
-from app.invokers.ui_handoff import UiHandoffInvoker
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +47,8 @@ class RuntimeAdapterCapability:
     """Stable capabilities declared by a trusted deployment adapter.
 
     ``v2_invocation`` is deliberately separate from generic invocation support:
-    legacy adapters may still be installed for the old Definition contract while
-    being unable to consume an ``oir-agent-v2`` Invocation Binding.
+    an adapter must explicitly opt into consuming an ``oir-agent-v2`` Invocation
+    Binding before it can be selected for a Native Definition.
     """
 
     invocation: bool
@@ -98,7 +94,6 @@ class RuntimeAdapterContext:
     """Process-scoped dependencies available to descriptor factories."""
 
     settings: Settings
-    local_functions: LocalFunctionRegistry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,56 +397,14 @@ class RuntimeCatalogRuntime:
 
 
 def build_default_runtime_descriptors() -> tuple[RuntimeAdapterDescriptor, ...]:
-    """Explicit trusted registration for the built-in adapters shipped by OIR."""
-    no_op_lifecycle = RuntimeAdapterLifecycle(activate=_noop, dispose=_noop)
-    invocation_capability = RuntimeAdapterCapability(invocation=True)
-    return (
-        RuntimeAdapterDescriptor(
-            key="mock",
-            contract_version="oir-runtime-adapter-v1",
-            implementation_version="oir-0.1.0",
-            config_schema={"type": "object"},
-            capability=invocation_capability,
-            factory=lambda _context: MockAgentInvoker(),
-            health_check=_healthy,
-            lifecycle=no_op_lifecycle,
-        ),
-        RuntimeAdapterDescriptor(
-            key="http",
-            contract_version="oir-runtime-adapter-v1",
-            implementation_version="oir-0.1.0",
-            config_schema={"type": "object"},
-            capability=invocation_capability,
-            factory=lambda context: HttpAgentInvoker(context.settings),
-            health_check=_http_health,
-            lifecycle=RuntimeAdapterLifecycle(
-                activate=_activate_http,
-                dispose=_dispose_http,
-            ),
-        ),
-        RuntimeAdapterDescriptor(
-            key="local_function",
-            contract_version="oir-runtime-adapter-v1",
-            implementation_version="oir-0.1.0",
-            config_schema={"type": "object"},
-            capability=invocation_capability,
-            factory=lambda context: LocalFunctionInvoker(context.local_functions),
-            health_check=_healthy,
-            lifecycle=no_op_lifecycle,
-        ),
-        # This is a temporary compatibility adapter for the legacy definition
-        # model. Ticket #43 moves UI Handoff out of the Invocation runtime path.
-        RuntimeAdapterDescriptor(
-            key="ui_handoff",
-            contract_version="oir-runtime-adapter-v1",
-            implementation_version="oir-0.1.0",
-            config_schema={"type": "object"},
-            capability=invocation_capability,
-            factory=lambda _context: UiHandoffInvoker(),
-            health_check=_healthy,
-            lifecycle=no_op_lifecycle,
-        ),
-    )
+    """Return no implicit Native Runtime Adapters.
+
+    Native v2 Definitions bind only to trusted deployment descriptors supplied
+    at application composition. Retired Invoker implementations are never
+    activated as a fallback by the default Catalog.
+    """
+
+    return ()
 
 
 def _validate_descriptors(
@@ -638,28 +591,3 @@ async def _dispose_reverse(
             logger.warning("runtime_catalog_dispose_timeout key=%s", entry.descriptor.key)
         except Exception:
             logger.warning("runtime_catalog_dispose_failed key=%s", entry.descriptor.key)
-
-
-async def _noop(_adapter: object) -> None:
-    return None
-
-
-async def _healthy(_adapter: object) -> bool:
-    return True
-
-
-async def _activate_http(adapter: object) -> None:
-    if not isinstance(adapter, HttpAgentInvoker):
-        raise RuntimeCatalogActivationError("HTTP Runtime Adapter type is invalid")
-    await adapter.start()
-
-
-async def _http_health(adapter: object) -> bool:
-    if not isinstance(adapter, HttpAgentInvoker):
-        return False
-    return await adapter.health()
-
-
-async def _dispose_http(adapter: object) -> None:
-    if isinstance(adapter, HttpAgentInvoker):
-        await adapter.aclose()

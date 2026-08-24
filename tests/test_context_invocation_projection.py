@@ -5,7 +5,7 @@ from app.schemas.agent_context import (
     MemoryContext,
     MemoryContextItem,
 )
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.context import ContextAssemblySession
 from app.schemas.knowledge_provider import KnowledgeProviderResult
 from app.schemas.memory import MemoryRecallResponse
@@ -14,7 +14,7 @@ from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.context_service import ContextService
 
 
-def _agent(summarizer_agent, *, source_ids=None, scopes=None) -> AgentDefinition:
+def _agent(summarizer_agent, *, source_ids=None, scopes=None) -> AgentDefinitionV2:
     payload = summarizer_agent.model_dump(mode="json")
     payload["context"] = {
         "memory": {
@@ -28,7 +28,7 @@ def _agent(summarizer_agent, *, source_ids=None, scopes=None) -> AgentDefinition
             "max_items": 5,
         },
     }
-    return AgentDefinition.model_validate(payload)
+    return AgentDefinitionV2.model_validate(payload)
 
 
 def _request() -> RouteRequest:

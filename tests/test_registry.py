@@ -13,14 +13,12 @@ def test_file_registry_loads_yaml(tmp_path: Path) -> None:
         """
 agents:
   - agent_id: a1
+    schema_version: oir-agent-v2
     name: A1
     description: Test Agent
-    type: mock
-    invocation:
-      type: mock
-      config:
-        response:
-          ok: true
+    handling:
+      kind: invocation
+      adapter_key: mock
 """,
         encoding="utf-8",
     )
@@ -35,15 +33,15 @@ def test_file_registry_rejects_duplicates(tmp_path: Path) -> None:
         """
 agents:
   - agent_id: a1
+    schema_version: oir-agent-v2
     name: A1
     description: Test Agent
-    type: mock
-    invocation: {type: mock, config: {}}
+    handling: {kind: invocation, adapter_key: mock}
   - agent_id: a1
+    schema_version: oir-agent-v2
     name: A1 Again
     description: Test Agent
-    type: mock
-    invocation: {type: mock, config: {}}
+    handling: {kind: invocation, adapter_key: mock}
 """,
         encoding="utf-8",
     )

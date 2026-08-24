@@ -6,31 +6,31 @@ from app.plugins.evidence import EvidenceResult
 from app.repositories.memory import MemoryAgentDefinitionRepository, MemoryPlanRepository
 from app.schemas.agents import (
     AccessPolicy,
-    AgentDefinition,
-    InvocationSpec,
+    AgentDefinitionV2,
+    ExternalExecutionHandling,
     TriggerSpec,
-    UiHandoffSpec,
+    UiHandoffHandling,
 )
 from app.schemas.plans import Plan, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
 from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
+from tests.support.v2_runtime import attach_v2_runtime, freeze_plan_bindings
 
 OPS = "workspace.operations.access"
 SALES = "workspace.sales_enablement.access"
 
 
-def _agent(agent_id: str, entitlements: list[str]) -> AgentDefinition:
-    return AgentDefinition(
+def _agent(agent_id: str, entitlements: list[str]) -> AgentDefinitionV2:
+    return AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id=agent_id,
         name=agent_id,
         description=f"{agent_id} route",
-        type="ui_handoff",
         trigger=TriggerSpec(keywords=[agent_id]),
         access_policy=AccessPolicy(allow_tenants=["oac"], any_entitlements=entitlements),
-        invocation=InvocationSpec(type="ui_handoff"),
-        ui_handoff=UiHandoffSpec(mode="route", route=f"/{agent_id}"),
+        handling=UiHandoffHandling(route=f"/{agent_id}"),
     )
 
 
@@ -39,13 +39,13 @@ def _provider_agent(
     entitlements: list[str],
     *,
     required_inputs: list[str] | None = None,
-) -> AgentDefinition:
+) -> AgentDefinitionV2:
     required = required_inputs or []
-    return AgentDefinition(
+    return AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id=agent_id,
         name=agent_id,
         description=f"{agent_id} provider",
-        type="provider_platform",
         trigger=TriggerSpec(keywords=[agent_id]),
         access_policy=AccessPolicy(allow_tenants=["oac"], any_entitlements=entitlements),
         required_inputs=required,
@@ -54,11 +54,16 @@ def _provider_agent(
             "properties": {item: {"type": "string"} for item in required},
             "required": required,
         },
-        invocation=InvocationSpec(type="provider_platform"),
+        handling=ExternalExecutionHandling(executor_ref=f"{agent_id}-executor"),
     )
 
 
-async def _registry(*agents: AgentDefinition) -> AgentRegistryService:
+class _ExternalExecutor:
+    def supports(self, _executor_ref: str) -> bool:
+        return True
+
+
+async def _registry(*agents: AgentDefinitionV2) -> AgentRegistryService:
     settings = Settings(
         storage_backend="memory",
         registry_backend="database",
@@ -69,6 +74,7 @@ async def _registry(*agents: AgentDefinition) -> AgentRegistryService:
         repository=MemoryAgentDefinitionRepository(list(agents)),
     )
     await registry.load()
+    await attach_v2_runtime(registry, external_executor=_ExternalExecutor())
     return registry
 
 
@@ -469,19 +475,23 @@ async def test_confirmed_ui_plan_projects_one_canonical_open_ui_action() -> None
     registry = await _registry(_agent("marketing_poster", [OPS]))
     plans = PlanService(MemoryPlanRepository())
     created = await plans.save_plan(
-        Plan(
-            plan_id="ui-plan",
-            tenant_id="oac",
-            user_id="42",
-            session_id="session-1",
-            status="running",
-            steps=[
-                PlanStep(
-                    step_id="poster-step",
-                    agent_id="marketing_poster",
-                    description="open poster",
-                )
-            ],
+        freeze_plan_bindings(
+            Plan(
+                plan_id="ui-plan",
+                tenant_id="oac",
+                user_id="42",
+                session_id="session-1",
+                status="running",
+                steps=[
+                    PlanStep(
+                        step_id="poster-step",
+                        agent_id="marketing_poster",
+                        description="open poster",
+                    )
+                ],
+            ),
+            registry,
+            user=_plan_request("ui-plan").user,
         )
     )
     service = RouterService(
@@ -510,19 +520,23 @@ async def test_confirmed_provider_plan_projects_wait_for_agent_event() -> None:
     registry = await _registry(_provider_agent("content_production", [OPS]))
     plans = PlanService(MemoryPlanRepository())
     await plans.save_plan(
-        Plan(
-            plan_id="provider-plan",
-            tenant_id="oac",
-            user_id="42",
-            session_id="session-1",
-            status="running",
-            steps=[
-                PlanStep(
-                    step_id="content-step",
-                    agent_id="content_production",
-                    description="produce content",
-                )
-            ],
+        freeze_plan_bindings(
+            Plan(
+                plan_id="provider-plan",
+                tenant_id="oac",
+                user_id="42",
+                session_id="session-1",
+                status="running",
+                steps=[
+                    PlanStep(
+                        step_id="content-step",
+                        agent_id="content_production",
+                        description="produce content",
+                    )
+                ],
+            ),
+            registry,
+            user=_plan_request("provider-plan").user,
         )
     )
 
@@ -538,7 +552,7 @@ async def test_confirmed_provider_plan_projects_wait_for_agent_event() -> None:
     assert response.plan.next_action is not None
     assert response.plan.next_action.type == "wait_for_agent_event"
     assert response.plan.next_action.agent_id == "content_production"
-    assert response.invocation is not None
+    assert response.invocation is None
 
 
 async def test_confirmed_plan_with_missing_input_projects_collect_input() -> None:
@@ -547,19 +561,23 @@ async def test_confirmed_plan_with_missing_input_projects_collect_input() -> Non
     )
     plans = PlanService(MemoryPlanRepository())
     await plans.save_plan(
-        Plan(
-            plan_id="input-plan",
-            tenant_id="oac",
-            user_id="42",
-            session_id="session-1",
-            status="running",
-            steps=[
-                PlanStep(
-                    step_id="content-step",
-                    agent_id="content_production",
-                    description="produce content",
-                )
-            ],
+        freeze_plan_bindings(
+            Plan(
+                plan_id="input-plan",
+                tenant_id="oac",
+                user_id="42",
+                session_id="session-1",
+                status="running",
+                steps=[
+                    PlanStep(
+                        step_id="content-step",
+                        agent_id="content_production",
+                        description="produce content",
+                    )
+                ],
+            ),
+            registry,
+            user=_plan_request("input-plan").user,
         )
     )
 

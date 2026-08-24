@@ -6,14 +6,16 @@ from app.repositories.memory import (
     MemoryRunRepository,
 )
 from app.schemas.agent_context import KnowledgeCitation, KnowledgeContextItem
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
+from app.schemas.invocation import InvokeRequest
 from app.schemas.knowledge_provider import KnowledgeProviderResult
 from app.schemas.memory import MemoryItem
 from app.services.agent_context_service import AgentContextAssemblyService
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
+from tests.support.v2_runtime import attach_v2_runtime
 
 
 async def test_prefetch_max_items_zero_does_not_fallback_to_default(summarizer_agent) -> None:
@@ -99,6 +101,7 @@ async def test_direct_invoke_with_partial_existing_context_assembles_missing_con
     await registry_repository.upsert(agent)
     registry = AgentRegistryService(settings=settings, repository=registry_repository)
     await registry.load()
+    await attach_v2_runtime(registry)
     context_service = AgentContextAssemblyService(
         settings=settings,
         memory_service=MemoryService(settings=settings, repository=MemoryItemRepository()),
@@ -109,15 +112,16 @@ async def test_direct_invoke_with_partial_existing_context_assembles_missing_con
         registry=registry,
         run_repository=run_repository,
         result_repository=MemoryResultRepository(),
-        invokers=build_default_invoker_registry(settings),
         agent_context_service=context_service,
     )
 
-    result = await invocation_service.invoke_agent(
-        agent_id=agent.agent_id,
-        session_id="s1",
-        user=UserContext(id="u1"),
-        input={"text": "risk rating", "memory_context": {"status": "ok", "items": []}},
+    result = await invocation_service.invoke(
+        InvokeRequest(
+            agent_id=agent.agent_id,
+            session_id="s1",
+            user=UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"}),
+            input={"text": "risk rating", "memory_context": {"status": "ok", "items": []}},
+        )
     )
 
     run = await run_repository.get_run(result.run_id)
@@ -164,17 +168,17 @@ def test_memory_api_rejects_invalid_boundary_values() -> None:
 
 
 def _context_agent(
-    agent: AgentDefinition,
+    agent: AgentDefinitionV2,
     *,
     memory: dict | None = None,
     knowledge: dict | None = None,
-) -> AgentDefinition:
+) -> AgentDefinitionV2:
     payload = agent.model_dump(mode="json")
     payload["context"] = {
         "memory": memory or {"mode": "disabled"},
         "knowledge": knowledge or {"mode": "disabled"},
     }
-    return AgentDefinition.model_validate(payload)
+    return AgentDefinitionV2.model_validate(payload)
 
 
 class RecordingKnowledgeProvider:

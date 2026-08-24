@@ -1,7 +1,7 @@
 import re
 from uuid import uuid4
 
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import CandidateAgentV2
 from app.schemas.plans import Plan, PlanStep
 
 ORDERING_MARKERS = (
@@ -25,13 +25,13 @@ def build_ordered_plan_from_text(
     session_id: str,
     user_id: str,
     tenant_id: str,
-    candidates: list[CandidateAgent],
+    candidates: list[CandidateAgentV2],
 ) -> Plan | None:
     lowered = text.lower()
     if not any(marker in lowered for marker in ORDERING_MARKERS):
         return None
 
-    matches: list[tuple[int, int, CandidateAgent]] = []
+    matches: list[tuple[int, int, CandidateAgentV2]] = []
     for index, agent in enumerate(candidates):
         position = _first_match_position(lowered, agent)
         if position is not None:
@@ -64,14 +64,14 @@ def build_ordered_plan_from_text(
     )
 
 
-def _first_match_position(text: str, agent: CandidateAgent) -> int | None:
+def _first_match_position(text: str, agent: CandidateAgentV2) -> int | None:
     positions = [position for token in _agent_tokens(agent) if (position := text.find(token)) >= 0]
     if not positions:
         return None
     return min(positions)
 
 
-def _agent_tokens(agent: CandidateAgent) -> list[str]:
+def _agent_tokens(agent: CandidateAgentV2) -> list[str]:
     raw_tokens = [
         agent.agent_id,
         agent.name,

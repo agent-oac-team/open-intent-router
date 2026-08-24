@@ -10,7 +10,7 @@ from app.core.config import Settings
 from app.core.errors import AgentUnavailableError, LLMError, PlanBindingUnavailableError
 from app.repositories.execution_tickets import MemoryExecutionTicketStore
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
-from app.schemas.agents import AgentDefinition, AgentDefinitionV2, InvocationSpec, UiHandoffHandling
+from app.schemas.agents import AgentDefinitionV2, ExternalExecutionHandling, UiHandoffHandling
 from app.schemas.delegated_runs import (
     DelegatedRunCommandResult,
     DelegatedRunReference,
@@ -375,12 +375,12 @@ class EventPort:
 class RegistryPort:
     def __init__(self) -> None:
         self.definitions = [
-            AgentDefinition(
+            AgentDefinitionV2(
+                schema_version="oir-agent-v2",
                 agent_id="agent-1",
                 name="Agent 1",
                 description="Test Agent",
-                type="provider_platform",
-                invocation=InvocationSpec(type="provider_platform"),
+                handling=ExternalExecutionHandling(executor_ref="agent-1-executor"),
             )
         ]
         self.available_users = []

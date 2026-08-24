@@ -22,8 +22,8 @@ from app.db.models import (
     PlanStepModel,
 )
 from app.repositories.database import DatabaseAgentDefinitionRepository, DatabaseRunRepository
-from app.repositories.json_utils import loads
-from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
+from app.repositories.json_utils import dumps, loads
+from app.schemas.agents import AccessPolicy, LegacyAgentDefinition, LegacyInvocationSpec
 from app.schemas.logs import AgentRun
 from app.services.native_definition_migration import (
     NativeDefinitionMigrationError,
@@ -38,8 +38,8 @@ def _legacy_agent(
     agent_id: str = "legacy_lookup",
     config: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
-) -> AgentDefinition:
-    return AgentDefinition(
+) -> LegacyAgentDefinition:
+    return LegacyAgentDefinition(
         agent_id=agent_id,
         name="Legacy lookup",
         description="Looks up an account through a trusted adapter.",
@@ -54,7 +54,7 @@ def _legacy_agent(
             "required": ["account_id"],
             "properties": {"account_id": {"type": "string"}},
         },
-        invocation=InvocationSpec(
+        invocation=LegacyInvocationSpec(
             type="local_function",
             config=config if config is not None else {"function": "lookup_account"},
         ),
@@ -99,9 +99,45 @@ def _target_capabilities(
     )
 
 
-async def _store_legacy(factory, definition: AgentDefinition) -> None:
-    repository = DatabaseAgentDefinitionRepository(factory)
-    await repository.upsert(definition)
+async def _store_legacy(factory, definition: LegacyAgentDefinition) -> None:
+    """Seed stopped legacy source material without reopening Native writes.
+
+    The migration gate is the sole supported reader of these private columns.
+    Tests therefore seed the historical row directly instead of asking the
+    v2-only Native repository to accept a legacy Definition.
+    """
+
+    async with factory() as session, session.begin():
+        session.add(
+            AgentDefinitionModel(
+                agent_id=definition.agent_id,
+                name=definition.name,
+                description=definition.description,
+                version=definition.version,
+                # Match the former repository create behavior; migration then
+                # advances this one persisted revision exactly once.
+                revision=1,
+                type=definition.type,
+                schema_version=None,
+                handling_text=None,
+                enabled=definition.enabled,
+                domain=definition.domain,
+                capabilities_text=dumps(definition.capabilities),
+                tags_text=dumps(definition.tags),
+                trigger_text=dumps(definition.trigger.model_dump(mode="json")),
+                access_policy_text=dumps(definition.access_policy.model_dump(mode="json")),
+                required_inputs_text=dumps(definition.required_inputs),
+                optional_inputs_text=dumps(definition.optional_inputs),
+                input_schema_text=dumps(definition.input_schema.model_dump(mode="json")),
+                output_schema_text=dumps(definition.output_schema.model_dump(mode="json")),
+                invocation_text=dumps(definition.invocation.model_dump(mode="json")),
+                ui_handoff_text=dumps(definition.ui_handoff.model_dump(mode="json")),
+                context_text=dumps(definition.context.model_dump(mode="json")),
+                priority=definition.priority,
+                metadata_text=dumps(definition.metadata),
+                source=definition.source,
+            )
+        )
 
 
 async def _database_row(factory, agent_id: str) -> AgentDefinitionModel:

@@ -10,7 +10,6 @@ from app.dependencies import (
     get_repository_bundle,
     get_router_service,
 )
-from app.invokers.registry import AgentInvokerRegistry
 from app.main import create_app
 from app.repositories.database import DatabaseRunRepository
 from app.repositories.memory import (
@@ -20,8 +19,8 @@ from app.repositories.memory import (
     MemoryResultRepository,
     MemoryRunRepository,
 )
-from app.schemas.agents import AgentDefinition
-from app.schemas.invocation import AgentInvocationResult
+from app.schemas.agents import AgentDefinitionV2
+from app.schemas.common import UserContext
 from app.schemas.logs import AgentRun
 from app.schemas.plans import Plan, PlanExecutionResponse
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteDecision, RouteResponse
@@ -33,6 +32,7 @@ from app.services.plan_service import PlanService
 from app.services.registry_service import AgentRegistryService
 from app.services.router_service import RouterService
 from tests.fakes.native_principal import native_principal_headers
+from tests.support.v2_runtime import attach_v2_runtime, freeze_plan_bindings
 
 _PRINCIPAL_SECRET = "native-resource-test-secret"
 
@@ -216,14 +216,14 @@ async def test_public_agent_catalog_stays_public_but_available_agents_use_princi
 ) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
-        AgentDefinition.model_validate(
+        AgentDefinitionV2.model_validate(
             {
+                "schema_version": "oir-agent-v2",
                 "agent_id": "operator-agent",
                 "name": "Operator Agent",
                 "description": "Only operators may use this Agent.",
-                "type": "mock",
                 "access_policy": {"allow_roles": ["operator"]},
-                "invocation": {"type": "mock", "config": {}},
+                "handling": {"kind": "invocation", "adapter_key": "mock"},
             }
         )
     )
@@ -274,14 +274,14 @@ async def test_direct_invoke_filters_before_execution_side_effects(
 ) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
-        AgentDefinition.model_validate(
+        AgentDefinitionV2.model_validate(
             {
+                "schema_version": "oir-agent-v2",
                 "agent_id": "operator-agent",
                 "name": "Operator Agent",
                 "description": "Only operators may invoke this Agent.",
-                "type": "mock",
                 "access_policy": {"allow_roles": ["operator"]},
-                "invocation": {"type": "mock", "config": {}},
+                "handling": {"kind": "invocation", "adapter_key": "mock"},
             }
         )
     )
@@ -290,16 +290,13 @@ async def test_direct_invoke_filters_before_execution_side_effects(
         repository=definitions,
     )
     await registry.load()
+    catalog = await attach_v2_runtime(registry)
     runs = MemoryRunRepository()
     results = MemoryResultRepository()
-    invoker = _RecordingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
     invocation = InvocationService(
         registry=registry,
         run_repository=runs,
         result_repository=results,
-        invokers=invokers,
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -323,7 +320,6 @@ async def test_direct_invoke_filters_before_execution_side_effects(
 
     assert denied.status_code == 404
     assert denied.json()["error"]["code"] == "agent_not_available"
-    assert invoker.calls == 0
     assert runs.runs == {}
     assert results.results == []
 
@@ -335,7 +331,8 @@ async def test_direct_invoke_filters_before_execution_side_effects(
 
     assert allowed.status_code == 200
     assert allowed.json()["status"] == "completed"
-    assert invoker.calls == 1
+    assert len(runs.runs) == len(results.results) == 1
+    await catalog.aclose()
 
 
 async def test_plan_request_preflights_one_candidate_set_before_any_invocation(
@@ -344,14 +341,14 @@ async def test_plan_request_preflights_one_candidate_set_before_any_invocation(
     definitions = MemoryAgentDefinitionRepository()
     for agent_id, role in (("first-agent", "operator"), ("revoked-agent", "admin")):
         await definitions.upsert(
-            AgentDefinition.model_validate(
+            AgentDefinitionV2.model_validate(
                 {
+                    "schema_version": "oir-agent-v2",
                     "agent_id": agent_id,
                     "name": agent_id,
                     "description": f"Agent requiring {role}.",
-                    "type": "mock",
                     "access_policy": {"allow_roles": [role]},
-                    "invocation": {"type": "mock", "config": {}},
+                    "handling": {"kind": "invocation", "adapter_key": "mock"},
                 }
             )
         )
@@ -360,39 +357,44 @@ async def test_plan_request_preflights_one_candidate_set_before_any_invocation(
         repository=definitions,
     )
     await registry.load()
+    catalog = await attach_v2_runtime(registry)
     plans = PlanService(MemoryPlanRepository())
     original = await plans.save_plan(
-        Plan(
-            plan_id="plan-preflight",
-            session_id="session-1",
-            user_id="user-1",
-            tenant_id="tenant-1",
-            status="running",
-            steps=[
-                {
-                    "step_id": "step-1",
-                    "agent_id": "first-agent",
-                    "description": "first",
-                },
-                {
-                    "step_id": "step-2",
-                    "agent_id": "revoked-agent",
-                    "description": "second",
-                    "depends_on": ["step-1"],
-                },
-            ],
+        freeze_plan_bindings(
+            Plan(
+                plan_id="plan-preflight",
+                session_id="session-1",
+                user_id="user-1",
+                tenant_id="tenant-1",
+                status="running",
+                steps=[
+                    {
+                        "step_id": "step-1",
+                        "agent_id": "first-agent",
+                        "description": "first",
+                    },
+                    {
+                        "step_id": "step-2",
+                        "agent_id": "revoked-agent",
+                        "description": "second",
+                        "depends_on": ["step-1"],
+                    },
+                ],
+            ),
+            registry,
+            user=UserContext(
+                id="user-1",
+                roles=["operator", "admin"],
+                attributes={"tenant_id": "tenant-1"},
+            ),
         )
     )
     runs = MemoryRunRepository()
     results = MemoryResultRepository()
-    invoker = _RecordingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
     invocation = InvocationService(
         registry=registry,
         run_repository=runs,
         result_repository=results,
-        invokers=invokers,
         plan_service=plans,
     )
     executor = PlanExecutor(
@@ -421,10 +423,10 @@ async def test_plan_request_preflights_one_candidate_set_before_any_invocation(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "agent_not_available"
-    assert registry.available_calls == 1
-    assert invoker.calls == 0
+    assert registry.available_calls == 0
     assert runs.runs == {}
     assert stored == original
+    await catalog.aclose()
 
 
 async def test_route_and_invoke_consumes_the_route_candidate_set_once(
@@ -432,14 +434,14 @@ async def test_route_and_invoke_consumes_the_route_candidate_set_once(
 ) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
-        AgentDefinition.model_validate(
+        AgentDefinitionV2.model_validate(
             {
+                "schema_version": "oir-agent-v2",
                 "agent_id": "operator-agent",
                 "name": "Operator Agent",
                 "description": "Only operators may invoke this Agent.",
-                "type": "mock",
                 "access_policy": {"allow_roles": ["operator"]},
-                "invocation": {"type": "mock", "config": {}},
+                "handling": {"kind": "invocation", "adapter_key": "mock"},
             }
         )
     )
@@ -451,19 +453,16 @@ async def test_route_and_invoke_consumes_the_route_candidate_set_once(
     )
     registry = _CountingRegistry(settings, repository=definitions)
     await registry.load()
+    catalog = await attach_v2_runtime(registry)
     router = RouterService(
         settings=settings,
         registry=registry,
         llm_client=_FixedTargetLLM("operator-agent"),
     )
-    invoker = _RecordingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
     invocation = InvocationService(
         registry=registry,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=invokers,
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
@@ -483,8 +482,8 @@ async def test_route_and_invoke_consumes_the_route_candidate_set_once(
 
     assert response.status_code == 200
     assert response.json()["result"]["status"] == "completed"
-    assert registry.available_calls == 1
-    assert invoker.calls == 1
+    assert registry.available_calls == 0
+    await catalog.aclose()
 
 
 async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set(
@@ -492,14 +491,14 @@ async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set(
 ) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
-        AgentDefinition.model_validate(
+        AgentDefinitionV2.model_validate(
             {
+                "schema_version": "oir-agent-v2",
                 "agent_id": "operator-agent",
                 "name": "Operator Agent",
                 "description": "Only operators may invoke this Agent.",
-                "type": "mock",
                 "access_policy": {"allow_roles": ["operator"]},
-                "invocation": {"type": "mock", "config": {}},
+                "handling": {"kind": "invocation", "adapter_key": "mock"},
             }
         )
     )
@@ -508,27 +507,33 @@ async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set(
         repository=definitions,
     )
     await registry.load()
+    catalog = await attach_v2_runtime(registry)
     plans = PlanService(MemoryPlanRepository())
     for plan_id in ("plan-confirm", "plan-confirm-execute", "plan-resume"):
         await plans.save_plan(
-            Plan(
-                plan_id=plan_id,
-                session_id="session-1",
-                user_id="user-1",
-                tenant_id="tenant-1",
-                status="pending",
-                steps=[
-                    {
-                        "step_id": "step-1",
-                        "agent_id": "operator-agent",
-                        "description": "run",
-                    }
-                ],
+            freeze_plan_bindings(
+                Plan(
+                    plan_id=plan_id,
+                    session_id="session-1",
+                    user_id="user-1",
+                    tenant_id="tenant-1",
+                    status="pending",
+                    steps=[
+                        {
+                            "step_id": "step-1",
+                            "agent_id": "operator-agent",
+                            "description": "run",
+                        }
+                    ],
+                ),
+                registry,
+                user=UserContext(
+                    id="user-1",
+                    roles=["operator"],
+                    attributes={"tenant_id": "tenant-1"},
+                ),
             )
         )
-    invoker = _RecordingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
     executor = PlanExecutor(
         plan_service=plans,
         registry=registry,
@@ -536,7 +541,6 @@ async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set(
             registry=registry,
             run_repository=MemoryRunRepository(),
             result_repository=MemoryResultRepository(),
-            invokers=invokers,
             plan_service=plans,
         ),
     )
@@ -572,8 +576,8 @@ async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set(
     assert confirmed_and_executed.json()["plan"]["status"] == "completed"
     assert resumed.status_code == 200
     assert resumed.json()["plan"]["status"] == "completed"
-    assert registry.available_calls == 3
-    assert invoker.calls == 2
+    assert registry.available_calls == 0
+    await catalog.aclose()
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
@@ -628,21 +632,6 @@ class _CapturingPlanExecutor:
     async def execute(self, *_args, **_kwargs) -> PlanExecutionResponse:
         self.calls += 1
         raise AssertionError("conflicting owner must be rejected before Plan execution")
-
-
-class _RecordingInvoker:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def invoke(self, definition, invocation) -> AgentInvocationResult:
-        self.calls += 1
-        return AgentInvocationResult(
-            run_id=invocation.run_id,
-            agent_id=definition.agent_id,
-            status="completed",
-            message="done",
-            output={},
-        )
 
 
 class _CountingRegistry(AgentRegistryService):

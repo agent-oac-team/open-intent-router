@@ -195,7 +195,7 @@ def test_openai_compatible_llm_recovers_show_plan_without_plan_for_single_intent
 
 
 def _payload() -> LLMRouteInput:
-    from app.schemas.agents import CandidateAgent
+    from app.schemas.agents import CandidateAgentV2
 
     return LLMRouteInput(
         request=RouteRequest.model_validate(
@@ -210,7 +210,7 @@ def _payload() -> LLMRouteInput:
             }
         ),
         candidates=[
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="summarizer",
                 name="Summarizer",
                 description="Summarize text",
@@ -226,7 +226,7 @@ def _payload() -> LLMRouteInput:
 
 
 def _single_intent_multi_candidate_payload() -> LLMRouteInput:
-    from app.schemas.agents import CandidateAgent
+    from app.schemas.agents import CandidateAgentV2
 
     return LLMRouteInput(
         request=RouteRequest.model_validate(
@@ -237,7 +237,7 @@ def _single_intent_multi_candidate_payload() -> LLMRouteInput:
             }
         ),
         candidates=[
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="summarizer",
                 name="Summarizer",
                 description="Summarize text",
@@ -247,7 +247,7 @@ def _single_intent_multi_candidate_payload() -> LLMRouteInput:
                     "positive_examples": ["summarize this text"],
                 },
             ),
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="task_creator",
                 name="Task Creator",
                 description="Create a task from instructions",
@@ -264,7 +264,7 @@ def _single_intent_multi_candidate_payload() -> LLMRouteInput:
 
 
 def _multi_agent_payload() -> LLMRouteInput:
-    from app.schemas.agents import CandidateAgent
+    from app.schemas.agents import CandidateAgentV2
 
     return LLMRouteInput(
         request=RouteRequest.model_validate(
@@ -279,7 +279,7 @@ def _multi_agent_payload() -> LLMRouteInput:
             }
         ),
         candidates=[
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="summarizer",
                 name="Summarizer",
                 description="Summarize text",
@@ -289,7 +289,7 @@ def _multi_agent_payload() -> LLMRouteInput:
                     "positive_examples": ["summarize this text"],
                 },
             ),
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="task_creator",
                 name="Task Creator",
                 description="Create a task from instructions",

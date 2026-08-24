@@ -1,7 +1,7 @@
 import json
 
 from app.prompts.router_prompt import RouterPromptTemplate
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import CandidateAgentV2
 from app.schemas.context import ContextProjection
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteRequest
 
@@ -28,8 +28,8 @@ def _request() -> RouteRequest:
     )
 
 
-def _candidate() -> CandidateAgent:
-    return CandidateAgent(
+def _candidate() -> CandidateAgentV2:
+    return CandidateAgentV2(
         agent_id="summarizer",
         name="Summarizer",
         description="Summarize text",

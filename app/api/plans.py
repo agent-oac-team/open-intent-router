@@ -100,9 +100,7 @@ async def confirm_and_execute_plan(
             input_values=payload.input,
             context=payload.context,
             max_steps=payload.max_steps,
-            selected_definitions=candidate_set.definitions,
             selected_bindings=candidate_set.bindings,
-            selected_legacy_definitions=candidate_set.legacy_definitions,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -1,12 +1,22 @@
 from app.api.router import route_and_execute
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
 from app.schemas.plans import Plan
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
 from app.schemas.security import NativePrincipal
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
+from tests.support.v2_runtime import freeze_plan_bindings
+
+
+def _user() -> UserContext:
+    return UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"})
+
+
+async def _save_v2_plan(repositories, registry_service, plan: Plan) -> Plan:
+    frozen = freeze_plan_bindings(plan, registry_service, user=_user())
+    return await repositories["plans"].save(frozen)
 
 
 def test_route_response_accepts_plan_without_show_plan() -> None:
@@ -37,7 +47,9 @@ async def test_plan_executor_confirmed_plan_invokes_steps_in_dependency_order(
 ) -> None:
     await repositories["registry"].upsert(task_creator_agent)
     await registry_service.load()
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "p1",
@@ -55,7 +67,7 @@ async def test_plan_executor_confirmed_plan_invokes_steps_in_dependency_order(
                     },
                 ],
             }
-        )
+        ),
     )
     executor = _executor(settings, registry_service, repositories)
 
@@ -85,6 +97,13 @@ async def test_route_and_execute_uses_route_selected_definitions_without_registr
         attributes={"tenant_id": "t1"},
     )
     selected = await registry_service.available_definitions(user)
+    snapshot = registry_service.snapshot_runtime.snapshot
+    assert snapshot is not None
+    selected_bindings = {
+        definition.agent_id: snapshot.select_for_user(definition.agent_id, user)
+        for definition in selected
+    }
+    assert all(selected_bindings.values())
     plan = Plan.model_validate(
         {
             "plan_id": "candidate-set-plan",
@@ -101,21 +120,28 @@ async def test_route_and_execute_uses_route_selected_definitions_without_registr
             ],
         }
     )
-    await repositories["plans"].save(plan)
-    routed = RouteResponse(
-        request_id="candidate-set-request",
-        session_id=plan.session_id,
-        decision=RouteDecision(action="show_plan", message="execute"),
-        context=RouteContext(candidate_agent_ids=[item.agent_id for item in selected]),
-        execution_policy="auto_execute",
-        plan=plan,
-    ).bind_selected_definitions(selected)
+    await _save_v2_plan(repositories, registry_service, plan)
+    routed = (
+        RouteResponse(
+            request_id="candidate-set-request",
+            session_id=plan.session_id,
+            decision=RouteDecision(action="show_plan", message="execute"),
+            context=RouteContext(candidate_agent_ids=[item.agent_id for item in selected]),
+            execution_policy="auto_execute",
+            plan=plan,
+        )
+        .bind_selected_definitions(selected)
+        .bind_selected_bindings(selected_bindings)
+    )
 
     class FixedRouter:
         async def route(self, _request):
             return routed
 
     class NoRegistryReads:
+        snapshot_runtime = registry_service.snapshot_runtime
+        binding_resolver = registry_service.binding_resolver
+
         async def available_definitions(self, _user):
             raise AssertionError("Route-and-Execute repeated Candidate Set selection")
 
@@ -127,7 +153,6 @@ async def test_route_and_execute_uses_route_selected_definitions_without_registr
         registry=registry,
         run_repository=repositories["runs"],
         result_repository=repositories["results"],
-        invokers=build_default_invoker_registry(settings),
     )
     executor = PlanExecutor(
         plan_service=PlanService(repositories["plans"]),
@@ -186,7 +211,7 @@ async def test_return_plan_only_policy_does_not_invoke_until_executor_called(
             ],
         }
     )
-    await repositories["plans"].save(plan)
+    await _save_v2_plan(repositories, registry_service, plan)
 
     assert (
         await repositories["results"].list_recent("s1", tenant_id="t1", user_id="u1", limit=10)
@@ -245,22 +270,21 @@ async def test_plan_executor_pauses_for_ui_handoff(
     repositories,
 ) -> None:
     await repositories["registry"].upsert(
-        AgentDefinition.model_validate(
+        AgentDefinitionV2.model_validate(
             {
+                "schema_version": "oir-agent-v2",
                 "agent_id": "dashboard",
                 "name": "Dashboard",
                 "description": "Open dashboard",
-                "type": "ui_handoff",
                 "access_policy": {"allow_roles": ["operator"], "allow_tenants": ["*"]},
-                "input_schema": {"type": "object", "properties": {}},
-                "output_schema": {"type": "object", "properties": {"route": {"type": "string"}}},
-                "invocation": {"type": "ui_handoff", "config": {}},
-                "ui_handoff": {"mode": "host_route", "route": "/dashboard", "params": {}},
+                "handling": {"kind": "ui_handoff", "route": "/dashboard"},
             }
         )
     )
     await registry_service.load()
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "p_ui",
@@ -270,7 +294,7 @@ async def test_plan_executor_pauses_for_ui_handoff(
                 "status": "running",
                 "steps": [{"step_id": "s1", "agent_id": "dashboard", "description": "open"}],
             }
-        )
+        ),
     )
     executor = _executor(settings, registry_service, repositories)
 
@@ -287,7 +311,9 @@ async def test_plan_executor_pauses_for_ui_handoff(
 async def test_plan_executor_pauses_for_missing_input(
     settings, registry_service, repositories
 ) -> None:
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "p_missing",
@@ -297,7 +323,7 @@ async def test_plan_executor_pauses_for_missing_input(
                 "status": "running",
                 "steps": [{"step_id": "s1", "agent_id": "summarizer", "description": "summarize"}],
             }
-        )
+        ),
     )
     executor = _executor(settings, registry_service, repositories)
 
@@ -312,7 +338,9 @@ async def test_plan_executor_pauses_for_missing_input(
 
 
 async def test_plan_executor_resume_with_input(settings, registry_service, repositories) -> None:
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "p_resume",
@@ -329,7 +357,7 @@ async def test_plan_executor_resume_with_input(settings, registry_service, repos
                     }
                 ],
             }
-        )
+        ),
     )
     executor = _executor(settings, registry_service, repositories)
 
@@ -348,7 +376,19 @@ async def test_plan_executor_marks_plan_failed_when_step_output_is_invalid(
     registry_service,
     repositories,
 ) -> None:
-    await repositories["plans"].save(
+    original_agent = registry_service.repository.agents["summarizer"]
+    invalid_agent = original_agent.model_copy(
+        update={
+            "handling": original_agent.handling.model_copy(
+                update={"config": {"function": "invalid"}}
+            )
+        }
+    )
+    await repositories["registry"].upsert(invalid_agent)
+    await registry_service.load()
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "p_invalid_output",
@@ -358,18 +398,8 @@ async def test_plan_executor_marks_plan_failed_when_step_output_is_invalid(
                 "status": "running",
                 "steps": [{"step_id": "s1", "agent_id": "summarizer", "description": "summarize"}],
             }
-        )
+        ),
     )
-    original_agent = registry_service.repository.agents["summarizer"]
-    invalid_agent = registry_service.repository.agents["summarizer"].model_copy(
-        update={
-            "invocation": original_agent.invocation.model_copy(
-                update={"config": {"response": {"summary": 123}}}
-            )
-        }
-    )
-    await repositories["registry"].upsert(invalid_agent)
-    await registry_service.load()
     executor = _executor(settings, registry_service, repositories)
 
     response = await executor.execute(
@@ -389,7 +419,6 @@ def _executor(settings, registry_service, repositories) -> PlanExecutor:
         registry=registry_service,
         run_repository=repositories["runs"],
         result_repository=repositories["results"],
-        invokers=build_default_invoker_registry(settings),
     )
     return PlanExecutor(
         plan_service=PlanService(repositories["plans"]),

@@ -1,11 +1,22 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
+from app.schemas.common import UserContext
 from app.schemas.plans import Plan
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService, PlanStateConflict
+from tests.support.v2_runtime import freeze_plan_bindings
+
+
+def _user() -> UserContext:
+    return UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"})
+
+
+async def _save_v2_plan(repositories, registry_service, plan: Plan) -> Plan:
+    frozen = freeze_plan_bindings(plan, registry_service, user=_user())
+    return await repositories["plans"].save(frozen)
 
 
 def test_plan_initializes_current_step_from_first_ready_step() -> None:
@@ -69,7 +80,7 @@ async def test_executor_ignores_non_ready_current_step_and_runs_unordered_dag(
             ],
         }
     )
-    await repositories["plans"].save(plan)
+    await _save_v2_plan(repositories, registry_service, plan)
 
     response = await _executor(settings, registry_service, repositories).execute(
         plan.plan_id,
@@ -90,7 +101,9 @@ async def test_multiple_ready_steps_run_serially_in_original_list_order(
 ) -> None:
     await repositories["registry"].upsert(task_creator_agent)
     await registry_service.load()
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "plan-stable-ready",
@@ -109,7 +122,7 @@ async def test_multiple_ready_steps_run_serially_in_original_list_order(
                     },
                 ],
             }
-        )
+        ),
     )
 
     response = await _executor(settings, registry_service, repositories).execute(
@@ -128,20 +141,21 @@ async def test_blocked_dependency_prevents_dependent_invocation(
     repositories,
 ) -> None:
     await repositories["registry"].upsert(
-        AgentDefinition.model_validate(
+        AgentDefinitionV2.model_validate(
             {
+                "schema_version": "oir-agent-v2",
                 "agent_id": "dashboard",
                 "name": "Dashboard",
                 "description": "Open a dashboard",
-                "type": "ui_handoff",
                 "access_policy": {"allow_roles": ["operator"]},
-                "invocation": {"type": "ui_handoff", "config": {}},
-                "ui_handoff": {"mode": "host_route", "route": "/dashboard"},
+                "handling": {"kind": "ui_handoff", "route": "/dashboard"},
             }
         )
     )
     await registry_service.load()
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "plan-blocked-dependency",
@@ -163,7 +177,7 @@ async def test_blocked_dependency_prevents_dependent_invocation(
                     },
                 ],
             }
-        )
+        ),
     )
 
     response = await _executor(settings, registry_service, repositories).execute(
@@ -226,14 +240,14 @@ async def test_step_failure_is_fail_fast_and_leaves_other_steps_pending(
     await repositories["registry"].upsert(
         original.model_copy(
             update={
-                "invocation": original.invocation.model_copy(
-                    update={"config": {"response": {"summary": 123}}}
-                )
+                "handling": original.handling.model_copy(update={"config": {"function": "invalid"}})
             }
         )
     )
     await registry_service.load()
-    await repositories["plans"].save(
+    await _save_v2_plan(
+        repositories,
+        registry_service,
         Plan.model_validate(
             {
                 "plan_id": "plan-fail-fast",
@@ -246,7 +260,7 @@ async def test_step_failure_is_fail_fast_and_leaves_other_steps_pending(
                     {"step_id": "never", "agent_id": "summarizer", "description": "wait"},
                 ],
             }
-        )
+        ),
     )
 
     response = await _executor(settings, registry_service, repositories).execute(
@@ -304,7 +318,7 @@ async def test_incomplete_plan_without_ready_step_raises_invariant_conflict(
     repositories,
     plan: Plan,
 ) -> None:
-    await repositories["plans"].save(plan)
+    frozen_plan = await _save_v2_plan(repositories, registry_service, plan)
 
     with pytest.raises(PlanStateConflict):
         await _executor(settings, registry_service, repositories).execute(
@@ -318,7 +332,7 @@ async def test_incomplete_plan_without_ready_step_raises_invariant_conflict(
         )
 
     stored = await repositories["plans"].get(plan.plan_id, tenant_id="t1", user_id="u1")
-    assert stored == plan
+    assert stored == frozen_plan
 
 
 def _executor(settings, registry_service, repositories) -> PlanExecutor:
@@ -330,7 +344,6 @@ def _executor(settings, registry_service, repositories) -> PlanExecutor:
             registry=registry_service,
             run_repository=repositories["runs"],
             result_repository=repositories["results"],
-            invokers=build_default_invoker_registry(settings),
             plan_service=plans,
         ),
     )

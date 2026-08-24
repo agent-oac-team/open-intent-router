@@ -8,7 +8,14 @@ from fastapi.testclient import TestClient
 
 from app.core.errors import RegistryVersionConflict
 from app.repositories.external_execution_acceptances import MemoryExternalExecutionAcceptanceStore
-from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
+from app.schemas.agents import (
+    AccessPolicy,
+    AgentDefinitionV2,
+    ExternalExecutionHandling,
+    LegacyAgentDefinition,
+    LegacyInvocationSpec,
+    UiHandoffHandling,
+)
 from app.schemas.external_execution import (
     ExternalExecutionPrincipal,
     ExternalExecutorAcceptanceRequest,
@@ -150,8 +157,8 @@ def test_registry_fixtures_parse_and_mapper_round_trips_legacy_fields() -> None:
     projected = registry_agent_from_native(native)
 
     assert projected == request
-    assert native.invocation.provider_config == {}
-    assert native.ui_handoff.route == "/fixture"
+    assert isinstance(native.handling, UiHandoffHandling)
+    assert native.handling.route == "/fixture"
     assert native.access_policy.allow_groups == []
     assert native.access_policy.any_entitlements == ["workspace.operations.access"]
     assert native.trigger.negative_examples == ["忽略"]
@@ -386,7 +393,7 @@ def test_registry_write_returns_a_safe_error_when_snapshot_refresh_fails(
 
 
 def test_oac_snapshot_mapper_quarantines_bad_legacy_rows_with_safe_repair_metadata() -> None:
-    incompatible = AgentDefinition(
+    incompatible = LegacyAgentDefinition(
         agent_id="repairable-agent",
         name="Unmappable",
         description="legacy policy cannot be projected",
@@ -395,7 +402,7 @@ def test_oac_snapshot_mapper_quarantines_bad_legacy_rows_with_safe_repair_metada
             allow_tenants=["oac"],
             any_entitlements=["workspace.foreign.access"],
         ),
-        invocation=InvocationSpec(
+        invocation=LegacyInvocationSpec(
             type="provider_platform",
             provider_config={"bot_id": "registered_bot"},
         ),
@@ -408,7 +415,7 @@ def test_oac_snapshot_mapper_quarantines_bad_legacy_rows_with_safe_repair_metada
     assert snapshot_runtime.admin_quarantine_inventory() == (
         RegistryQuarantineEntry(
             source_index=0,
-            agent_id="repairable-agent",
+            agent_id=None,
             reason_code="legacy_definition_unmappable",
         ),
     )
@@ -437,15 +444,12 @@ def test_registry_concurrent_update_returns_stable_conflict_response(
 
 
 def test_registry_legacy_projection_does_not_expose_provider_secrets() -> None:
-    native = AgentDefinition(
+    native = AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id="secure-agent",
         name="Secure",
         description="secure provider",
-        type="provider_platform",
-        invocation=InvocationSpec(
-            type="provider_platform",
-            provider_config={"bot_id": "bot-1", "access_token": "secret-token"},
-        ),
+        handling=ExternalExecutionHandling(executor_ref="bot-1"),
         access_policy=AccessPolicy(any_entitlements=["workspace.operations.access"]),
     )
     serialized = registry_agent_from_native(native).model_dump_json()
@@ -506,15 +510,15 @@ def test_registry_list_returns_conflict_for_unprojectable_policy(
     non_lifespan_test_client,
 ) -> None:
     client = _client(non_lifespan_test_client)
-    client.app.state.registry.agents["foreign-policy"] = AgentDefinition(
+    client.app.state.registry.agents["foreign-policy"] = AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id="foreign-policy",
         name="Foreign",
         description="Cannot project to OAC tags",
-        type="provider_platform",
         access_policy=AccessPolicy(
             any_entitlements=["workspace.foreign.access"], allow_tenants=["oac"]
         ),
-        invocation=InvocationSpec(type="provider_platform", provider_config={"bot_id": "bot-1"}),
+        handling=ExternalExecutionHandling(executor_ref="bot-1"),
     )
     response = client.get("/api/v1/admin/agent-registry")
     assert response.status_code == 409

@@ -150,7 +150,9 @@ source）；File 会持有 sidecar 排他锁、在 `replace` 前再次比较 inp
 目标会在提交/替换前按 v2 Schema、Policy 与目标 capability manifest 的 Binding Requirement
 再次验证。
 成功后旧 `type`、`invocation_text`、`ui_handoff_text` 和 metadata 存储值均被清空；此时不能再
-启动旧程序。
+启动旧程序。旧 Invoker 的同名 Key 不等于 v2 Binding 支持；每个 `handling.kind=invocation`
+必须在新部署的 Runtime Catalog 中有 `v2_invocation=true` 的 Adapter，否则 Snapshot 会安全隔离
+该 Definition，不能把它回退给旧程序。
 
 保存命令输出中的 `snapshot_id`（数据库）或 `location`（文件），以及不含敏感值的 dry-run
 报告。不要导出或贴出 snapshot 正文。

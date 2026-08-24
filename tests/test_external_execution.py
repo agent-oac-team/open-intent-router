@@ -1122,9 +1122,22 @@ async def test_plan_execution_returns_wait_for_selected_v2_external_handling() -
     from app.schemas.agents import AgentDefinitionV2
     from app.schemas.common import UserContext
     from app.schemas.plans import Plan, PlanStep
+    from app.services.plan_bindings import freeze_plan_step_binding
 
     plans = MemoryPlanRepository()
     plan_service = PlanService(plans)
+    user = UserContext(
+        id="external-user",
+        roles=["operator"],
+        attributes={"tenant_id": "tenant-1"},
+    )
+    host_executor = _Executor()
+    snapshot = RegistrySnapshotBuilder(None, external_executor=host_executor).build(
+        [AgentDefinitionV2.model_validate(_definition())],
+        source="external-plan-test",
+    )
+    selection = snapshot.select_for_user("external-agent", user)
+    assert selection is not None
     plan = Plan(
         plan_id="external-plan",
         tenant_id="tenant-1",
@@ -1135,6 +1148,7 @@ async def test_plan_execution_returns_wait_for_selected_v2_external_handling() -
             PlanStep(step_id="external-step", agent_id="external-agent", description="delegate")
         ],
     )
+    plan = plan.model_copy(update={"steps": [freeze_plan_step_binding(plan.steps[0], selection)]})
     await plans.save(plan)
     executor = PlanExecutor(
         plan_service=plan_service,
@@ -1144,12 +1158,8 @@ async def test_plan_execution_returns_wait_for_selected_v2_external_handling() -
 
     response = await executor.execute(
         plan.plan_id,
-        user=UserContext(
-            id="external-user",
-            roles=["operator"],
-            attributes={"tenant_id": "tenant-1"},
-        ),
-        selected_definitions={"external-agent": AgentDefinitionV2.model_validate(_definition())},
+        user=user,
+        selected_bindings={"external-agent": selection},
     )
 
     assert response.results == []

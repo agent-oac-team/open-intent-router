@@ -375,7 +375,8 @@ def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure
         assert catalog.get("test").key == "test"
         snapshot_runtime = app.state.registry_snapshot_runtime
         assert isinstance(snapshot_runtime, RegistrySnapshotRuntime)
-        assert snapshot_runtime.snapshot is None
+        assert snapshot_runtime.snapshot is not None
+        assert snapshot_runtime.snapshot.source == "native_registry"
         assert client.get("/health").json() == {"status": "ok"}
         assert client.get("/health").status_code == 200
         assert successful_events == ["activate:test", "health:test"]

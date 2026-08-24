@@ -1,9 +1,10 @@
 # Runtime Catalog 生命周期 Runbook
 
 本 Runbook 约束部署级 Runtime Catalog 的启动、就绪判定和关闭。Catalog 只在应用
-lifespan 内创建一次：所有受信内置 Adapter 先完成 Descriptor 校验、激活和健康检查，随后
-冻结。结构性失败（Descriptor、factory、activate）使 Catalog 不可用；健康失败按部署策略
-分别处理，不在请求路径重新创建 Adapter。
+lifespan 内创建一次：部署组合显式提供的受信 v2 Adapter 先完成 Descriptor 校验、激活和健康检查，
+随后冻结。Core 不隐式激活旧 `mock`、`http`、`local_function` 或 `ui_handoff` Invoker；缺失 v2
+Binding 时 Definition 被安全隔离，而非回退。结构性失败（Descriptor、factory、activate）使 Catalog
+不可用；健康失败按部署策略分别处理，不在请求路径重新创建 Adapter。
 
 ## Container 所有权
 

@@ -3,6 +3,7 @@ from app.core.memory_runtime import build_memory_runtime_policy
 from app.plugins.evidence import EvidenceResult
 from app.repositories.database import DatabaseEventRepository, DatabasePlanRepository
 from app.repositories.memory import MemoryEventRepository, MemoryPlanRepository
+from app.schemas.common import UserContext
 from app.schemas.events import AgentEvent
 from app.schemas.logs import AgentResult
 from app.schemas.plans import Plan
@@ -18,6 +19,7 @@ from app.services.chat_history_service import ChatHistoryService
 from app.services.event_service import EventService
 from app.services.plan_service import PlanService
 from app.services.router_service import RouterService
+from tests.support.v2_runtime import freeze_plan_bindings
 
 
 async def test_event_repository_gets_referenced_and_bounded_recent_events() -> None:
@@ -89,23 +91,32 @@ async def test_router_loads_referenced_recent_event_and_session_active_plan(
             payload={"progress": 50},
         )
     )
+    active_plan = Plan.model_validate(
+        {
+            "plan_id": "plan_active",
+            "user_id": "u1",
+            "tenant_id": "t1",
+            "session_id": "session_1",
+            "status": "running",
+            "steps": [
+                {
+                    "step_id": "step_1",
+                    "agent_id": "summarizer",
+                    "description": "summarize",
+                    "status": "running",
+                }
+            ],
+        }
+    )
     await repositories["plans"].save(
-        Plan.model_validate(
-            {
-                "plan_id": "plan_active",
-                "user_id": "u1",
-                "tenant_id": "t1",
-                "session_id": "session_1",
-                "status": "running",
-                "steps": [
-                    {
-                        "step_id": "step_1",
-                        "agent_id": "summarizer",
-                        "description": "summarize",
-                        "status": "running",
-                    }
-                ],
-            }
+        freeze_plan_bindings(
+            active_plan,
+            registry_service,
+            user=UserContext(
+                id="u1",
+                roles=["operator"],
+                attributes={"tenant_id": "t1"},
+            ),
         )
     )
     service = RouterService(

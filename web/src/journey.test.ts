@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { projectRoutingJourney } from "./journey";
 import type {
-  AgentDefinition,
+  AgentListItem,
   ConversationTurn,
   JsonRecord,
   MemoryFormationDecisionView,
@@ -12,7 +12,7 @@ const agents = [
   {
     agent_id: "script_writer",
     name: "话术生成助手",
-  } as AgentDefinition,
+  } as AgentListItem,
 ];
 
 function completedTurn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {

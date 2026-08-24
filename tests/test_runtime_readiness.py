@@ -578,11 +578,11 @@ def test_native_registry_crud_refreshes_the_process_snapshot_after_each_write() 
         application_composition_factory=_container_composition_factory(registry),
     )
     payload = {
+        "schema_version": "oir-agent-v2",
         "agent_id": "native-agent",
         "name": "Native Agent",
         "description": "keeps the runtime snapshot current",
-        "type": "mock",
-        "invocation": {"type": "mock", "config": {}},
+        "handling": {"kind": "invocation", "adapter_key": "optional_adapter"},
     }
 
     with TestClient(app) as client:

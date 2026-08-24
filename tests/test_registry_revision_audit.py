@@ -19,17 +19,17 @@ from app.repositories.registry_audit import (
     DatabaseRegistryAuditStore,
     MemoryRegistryAuditStore,
 )
-from app.schemas.agents import AgentDefinition, InvocationSpec
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.registry_audit import RegistryAuditRecord
 
 
-def _agent(description: str = "description") -> AgentDefinition:
-    return AgentDefinition(
+def _agent(description: str = "description") -> AgentDefinitionV2:
+    return AgentDefinitionV2(
+        schema_version="oir-agent-v2",
         agent_id="agent-1",
         name="Agent",
         description=description,
-        type="mock",
-        invocation=InvocationSpec(type="mock"),
+        handling={"kind": "invocation", "adapter_key": "mock", "config": {"function": "run"}},
     )
 
 

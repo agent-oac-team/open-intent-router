@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from app.core.errors import RegistryVersionConflict
 from app.core.redaction import redact_value
 from app.repositories.interfaces import PlanCancelTransition
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
 from app.schemas.plans import Plan
@@ -15,23 +15,23 @@ from app.schemas.sessions import ChatMessage
 
 
 class MemoryAgentDefinitionRepository:
-    def __init__(self, agents: list[AgentDefinition] | None = None) -> None:
+    def __init__(self, agents: list[AgentDefinitionV2] | None = None) -> None:
         self.agents = {agent.agent_id: agent for agent in agents or []}
         self.registry_audit: list[RegistryAuditRecord] = []
         self._mutation_lock = asyncio.Lock()
 
-    async def list(self, *, enabled_only: bool = False) -> list[AgentDefinition]:
+    async def list(self, *, enabled_only: bool = False) -> list[AgentDefinitionV2]:
         values = list(self.agents.values())
         if enabled_only:
             values = [agent for agent in values if agent.enabled]
         return sorted(values, key=lambda item: (-item.priority, item.agent_id))
 
-    async def get(self, agent_id: str) -> AgentDefinition | None:
+    async def get(self, agent_id: str) -> AgentDefinitionV2 | None:
         return self.agents.get(agent_id)
 
     async def upsert(
-        self, definition: AgentDefinition, *, expected_revision: int | None = None
-    ) -> AgentDefinition:
+        self, definition: AgentDefinitionV2, *, expected_revision: int | None = None
+    ) -> AgentDefinitionV2:
         current = self.agents.get(definition.agent_id)
         revision = current.revision if current else 0
         if expected_revision is not None and revision != expected_revision:
@@ -42,7 +42,7 @@ class MemoryAgentDefinitionRepository:
 
     async def set_enabled(
         self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
-    ) -> AgentDefinition | None:
+    ) -> AgentDefinitionV2 | None:
         agent = self.agents.get(agent_id)
         if agent is None:
             return None

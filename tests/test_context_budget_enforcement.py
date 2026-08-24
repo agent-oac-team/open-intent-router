@@ -1,7 +1,7 @@
 import pytest
 
 from app.core.config import Settings
-from app.schemas.agents import CandidateAgent
+from app.schemas.agents import CandidateAgentV2
 from app.schemas.context import ContextBudget, ContextCandidate
 from app.schemas.routing import RouteRequest
 from app.services.context_pipeline_service import ContextBudgetExhausted, ContextPipelineService
@@ -113,7 +113,7 @@ async def test_model_window_reserves_system_schema_rules_candidates_and_output()
         consumer="router",
         candidates=[],
         candidate_agents=[
-            CandidateAgent(
+            CandidateAgentV2(
                 agent_id="agent_1",
                 name="Agent",
                 description="description " * 20,

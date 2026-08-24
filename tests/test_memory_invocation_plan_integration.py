@@ -1,14 +1,11 @@
 import asyncio
-import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import AgentUnavailableError
+from app.core.errors import PlanBindingUnavailableError
 from app.core.memory_runtime import build_memory_runtime_policy
-from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
-from app.invokers.registry import AgentInvokerRegistry
 from app.llm.conversation_formation import (
     ConversationFormationResponse,
     FakeConversationFormationModel,
@@ -33,8 +30,9 @@ from app.repositories.memory_formation import (
     MemoryFormationTurnJobRepository,
 )
 from app.repositories.memory_traces import MemoryFormationTraceRepository
+from app.schemas.common import UserContext
 from app.schemas.events import AgentEvent
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
+from app.schemas.invocation import AgentInvocationResult, InvokeRequest
 from app.schemas.logs import AgentResult, AgentRun
 from app.schemas.memory import (
     MemoryCandidateSemantics,
@@ -61,7 +59,7 @@ from app.schemas.routing import (
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.context_providers import ContextProviderContext, MemoryRetrievalProvider
 from app.services.context_service import ContextService
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.memory_candidate_policy import MemoryCandidatePolicy
 from app.services.memory_formation import (
     FormationJobWorker,
@@ -81,6 +79,7 @@ from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
 from app.services.router_service import RouterService
 from app.services.task_continuation import TaskMemoryPlanResolver, requests_plan_continuation
+from tests.support.v2_runtime import V2TestAdapter, attach_v2_runtime, freeze_plan_bindings
 
 
 def _settings(**updates) -> Settings:
@@ -902,7 +901,6 @@ async def test_marker_failures_do_not_escape_completed_plan_or_invocation(
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         structured_formation=CapturingStructuredSink(),
         turn_capture=InspectingCapture(runs, results),
     )
@@ -930,7 +928,6 @@ async def test_terminal_run_retries_missing_create_transition_before_completion(
         registry=registry_service,
         run_repository=runs,
         result_repository=MemoryResultRepository(),
-        invokers=build_default_invoker_registry(settings),
         structured_formation=sink,
     )
     response = await service.invoke(
@@ -1100,7 +1097,6 @@ async def test_invocation_captures_after_run_result_and_capture_failure_keeps_su
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         turn_capture=capture,
         structured_formation=structured,
     )
@@ -1144,7 +1140,6 @@ async def test_database_reconciler_recovers_plan_run_result_and_turn_after_resta
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         turn_capture=capture,
         structured_formation=failed,
     )
@@ -1222,7 +1217,6 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         turn_capture=capture,
         structured_formation=publisher,
     )
@@ -1247,6 +1241,10 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
             "input": {"text": "route invocation"},
         }
     )
+    snapshot = registry_service.snapshot_runtime.snapshot
+    assert snapshot is not None
+    selected_binding = snapshot.select_for_user("summarizer", route_request.user)
+    assert selected_binding is not None
     route_response = (
         RouteResponse(
             request_id="request_route_capture",
@@ -1263,6 +1261,7 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
             ),
         )
         .bind_selected_definitions([selected_definition])
+        .bind_selected_bindings({"summarizer": selected_binding})
         .bind_routed_execution(route_request)
     )
     routed = await service.invoke_from_route(
@@ -1282,24 +1281,20 @@ async def test_direct_and_route_invocation_persist_real_turns_and_structured_job
     assert await memories.list_active(tenant_id="t1", user_id="u1", limit=10) == []
 
 
-class FailingMockInvoker:
-    async def invoke(self, definition, invocation):
-        raise RuntimeError("agent failed")
-
-
 async def test_failed_invocation_is_captured_but_does_not_create_long_term_memory(
     registry_service,
 ) -> None:
     settings = _settings(memory_formation_window_turns=5)
     formation = MemoryFormationTurnJobRepository()
     memories = MemoryItemRepository()
-    registry = AgentInvokerRegistry()
-    registry.register("mock", FailingMockInvoker())
+    catalog = await attach_v2_runtime(
+        registry_service,
+        adapter=V2TestAdapter(error=RuntimeError("agent failed")),
+    )
     service = InvocationService(
         registry=registry_service,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=registry,
         turn_capture=TurnCaptureService(
             settings=settings,
             builder=TurnCapsuleBuilder(settings),
@@ -1328,6 +1323,7 @@ async def test_failed_invocation_is_captured_but_does_not_create_long_term_memor
     )
     assert len(turns) == 1 and turns[0].result_status == "failed"
     assert await memories.list_active(tenant_id="t1", user_id="u1", limit=10) == []
+    await catalog.aclose()
 
 
 async def test_route_only_and_feature_off_create_no_formation_side_effects(
@@ -1341,7 +1337,6 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
         registry=registry_service,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=build_default_invoker_registry(settings),
         turn_capture=TurnCaptureService(
             settings=off,
             builder=TurnCapsuleBuilder(off),
@@ -1357,7 +1352,11 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
         {
             "request_id": "request_route_only",
             "session_id": "route_only_session",
-            "user": {"id": "u1", "attributes": {"tenant_id": "t1"}},
+            "user": {
+                "id": "u1",
+                "roles": ["operator"],
+                "attributes": {"tenant_id": "t1"},
+            },
             "input": {"text": "needs clarification"},
         }
     )
@@ -1372,6 +1371,10 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
 
     selected_definition = await registry_service.get_definition("summarizer")
     assert selected_definition is not None
+    snapshot = registry_service.snapshot_runtime.snapshot
+    assert snapshot is not None
+    selected_binding = snapshot.select_for_user("summarizer", request.user)
+    assert selected_binding is not None
     with_invocation = (
         route_only.model_copy(
             update={
@@ -1387,6 +1390,7 @@ async def test_route_only_and_feature_off_create_no_formation_side_effects(
             }
         )
         .bind_selected_definitions([selected_definition])
+        .bind_selected_bindings({"summarizer": selected_binding})
         .bind_routed_execution(request)
     )
     result = await service.invoke_from_route(request, with_invocation)
@@ -1412,7 +1416,6 @@ async def test_production_off_records_are_not_backfilled_after_enable(
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         turn_capture=None,
         structured_formation=None,
         runtime_policy=build_memory_runtime_policy("off"),
@@ -1465,7 +1468,6 @@ async def test_private_skip_trace_is_reconciled_without_structured_jobs(
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         turn_capture=InspectingCapture(runs, results, fail=True),
         structured_formation=StructuredFormationPublisher(
             settings=enabled,
@@ -1543,7 +1545,6 @@ async def test_private_skip_event_is_idempotent_when_marker_fails(
         registry=registry_service,
         run_repository=runs,
         result_repository=results,
-        invokers=build_default_invoker_registry(settings),
         turn_capture=capture,
         structured_formation=publisher,
         runtime_policy=build_memory_runtime_policy("on"),
@@ -1619,7 +1620,7 @@ async def test_private_plan_executor_unavailable_preflight_has_no_transition() -
         registry=MissingRegistry(),
         invocation_service=InvocationStub(),
     )
-    with pytest.raises(AgentUnavailableError):
+    with pytest.raises(PlanBindingUnavailableError):
         await executor.execute(
             "private_missing_agent",
             user=_operator_user(),
@@ -1662,13 +1663,22 @@ class CancellingInvocationService:
             message="stale completion",
         )
 
+    def resolve_direct_binding(self, _selection):
+        return object()
+
 
 async def test_plan_executor_reloads_canonical_plan_before_persisting_step_result(
     registry_service,
 ) -> None:
     plan_service = PlanService(MemoryPlanRepository())
     plan = _plan(status="running")
-    await plan_service.save_plan(plan)
+    await plan_service.save_plan(
+        freeze_plan_bindings(
+            plan,
+            registry_service,
+            user=UserContext.model_validate(_operator_user()),
+        )
+    )
     executor = PlanExecutor(
         plan_service=plan_service,
         registry=registry_service,
@@ -1727,6 +1737,8 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
     }
     await registry_service.repository.upsert(type(definition).model_validate(payload))
     await registry_service.load()
+    adapter = V2TestAdapter()
+    catalog = await attach_v2_runtime(registry_service, adapter=adapter)
     memories = MemoryItemRepository()
     for memory_id, plan_id, status in (
         ("matching", "plan_agent", "pending"),
@@ -1754,36 +1766,45 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         )
     plans = MemoryPlanRepository()
     plan_service = PlanService(plans)
+    plan_user = UserContext.model_validate(_operator_user())
     await plan_service.save_plan(
-        Plan(
-            plan_id="plan_agent",
-            user_id="u1",
-            tenant_id="t1",
-            session_id="s1",
-            status="running",
-            steps=[
-                {
-                    "step_id": "canonical_step",
-                    "agent_id": "summarizer",
-                    "description": "run",
-                }
-            ],
+        freeze_plan_bindings(
+            Plan(
+                plan_id="plan_agent",
+                user_id="u1",
+                tenant_id="t1",
+                session_id="s1",
+                status="running",
+                steps=[
+                    {
+                        "step_id": "canonical_step",
+                        "agent_id": "summarizer",
+                        "description": "run",
+                    }
+                ],
+            ),
+            registry_service,
+            user=plan_user,
         )
     )
     await plan_service.save_plan(
-        Plan(
-            plan_id="plan_static",
-            user_id="u1",
-            tenant_id="t1",
-            session_id="s_static",
-            status="running",
-            steps=[
-                {
-                    "step_id": "static_canonical_step",
-                    "agent_id": "summarizer",
-                    "description": "run",
-                }
-            ],
+        freeze_plan_bindings(
+            Plan(
+                plan_id="plan_static",
+                user_id="u1",
+                tenant_id="t1",
+                session_id="s_static",
+                status="running",
+                steps=[
+                    {
+                        "step_id": "static_canonical_step",
+                        "agent_id": "summarizer",
+                        "description": "run",
+                    }
+                ],
+            ),
+            registry_service,
+            user=plan_user,
         )
     )
     memory_service = MemoryService(settings=settings, repository=memories)
@@ -1791,17 +1812,16 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         settings=settings,
         memory_service=memory_service,
     )
-    invoker = InvocationCapturingInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
     service = InvocationService(
         registry=registry_service,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=invokers,
         agent_context_service=context_service,
         plan_service=plan_service,
     )
+    selection = registry_service.snapshot_runtime.snapshot.select_for_user("summarizer", plan_user)
+    assert selection is not None
+    resolved_binding = service.resolve_direct_binding(selection)
 
     unrelated = await service.invoke(
         InvokeRequest(
@@ -1812,52 +1832,54 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         )
     )
     assert unrelated.status == "completed"
-    assert invoker.invocations[-1].memory_context.items == []
+    assert adapter.invocations[-1].memory_context.items == []
 
-    static = await service.invoke(
-        InvokeRequest(
-            session_id="s_static",
-            agent_id="summarizer",
-            user=_operator_user(),
-            input={
-                "text": "continue",
-                "memory_context": {
-                    "status": "ok",
-                    "items": [
-                        {
-                            "memory_id": "forged_static",
-                            "scope": "task_memory",
-                            "content": "stale",
-                            "structured_value": {
-                                "object_type": "plan",
-                                "plan_id": "plan_static",
-                                "status": "cancelled",
-                                "current_step": {"step_id": "stale"},
-                            },
-                        }
-                    ],
-                },
+    static = await service.invoke_agent(
+        session_id="s_static",
+        agent_id="summarizer",
+        user=plan_user,
+        input={
+            "text": "continue",
+            "memory_context": {
+                "status": "ok",
+                "items": [
+                    {
+                        "memory_id": "forged_static",
+                        "scope": "task_memory",
+                        "content": "stale",
+                        "structured_value": {
+                            "object_type": "plan",
+                            "plan_id": "plan_static",
+                            "status": "cancelled",
+                            "current_step": {"step_id": "stale"},
+                        },
+                    }
+                ],
             },
-            context={"plan_id": "plan_static"},
-        )
+        },
+        context={"plan_id": "plan_static"},
+        selected_definition=selection.definition,
+        selected_binding=selection,
+        resolved_binding=resolved_binding,
     )
     assert static.status == "completed"
-    static_item = invoker.invocations[-1].memory_context.items[0]
+    static_item = adapter.invocations[-1].memory_context.items[0]
     assert static_item.structured_value["status"] == "running"
     assert static_item.structured_value["current_step"]["step_id"] == "static_canonical_step"
     assert "stale" not in str(static_item.structured_value)
 
-    continued = await service.invoke(
-        InvokeRequest(
-            session_id="s1",
-            agent_id="summarizer",
-            user=_operator_user(),
-            input={"text": "continue"},
-            context={"plan_id": "plan_agent"},
-        )
+    continued = await service.invoke_agent(
+        session_id="s1",
+        agent_id="summarizer",
+        user=plan_user,
+        input={"text": "continue"},
+        context={"plan_id": "plan_agent"},
+        selected_definition=selection.definition,
+        selected_binding=selection,
+        resolved_binding=resolved_binding,
     )
     assert continued.status == "completed"
-    items = invoker.invocations[-1].memory_context.items
+    items = adapter.invocations[-1].memory_context.items
     assert [item.memory_id for item in items] == ["matching"]
     assert items[0].structured_value.get("status") == "running", items[0].model_dump()
     assert items[0].structured_value["current_step"]["step_id"] == "canonical_step"
@@ -1879,16 +1901,19 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         request_id=continued.run_id,
         run_id=continued.run_id,
     )
+    await catalog.aclose()
 
 
-class BarrierInvoker:
+class BarrierV2Adapter(V2TestAdapter):
     def __init__(self) -> None:
+        super().__init__()
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls = 0
         self.contexts = []
 
-    async def invoke(self, definition, invocation):
+    async def invoke_v2(self, definition, requirement, invocation):
+        del requirement
         self.calls += 1
         self.contexts.append(invocation.context)
         self.started.set()
@@ -1903,10 +1928,15 @@ class BarrierInvoker:
 
 async def test_concurrent_plan_execution_claims_step_once(registry_service) -> None:
     plan_service = PlanService(MemoryPlanRepository())
-    await plan_service.save_plan(_plan(status="running"))
-    invoker = BarrierInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
+    await plan_service.save_plan(
+        freeze_plan_bindings(
+            _plan(status="running"),
+            registry_service,
+            user=UserContext.model_validate(_operator_user()),
+        )
+    )
+    invoker = BarrierV2Adapter()
+    catalog = await attach_v2_runtime(registry_service, adapter=invoker)
     executor = PlanExecutor(
         plan_service=plan_service,
         registry=registry_service,
@@ -1914,7 +1944,6 @@ async def test_concurrent_plan_execution_claims_step_once(registry_service) -> N
             registry=registry_service,
             run_repository=MemoryRunRepository(),
             result_repository=MemoryResultRepository(),
-            invokers=invokers,
             plan_service=plan_service,
         ),
     )
@@ -1935,16 +1964,22 @@ async def test_concurrent_plan_execution_claims_step_once(registry_service) -> N
     completed = await first
     assert completed.plan.status == "completed"
     assert invoker.calls == 1
+    await catalog.aclose()
 
 
 async def test_plan_claim_heartbeat_prevents_reclaim_during_long_agent_call(
     registry_service,
 ) -> None:
     plan_service = PlanService(MemoryPlanRepository())
-    await plan_service.save_plan(_plan(status="running"))
-    invoker = BarrierInvoker()
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
+    await plan_service.save_plan(
+        freeze_plan_bindings(
+            _plan(status="running"),
+            registry_service,
+            user=UserContext.model_validate(_operator_user()),
+        )
+    )
+    invoker = BarrierV2Adapter()
+    catalog = await attach_v2_runtime(registry_service, adapter=invoker)
     executor = PlanExecutor(
         plan_service=plan_service,
         registry=registry_service,
@@ -1952,7 +1987,6 @@ async def test_plan_claim_heartbeat_prevents_reclaim_during_long_agent_call(
             registry=registry_service,
             run_repository=MemoryRunRepository(),
             result_repository=MemoryResultRepository(),
-            invokers=invokers,
             plan_service=plan_service,
             plan_claim_lease_seconds=0.06,
         ),
@@ -1974,55 +2008,7 @@ async def test_plan_claim_heartbeat_prevents_reclaim_during_long_agent_call(
     invoker.release.set()
     completed = await first
     assert completed.plan.status == "completed"
-
-
-async def test_local_function_deduplicates_same_plan_execution_key(registry_service) -> None:
-    definition = await registry_service.get_definition("summarizer")
-    assert definition is not None
-    payload = definition.model_dump(mode="json")
-    payload["type"] = "local_function"
-    payload["invocation"] = {
-        "type": "local_function",
-        "config": {"function": "side_effect"},
-    }
-    definition = type(definition).model_validate(payload)
-    started = threading.Event()
-    release = threading.Event()
-    calls = 0
-
-    def side_effect(invocation):
-        nonlocal calls
-        calls += 1
-        started.set()
-        release.wait(timeout=2)
-        return {
-            "status": "completed",
-            "output": {"key": invocation.context["plan_execution_idempotency_key"]},
-        }
-
-    registry = LocalFunctionRegistry()
-    registry.register("side_effect", side_effect)
-    invoker = LocalFunctionInvoker(registry)
-
-    def invocation(run_id: str) -> AgentInvocation:
-        return AgentInvocation(
-            run_id=run_id,
-            session_id="s1",
-            agent_id=definition.agent_id,
-            user=_operator_user(),
-            input={"text": "run"},
-            context={"plan_execution_idempotency_key": "plan_exec_same"},
-        )
-
-    first = asyncio.create_task(invoker.invoke(definition, invocation("run_1")))
-    await asyncio.to_thread(started.wait, 1)
-    second = asyncio.create_task(invoker.invoke(definition, invocation("run_2")))
-    await asyncio.sleep(0)
-    release.set()
-    first_result, second_result = await asyncio.gather(first, second)
-    assert calls == 1
-    assert first_result.run_id == "run_1" and second_result.run_id == "run_2"
-    assert first_result.output == second_result.output == {"key": "plan_exec_same"}
+    await catalog.aclose()
 
 
 async def test_request_private_suppresses_structured_jobs_but_records_skip(
@@ -2035,7 +2021,6 @@ async def test_request_private_suppresses_structured_jobs_but_records_skip(
         registry=registry_service,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=build_default_invoker_registry(settings),
         turn_capture=TurnCaptureService(
             settings=settings,
             builder=TurnCapsuleBuilder(settings),
@@ -2064,14 +2049,14 @@ async def test_request_private_suppresses_structured_jobs_but_records_skip(
 
 async def test_blocked_invocation_publishes_run_update_not_fail(registry_service) -> None:
     sink = CapturingStructuredSink()
-    invoker = InvocationCapturingInvoker(status="blocked")
-    invokers = AgentInvokerRegistry()
-    invokers.register("mock", invoker)
+    catalog = await attach_v2_runtime(
+        registry_service,
+        adapter=V2TestAdapter(status="blocked"),
+    )
     service = InvocationService(
         registry=registry_service,
         run_repository=MemoryRunRepository(),
         result_repository=MemoryResultRepository(),
-        invokers=invokers,
         structured_formation=sink,
     )
     result = await service.invoke(
@@ -2084,3 +2069,4 @@ async def test_blocked_invocation_publishes_run_update_not_fail(registry_service
     )
     assert result.status == "blocked"
     assert sink.run_events == [("create", "running"), ("update", "blocked")]
+    await catalog.aclose()

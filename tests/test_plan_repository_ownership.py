@@ -138,7 +138,7 @@ class _OwnedPlanExecutor:
         from app.services.plan_executor import PlanExecutionCandidateSet
 
         await self.preflight(plan_id, user=user)
-        return PlanExecutionCandidateSet(definitions={}, bindings={}, legacy_definitions={})
+        return PlanExecutionCandidateSet(definitions={}, bindings={})
 
     async def execute(self, plan_id: str, *, user, **_) -> PlanExecutionResponse:
         plan = await self.service.get_plan(

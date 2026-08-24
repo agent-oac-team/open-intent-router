@@ -10,7 +10,12 @@ from app.dependencies import (
     get_memory_observability_service,
     get_registry_service,
 )
-from app.schemas.agents import AgentDefinition, AgentEnabledRequest, AgentListResponse, AgentPublic
+from app.schemas.agents import (
+    AgentAdminListResponse,
+    AgentDefinitionV2,
+    AgentEnabledRequest,
+    AgentPublicV2,
+)
 from app.schemas.memory import (
     MemoryAdminActionRequest,
     MemoryDebugResponse,
@@ -38,20 +43,22 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 
 @router.get(
-    "/agents", response_model=AgentListResponse, dependencies=[Depends(require_admin_token)]
+    "/agents", response_model=AgentAdminListResponse, dependencies=[Depends(require_admin_token)]
 )
 async def admin_list_agents(
     registry: AgentRegistryService = Depends(get_registry_service),
-) -> AgentListResponse:
-    return await registry.list_public()
+) -> AgentAdminListResponse:
+    return await registry.list_admin()
 
 
-@router.post("/agents", response_model=AgentDefinition, dependencies=[Depends(require_admin_token)])
+@router.post(
+    "/agents", response_model=AgentDefinitionV2, dependencies=[Depends(require_admin_token)]
+)
 async def upsert_agent(
-    payload: AgentDefinition,
+    payload: AgentDefinitionV2,
     request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
-) -> AgentDefinition:
+) -> AgentDefinitionV2:
     updated = await registry.upsert_definition(payload)
     await _refresh_runtime_snapshot(request, registry)
     return updated
@@ -59,15 +66,15 @@ async def upsert_agent(
 
 @router.put(
     "/agents/{agent_id}",
-    response_model=AgentDefinition,
+    response_model=AgentDefinitionV2,
     dependencies=[Depends(require_admin_token)],
 )
 async def update_agent(
     agent_id: str,
-    payload: AgentDefinition,
+    payload: AgentDefinitionV2,
     request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
-) -> AgentDefinition:
+) -> AgentDefinitionV2:
     if payload.agent_id != agent_id:
         raise HTTPException(status_code=400, detail="agent_id in path and payload must match")
     updated = await registry.upsert_definition(payload)
@@ -77,7 +84,7 @@ async def update_agent(
 
 @router.patch(
     "/agents/{agent_id}/enabled",
-    response_model=AgentPublic,
+    response_model=AgentPublicV2,
     dependencies=[Depends(require_admin_token)],
 )
 async def set_agent_enabled(
@@ -85,7 +92,7 @@ async def set_agent_enabled(
     payload: AgentEnabledRequest,
     request: Request,
     registry: AgentRegistryService = Depends(get_registry_service),
-) -> AgentPublic:
+) -> AgentPublicV2:
     updated = await registry.set_enabled(agent_id, payload.enabled)
     if updated is None:
         raise HTTPException(status_code=404, detail="Agent not found")

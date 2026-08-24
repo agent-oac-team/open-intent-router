@@ -44,7 +44,11 @@ from app.runtime.services import (
     resolve_memory_data_settings,
 )
 from app.services.registry_service import AgentRegistryService
-from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
+from app.services.registry_snapshot import (
+    RegistrySnapshotBuilder,
+    RegistrySnapshotRuntime,
+    map_native_registry_snapshot,
+)
 
 
 @asynccontextmanager
@@ -138,7 +142,7 @@ def create_app(
     app.state.application_runtime_factory = _application_runtime_factory(
         settings=settings_snapshot,
         descriptors=descriptors,
-        registry_snapshot_mapper=registry_snapshot_mapper,
+        registry_snapshot_mapper=registry_snapshot_mapper or map_native_registry_snapshot,
         application_composition=composition,
     )
     app.add_middleware(

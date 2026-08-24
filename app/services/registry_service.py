@@ -8,11 +8,12 @@ from app.core.errors import RegistryError, RegistryUnavailableError
 from app.repositories.file_registry import FileRegistrySource
 from app.repositories.interfaces import AgentDefinitionRepository
 from app.schemas.agents import (
-    AgentDefinition,
+    AgentAdminListResponse,
+    AgentDefinitionV2,
     AgentListResponse,
-    AgentPublic,
+    AgentPublicV2,
     AvailableAgentsResponse,
-    CandidateAgent,
+    CandidateAgentV2,
 )
 from app.schemas.common import UserContext
 from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
@@ -25,7 +26,7 @@ class RegistryState:
     status: RegistryStatus = "error"
     active_source: str = "none"
     message: str = ""
-    agents: list[AgentDefinition] = field(default_factory=list)
+    agents: list[AgentDefinitionV2] = field(default_factory=list)
 
 
 class AgentRegistryService:
@@ -51,7 +52,7 @@ class AgentRegistryService:
     async def reload(self) -> RegistryState:
         return await self.load()
 
-    async def list_definitions(self, *, enabled_only: bool = False) -> list[AgentDefinition]:
+    async def list_definitions(self, *, enabled_only: bool = False) -> list[AgentDefinitionV2]:
         if not self.state.agents:
             await self.load()
         agents = self.state.agents
@@ -59,7 +60,7 @@ class AgentRegistryService:
             agents = [agent for agent in agents if agent.enabled]
         return sorted(agents, key=lambda item: (-item.priority, item.agent_id))
 
-    async def get_definition(self, agent_id: str) -> AgentDefinition | None:
+    async def get_definition(self, agent_id: str) -> AgentDefinitionV2 | None:
         if self.state.active_source == "database" and self.repository:
             return await self.repository.get(agent_id)
         for agent in await self.list_definitions():
@@ -68,8 +69,8 @@ class AgentRegistryService:
         return None
 
     async def upsert_definition(
-        self, definition: AgentDefinition, *, expected_revision: int | None = None
-    ) -> AgentDefinition:
+        self, definition: AgentDefinitionV2, *, expected_revision: int | None = None
+    ) -> AgentDefinitionV2:
         repository = self._require_writable_repository()
         saved = await repository.upsert(definition, expected_revision=expected_revision)
         await self.reload()
@@ -77,7 +78,7 @@ class AgentRegistryService:
 
     async def set_enabled(
         self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
-    ) -> AgentDefinition | None:
+    ) -> AgentDefinitionV2 | None:
         repository = self._require_writable_repository()
         saved = await repository.set_enabled(agent_id, enabled, expected_revision=expected_revision)
         await self.reload()
@@ -102,6 +103,11 @@ class AgentRegistryService:
             agents=[agent.to_public() for agent in await self.list_definitions()]
         )
 
+    async def list_admin(self) -> AgentAdminListResponse:
+        return AgentAdminListResponse(
+            agents=[agent.to_admin() for agent in await self.list_definitions()]
+        )
+
     async def available_for_user(self, user: UserContext) -> AvailableAgentsResponse:
         agents = await self.available_definitions(user)
         candidates = [agent.to_candidate() for agent in agents]
@@ -111,17 +117,17 @@ class AgentRegistryService:
             source=self.state.active_source,
         )
 
-    async def available_definitions(self, user: UserContext) -> list[AgentDefinition]:
+    async def available_definitions(self, user: UserContext) -> list[AgentDefinitionV2]:
         return [
             agent
             for agent in await self.list_definitions(enabled_only=True)
             if agent.is_available_to(user)
         ]
 
-    async def candidates_for_user(self, user: UserContext) -> list[CandidateAgent]:
+    async def candidates_for_user(self, user: UserContext) -> list[CandidateAgentV2]:
         return (await self.available_for_user(user)).candidate_agents_for_llm
 
-    async def public_agent(self, agent_id: str) -> AgentPublic | None:
+    async def public_agent(self, agent_id: str) -> AgentPublicV2 | None:
         agent = await self.get_definition(agent_id)
         return agent.to_public() if agent else None
 

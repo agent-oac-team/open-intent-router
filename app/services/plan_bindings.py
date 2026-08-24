@@ -94,11 +94,11 @@ def validate_frozen_plan_step_binding(
 ) -> None:
     """Reject a changed v2 Definition or Binding Requirement before execution."""
 
-    # Plans written before the v2 Step contract remain readable during the
-    # migration window.  They still receive a fresh current selection; the
-    # cutover Ticket later makes this metadata mandatory for all new Plans.
     if step.agent_revision is None and step.binding_requirement is None:
-        return
+        raise PlanBindingUnavailableError(
+            "Plan Binding is unavailable",
+            details={"reason_code": "legacy_plan_step_unsupported"},
+        )
     if step.agent_revision is None or step.binding_requirement is None:
         raise PlanBindingUnavailableError(
             "Plan Binding is incomplete",

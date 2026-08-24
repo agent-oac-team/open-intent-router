@@ -194,10 +194,12 @@ empty、denied、JWT 4xx 和业务 4xx 不计入故障。Deadline、Circuit 窗�
 适用场景：
 
 - 宿主应用希望后端直接完成“识别意图 + 调用工具”。
-- 目标 Agent 是 HTTP API、本地函数或 Mock Agent。
+- 目标 Agent 的 `handling.kind=invocation` 已由当前 Registry Snapshot 解析为受支持的 v2 Runtime
+  Adapter Binding。
 - 调用过程需要统一记录 Agent Run、事件和结果。
 
-如果目标 Agent 只能由前端或宿主系统处理，例如 `ui_handoff`，接口会返回路由交接信息，而不会执行外部调用。
+如果目标 Agent 只能由前端或宿主系统处理，例如 `ui_handoff` 或 `external_execution`，接口会返回
+相应的 Host 协作动作，而不会伪装为本地调用。
 
 已有 Canonical Turn 的调用使用两个短事务收口：调用 Agent 前原子创建 Run 并把 Turn 置为
 `running`；Agent 返回后原子更新 Run、写 Result、完成 Turn 并插入唯一 `turn.completed` Outbox。
@@ -223,14 +225,13 @@ empty、denied、JWT 4xx 和业务 4xx 不计入故障。Deadline、Circuit 窗�
 
 根据 `agent_id` 显式调用目标 Agent，不再重新做意图识别。
 
-MVP 支持的 Invoker：
+只有 `handling.kind=invocation` 且 Snapshot Binding 已解析为部署注册的 v2 Runtime Adapter 时，
+该接口才会执行。Adapter Key、Connector 与配置都是部署/Definition 的受治理逻辑引用；Native
+Runtime 不会按旧 `type` 选择 `mock`、`http` 或 `local_function` Invoker，也不会把 Binding 缺失
+猜测为外部委派。`ui_handoff` 与 `external_execution` 由路由或 Plan 返回 Host 协作动作，不是
+direct-invoke 目标。
 
-- `mock`：返回配置好的 Mock 响应，适合本地开发和测试。
-- `http`：调用配置的 HTTP Endpoint。
-- `local_function`：调用受信任的本地注册函数。
-- `ui_handoff`：返回宿主应用所需的路由交接数据，不执行外部系统调用。
-
-如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，Invoker 通常会沿用该
+如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，v2 Runtime Adapter 通常会沿用该
 上下文字段；但 `controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、
 Source Scope 和 trace 匹配的短时单次 Handle，不能由调用方正文绕过。
 
@@ -278,6 +279,15 @@ HTTP 入口，也不代理或回退这些请求。Agent Definition 中的
 `available` 使用已验证 Principal 的角色、用户组、租户、entitlement 和属性过滤，忽略请求体中的
 权限声明。
 
+Native Registry 只接受 `schema_version: oir-agent-v2` 的 Definition。Native API、文件 Registry
+和数据库 Registry 都不会再根据 `type`、`invocation`、`ui_handoff`、`provider_config` 或
+`metadata` 推断执行方式；携带这些旧字段的请求以 `422` 拒绝。不会新增平行的 `/v2` URL：现有
+`/api/v1/agents` 即为唯一 Native v2 契约。
+
+公开 `GET /api/v1/agents` 与 `GET /api/v1/agents/{agent_id}` 仅返回安全的公共字段和
+`handling_kind`（`invocation`、`external_execution` 或 `ui_handoff`），不返回 Handling、
+Adapter、Connector、Executor、endpoint、Header 或配置参数。
+
 ## Agent 管理
 
 管理接口通常需要传入 Admin Token：
@@ -296,6 +306,31 @@ HTTP 入口，也不代理或回退这些请求。Agent Definition 中的
 - `DELETE /api/v1/admin/agents/{agent_id}`
 - `POST /api/v1/admin/registry/reload`
 - `GET /api/v1/admin/runtime/inventory`
+
+`POST` 和 `PUT` 的请求与响应使用完整 `AgentDefinitionV2`；`PATCH enabled` 返回公共投影。
+Definition 的唯一执行声明为 discriminator `handling`：
+
+```json
+{
+  "schema_version": "oir-agent-v2",
+  "agent_id": "script_writer",
+  "name": "话术生成",
+  "description": "生成客户沟通话术",
+  "handling": {
+    "kind": "invocation",
+    "adapter_key": "copywriter_adapter",
+    "connector_ref": "tenant_copywriter",
+    "config": {"function": "generate"}
+  }
+}
+```
+
+`handling.kind=external_execution` 使用逻辑 `executor_ref` 和受限 `params`；
+`handling.kind=ui_handoff` 使用内部绝对路径 `route` 和受限 `params`。所有引用都是逻辑标识，
+不是 endpoint、凭据或任意部署配置。`GET /api/v1/admin/agents` 是管理投影：它返回
+`handling_kind` 与全量脱敏的 `handling`，用于查看和选择三种 Handling；被脱敏的字符串无法
+round-trip，管理 UI 在保存前必须由操作者重新输入相应安全引用。这样管理员可管理定义而不会经由
+读接口取得部署秘密。
 
 说明：
 

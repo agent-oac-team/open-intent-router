@@ -4,45 +4,56 @@
 
 核心设计目标是让路由器只依赖通用 Agent 协议，而不依赖某个具体业务系统、第三方平台或 Agent 产品。
 
-## Agent 类型
+## Native v2 Definition
 
-MVP 已支持：
+Native Registry 只有一个 Definition 格式：`schema_version: oir-agent-v2`。旧的 `type`、
+`invocation`、`ui_handoff`、`provider_config` 和顶层 `metadata` 都不是 Native Runtime 字段，
+不会被 API、文件/数据库 Registry、Router、Plan 或 Invocation 读取或推断。旧 source 只能在
+停止运行时通过受控迁移工具处理；OAC 的 Legacy wire 仍只在 Host Adapter 边界转换。
 
-- `mock`：返回配置好的响应，用于本地开发、测试和示例。
-- `http`：调用外部 HTTP API。
-- `local_function`：调用受信任的本地函数。
-- `ui_handoff`：返回宿主应用可识别的页面或动作交接信息。
+这是一项一次性 Native cutover：混合运行旧/新 OIR Native 二进制，或让旧二进制写入已迁移的
+Registry，均不受支持。部署必须先完成受控迁移和发布门禁，再让所有 Native 进程切换到 v2。
 
-后续可扩展：
+核心公共字段包括：
 
-- `workflow`：LangChain、LangGraph 或其他工作流引擎。
-- `provider_platform`：Coze、Dify、FastGPT 等第三方智能体平台。
-- `mcp_tool`：MCP Tool 或外部工具协议。
+- `agent_id`：稳定、非敏感的逻辑 ID，不应随名称变化。
+- `name`、`description`、`capabilities`、`domain`、`tags` 与 `trigger`：展示和路由语义。
+- `enabled`、`version`、`revision`：生命周期及并发版本信息。
+- `access_policy`：角色、用户组、租户、entitlement 和属性控制。
+- `required_inputs`、`optional_inputs`、`input_schema`、`output_schema`：输入输出契约。
+- `context`：声明需要的平台治理上下文，包括记忆和知识检索模式。
+- `handling`：唯一的执行/协作声明，见下节。
 
-## 核心字段
+公开 Catalog 和候选投影只公开 `handling_kind`，不会公开 `handling` 的 Adapter、Connector、
+Executor 或参数。管理员读取也会脱敏所有 Handling 字符串；管理员编辑后须重新填写被脱敏的值。
 
-Agent Definition 建议包含以下字段：
+## Handling
 
-- `agent_id`：稳定唯一 ID，不应随名称变化。
-- `name`：Agent 名称，用于展示和管理。
-- `description`：能力描述，也是 LLM 路由时的重要语义依据。
-- `type`：Agent 类型，例如 `http`、`local_function`、`mock`、`ui_handoff`。
-- `enabled`：是否启用。
-- `version`：Agent 定义版本。
-- `capabilities`：能力关键词，例如 `summarize`、`search`、`generate`。
-- `tags`：管理标签。
-- `domain`：领域或业务域，可用于候选收窄。
-- `trigger`：触发说明或典型用户表达。
-- `access_policy`：访问控制规则。
-- `required_inputs`：调用必须具备的输入字段。
-- `optional_inputs`：可选输入字段。
-- `input_schema`：输入 JSON Schema。
-- `output_schema`：输出 JSON Schema。
-- `invocation`：后端调用配置。
-- `ui_handoff`：宿主应用页面或动作交接配置。
-- `context`：声明该 Agent 需要的平台治理上下文，包括记忆和知识检索模式。
-- `provider_config`：第三方平台相关配置。
-- `metadata`：非核心扩展数据。
+`handling` 是一个封闭的 discriminated union。它只携带逻辑引用和受限的、部署中立的配置；
+endpoint、URL、Header、credential、secret、任意 Provider payload 和宿主私有 metadata 都不属于
+Definition。
+
+- `invocation`：`adapter_key`，可选 `connector_ref`，以及 `config` 中的符号操作引用和受限调优。
+  Runtime Catalog 在构建 Snapshot 时解析并校验该 Binding；缺失或不兼容时隔离 Definition，而不是
+  回退到旧 Invoker 类型。
+- `external_execution`：逻辑 `executor_ref` 与受限 `params`。Host External Executor 接受后，
+  Runtime 创建受 Ticket 约束的 Delegated Run；Native Runtime 不把它伪装为本地 Invocation。
+- `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invoker。
+
+示例：
+
+```yaml
+schema_version: oir-agent-v2
+agent_id: script_writer
+name: 话术生成
+description: 生成客户沟通话术
+handling:
+  kind: invocation
+  adapter_key: copywriter_adapter
+  connector_ref: tenant_copywriter
+  config:
+    function: generate
+```
 
 ## 访问控制
 
@@ -58,17 +69,6 @@ Agent Definition 建议包含以下字段：
 
 路由前应先执行可用 Agent 过滤。不可用 Agent 不应进入 LLM 候选集，也不应被 Evidence Provider 的强制路由绕过。
 候选为空时 Router 直接返回 `unsupported`，不调用 Agent Evidence 或 LLM。Evidence/LLM target、`continue_agent` 和 Plan 的每个 step 都必须属于同一已授权候选集。
-
-## 调用配置
-
-`invocation` 描述后端如何调用 Agent。不同类型的 Agent 可以使用不同配置，但核心 Schema 不应暴露平台专属字段。
-
-示例原则：
-
-- HTTP Endpoint、Header、Method 等放入 `invocation.config`。
-- Coze `bot_id`、Dify App ID 等第三方字段放入 `provider_config` 或 `invocation.config`。
-- OAC `route_path` 一类前端路由字段放入 `ui_handoff.route`。
-- 飞书表格字段不进入核心 Agent Schema。
 
 ## Context 配置
 
@@ -123,12 +123,13 @@ Handle。Handle 绑定 tenant、principal、Agent、Source Scope 与 trace；调
 
 ## 扩展原则
 
-新增 Agent 类型时，应优先新增 Invoker 或 Provider Adapter，而不是修改核心路由流程。
+新增执行能力时，应优先新增受版本约束的 Runtime Adapter、Connector 或 Host Executor，并显式
+声明其可接受的 v2 Binding，而不是向 Definition 增加类型字符串或修改核心路由流程。
 
 建议保持以下边界：
 
-- Agent Definition 只描述能力、访问控制、输入输出和调用方式。
+- Agent Definition 只描述能力、访问控制、输入输出和声明式 Handling。
 - Router Service 只负责候选筛选、意图识别和路由决策。
-- Invocation Service 只负责执行目标 Agent。
+- Invocation Service 只执行已由 Snapshot 解析的 `invocation` Binding。
 - Provider Adapter 只处理第三方平台协议转换。
-- 宿主应用专属字段只进入 `metadata` 或专门扩展配置。
+- 宿主应用专属 wire 字段只留在 Host Adapter；Core 只接收已转换的 v2 Handling。

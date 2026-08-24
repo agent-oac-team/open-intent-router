@@ -9,7 +9,6 @@ from app.core.errors import (
     PlanBindingUnavailableError,
 )
 from app.schemas.agents import (
-    AgentDefinition,
     AgentDefinitionV2,
     ExternalExecutionHandling,
     InvocationHandling,
@@ -36,7 +35,7 @@ from app.services.registry_snapshot import (
 )
 
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
-PlanAgentDefinition = AgentDefinition | AgentDefinitionV2
+PlanAgentDefinition = AgentDefinitionV2
 
 
 @dataclass(frozen=True)
@@ -45,14 +44,12 @@ class PlanExecutionCandidateSet:
 
     definitions: Mapping[str, PlanAgentDefinition]
     bindings: Mapping[str, RegistrySnapshotSelection]
-    legacy_definitions: Mapping[str, AgentDefinition]
 
 
 def _empty_candidate_set() -> PlanExecutionCandidateSet:
     return PlanExecutionCandidateSet(
         definitions=MappingProxyType({}),
         bindings=MappingProxyType({}),
-        legacy_definitions=MappingProxyType({}),
     )
 
 
@@ -66,7 +63,17 @@ class PlanExecutor:
         snapshot_runtime: RegistrySnapshotRuntime | None = None,
     ) -> None:
         self.plan_service = plan_service
-        self.registry = registry
+        # Native Plans execute only from a v2 Snapshot Binding. A composition
+        # may publish that immutable runtime beside the Registry service; this
+        # is not a raw Registry fallback and never reloads source Definitions.
+        published_snapshot_runtime = getattr(registry, "snapshot_runtime", None)
+        if snapshot_runtime is None and isinstance(
+            published_snapshot_runtime, RegistrySnapshotRuntime
+        ):
+            snapshot_runtime = published_snapshot_runtime
+        # The Registry argument otherwise remains a construction seam while
+        # compositions migrate.
+        del registry
         self.invocation_service = invocation_service
         self.snapshot_runtime = snapshot_runtime or getattr(
             invocation_service, "snapshot_runtime", None
@@ -108,47 +115,22 @@ class PlanExecutor:
             return _empty_candidate_set()
         if plan.status in {"failed", "cancelled"}:
             return _empty_candidate_set()
-        selections: dict[str, RegistrySnapshotSelection] = {}
-        frozen_definitions: dict[str, AgentDefinitionV2] = {}
-        legacy_definitions: dict[str, AgentDefinition] = {}
-        if _plan_has_frozen_bindings(plan):
-            snapshot_runtime = self.snapshot_runtime
-            captured_snapshot = snapshot_runtime.snapshot if snapshot_runtime is not None else None
-            if captured_snapshot is None:
-                _raise_plan_snapshot_unavailable()
-            selections = self._revalidated_snapshot_selections(
-                plan,
-                user=user,
-                snapshot=captured_snapshot,
-            )
-            self._preflight_invocation_bindings(selections)
-            frozen_definitions.update(
-                {agent_id: selection.definition for agent_id, selection in selections.items()}
-            )
-        if _plan_has_legacy_steps(plan):
-            definitions = await self.registry.available_definitions(user)
-            legacy_definitions = {definition.agent_id: definition for definition in definitions}
-        # Check v2 and legacy Steps independently.  A transition deployment
-        # can legitimately expose the same logical id in both registries; a
-        # v2 candidate must never make a legacy Step appear available.
-        _ensure_plan_agents_available(
+        _require_frozen_plan_steps(plan)
+        snapshot_runtime = self.snapshot_runtime
+        captured_snapshot = snapshot_runtime.snapshot if snapshot_runtime is not None else None
+        if captured_snapshot is None:
+            _raise_plan_snapshot_unavailable()
+        selections = self._revalidated_snapshot_selections(
             plan,
-            frozen_definitions,
-            has_frozen_binding=True,
+            user=user,
+            snapshot=captured_snapshot,
         )
-        _ensure_plan_agents_available(
-            plan,
-            legacy_definitions,
-            has_frozen_binding=False,
-        )
-        # The mapping is a short-lived optimization passed to execute().  The
-        # executor keeps the two types separate before dispatching a Step.
-        selected: dict[str, PlanAgentDefinition] = dict(frozen_definitions)
-        selected.update(legacy_definitions)
+        self._preflight_invocation_bindings(selections)
+        selected = {agent_id: selection.definition for agent_id, selection in selections.items()}
+        _ensure_plan_agents_available(plan, selected)
         return PlanExecutionCandidateSet(
             definitions=MappingProxyType(selected),
             bindings=MappingProxyType(selections),
-            legacy_definitions=MappingProxyType(legacy_definitions),
         )
 
     async def execute(
@@ -159,9 +141,7 @@ class PlanExecutor:
         input_values: JsonDict | None = None,
         context: JsonDict | None = None,
         max_steps: int = 10,
-        selected_definitions: Mapping[str, PlanAgentDefinition] | None = None,
         selected_bindings: Mapping[str, RegistrySnapshotSelection] | None = None,
-        selected_legacy_definitions: Mapping[str, AgentDefinition] | None = None,
     ) -> PlanExecutionResponse:
         user = _trusted_plan_user(user)
         tenant_id = user.tenant_id or ""
@@ -174,64 +154,31 @@ class PlanExecutor:
             return PlanExecutionResponse(plan=plan, results=[], next_action=plan.next_action)
         if plan.status in {"failed", "cancelled"}:
             return PlanExecutionResponse(plan=plan, results=[], next_action=plan.next_action)
-        routed_definitions = selected_definitions
+        _require_frozen_plan_steps(plan)
         snapshot_runtime = self.snapshot_runtime
         captured_snapshot: RegistrySnapshot | None = None
         current_bindings: dict[str, RegistrySnapshotSelection] = {}
-        frozen_definitions: dict[str, AgentDefinitionV2] = {}
-        legacy_definitions: dict[str, PlanAgentDefinition] = {}
-        if _plan_has_frozen_bindings(plan):
-            # Route-and-Execute supplies the private Selection objects created
-            # by RouterService for this same request.  Reuse that exact
-            # Candidate Set rather than observing a Snapshot reload between
-            # route and execution.  Other Plan requests form one new Snapshot
-            # Candidate Set below.
-            current_bindings = _trusted_route_bindings_for_plan(
+        # Route-and-execute supplies the private Selection objects created by
+        # RouterService for this same request. Reuse that exact Candidate Set
+        # rather than observing a Snapshot reload between route and execution.
+        current_bindings = _trusted_route_bindings_for_plan(
+            plan,
+            user=user,
+            selected_bindings=selected_bindings,
+        )
+        if current_bindings is None:
+            captured_snapshot = snapshot_runtime.snapshot if snapshot_runtime is not None else None
+            if captured_snapshot is None:
+                _raise_plan_snapshot_unavailable()
+            current_bindings = self._revalidated_snapshot_selections(
                 plan,
                 user=user,
-                selected_bindings=selected_bindings,
+                snapshot=captured_snapshot,
             )
-            if current_bindings is None:
-                captured_snapshot = (
-                    snapshot_runtime.snapshot if snapshot_runtime is not None else None
-                )
-                if captured_snapshot is None:
-                    _raise_plan_snapshot_unavailable()
-                current_bindings = self._revalidated_snapshot_selections(
-                    plan,
-                    user=user,
-                    snapshot=captured_snapshot,
-                )
-            self._preflight_invocation_bindings(current_bindings)
-            frozen_definitions.update(
-                {agent_id: selection.definition for agent_id, selection in current_bindings.items()}
-            )
-        if _plan_has_legacy_steps(plan):
-            if selected_legacy_definitions is not None:
-                routed_legacy_definitions = selected_legacy_definitions.values()
-            else:
-                routed_legacy_definitions = (
-                    routed_definitions.values()
-                    if routed_definitions is not None
-                    else await self.registry.available_definitions(user)
-                )
-            # A Route-and-Execute request supplies its private, trusted
-            # selection here.  Delayed execution has no such selection and
-            # re-forms the legacy Candidate Set above.  Keep this map
-            # separate from frozen v2 selections so a registry collision
-            # cannot silently switch a legacy Step's handling.
-            legacy_definitions = {
-                definition.agent_id: definition for definition in routed_legacy_definitions
-            }
+        self._preflight_invocation_bindings(current_bindings)
         _ensure_plan_agents_available(
             plan,
-            frozen_definitions,
-            has_frozen_binding=True,
-        )
-        _ensure_plan_agents_available(
-            plan,
-            legacy_definitions,
-            has_frozen_binding=False,
+            {agent_id: selection.definition for agent_id, selection in current_bindings.items()},
         )
         results: list[JsonDict] = []
         next_action = plan.next_action
@@ -292,35 +239,27 @@ class PlanExecutor:
             # InvocationService can claim it.  A delayed Plan must not mutate
             # its execution state when the current Principal/Binding no longer
             # satisfies its frozen declaration.
-            selection: RegistrySnapshotSelection | None = None
-            if _step_has_frozen_binding(step):
-                if captured_snapshot is None:
-                    selection = current_bindings.get(step.agent_id)
-                    if selection is None:
-                        raise PlanBindingUnavailableError(
-                            "Plan Binding is unavailable",
-                            details={"reason_code": "plan_binding_unavailable"},
-                        )
-                    # The private Route capability was validated against the
-                    # current Principal before execute() began.  Re-compare in
-                    # case another worker changed the stored Step meanwhile.
-                    validate_frozen_plan_step_binding(step, selection)
-                else:
-                    selection = revalidate_plan_step_binding_against_snapshot(
-                        step,
-                        snapshot=captured_snapshot,
-                        user=user,
+            if captured_snapshot is None:
+                selection = current_bindings.get(step.agent_id)
+                if selection is None:
+                    raise PlanBindingUnavailableError(
+                        "Plan Binding is unavailable",
+                        details={"reason_code": "plan_binding_unavailable"},
                     )
-                current_bindings[step.agent_id] = selection
-                definition = selection.definition
+                # The private Route capability was validated against the
+                # current Principal before execute() began. Re-compare in case
+                # another worker changed the stored Step meanwhile.
+                validate_frozen_plan_step_binding(step, selection)
             else:
-                definition = legacy_definitions[step.agent_id]
+                selection = revalidate_plan_step_binding_against_snapshot(
+                    step,
+                    snapshot=captured_snapshot,
+                    user=user,
+                )
+            current_bindings[step.agent_id] = selection
+            definition = selection.definition
             resolved_binding = None
-            if isinstance(definition, AgentDefinitionV2) and isinstance(
-                definition.handling, InvocationHandling
-            ):
-                if selection is None:  # pragma: no cover - frozen v2 steps always select first
-                    _raise_plan_snapshot_unavailable()
+            if isinstance(definition.handling, InvocationHandling):
                 resolved_binding = self.invocation_service.resolve_direct_binding(selection)
             if step.status == "pending" and (
                 plan.current_step_id != step.step_id
@@ -338,78 +277,39 @@ class PlanExecutor:
                     publish=publish_plan,
                 )
 
-            if isinstance(definition, AgentDefinitionV2):
-                if isinstance(definition.handling, UiHandoffHandling):
-                    next_action = NextAction(
-                        type="open_ui",
-                        message="需要宿主应用打开对应界面继续执行。",
-                        plan_id=plan.plan_id,
-                        step_id=step.step_id,
-                        agent_id=definition.agent_id,
-                        route=definition.handling.route,
-                        params=definition.handling.params.model_dump(
-                            mode="json", exclude_none=True
-                        ),
-                        metadata={"handling_kind": "ui_handoff"},
-                    )
-                    plan = await self._save_step_status(
-                        plan, step, "blocked", next_action, publish=publish_plan
-                    )
-                    return PlanExecutionResponse(
-                        plan=plan, results=results, next_action=next_action
-                    )
-                if isinstance(definition.handling, ExternalExecutionHandling):
-                    next_action = NextAction(
-                        type="wait_for_agent_event",
-                        message="该步骤由宿主外部执行，等待 Agent 返回结果。",
-                        plan_id=plan.plan_id,
-                        step_id=step.step_id,
-                        agent_id=definition.agent_id,
-                        metadata={"handling_kind": "external_execution"},
-                    )
-                    plan = await self._save_step_status(
-                        plan, step, "blocked", next_action, publish=publish_plan
-                    )
-                    return PlanExecutionResponse(
-                        plan=plan, results=results, next_action=next_action
-                    )
-                if selection is None:
-                    raise InvocationBindingUnavailableError(
-                        "Invocation Binding is unavailable",
-                        details={"reason_code": "plan_binding_unavailable"},
-                    )
-            else:
-                if definition.type == "ui_handoff":
-                    next_action = NextAction(
-                        type="open_ui",
-                        message="需要宿主应用打开对应界面继续执行。",
-                        plan_id=plan.plan_id,
-                        step_id=step.step_id,
-                        agent_id=definition.agent_id,
-                        route=definition.ui_handoff.route,
-                        params=definition.ui_handoff.params,
-                    )
-                    plan = await self._save_step_status(
-                        plan, step, "blocked", next_action, publish=publish_plan
-                    )
-                    return PlanExecutionResponse(
-                        plan=plan, results=results, next_action=next_action
-                    )
-
-                if not self.invocation_service.invokers.has(definition.type):
-                    next_action = NextAction(
-                        type="wait_for_agent_event",
-                        message="该步骤需要外部 Agent Runtime 或宿主应用继续执行。",
-                        plan_id=plan.plan_id,
-                        step_id=step.step_id,
-                        agent_id=definition.agent_id,
-                    )
-                    plan = await self._save_step_status(
-                        plan, step, "blocked", next_action, publish=publish_plan
-                    )
-                    return PlanExecutionResponse(
-                        plan=plan, results=results, next_action=next_action
-                    )
+            if isinstance(definition.handling, UiHandoffHandling):
+                next_action = NextAction(
+                    type="open_ui",
+                    message="需要宿主应用打开对应界面继续执行。",
+                    plan_id=plan.plan_id,
+                    step_id=step.step_id,
+                    agent_id=definition.agent_id,
+                    route=definition.handling.route,
+                    params=definition.handling.params.model_dump(mode="json", exclude_none=True),
+                    metadata={"handling_kind": "ui_handoff"},
+                )
+                plan = await self._save_step_status(
+                    plan, step, "blocked", next_action, publish=publish_plan
+                )
+                return PlanExecutionResponse(plan=plan, results=results, next_action=next_action)
+            if isinstance(definition.handling, ExternalExecutionHandling):
+                next_action = NextAction(
+                    type="wait_for_agent_event",
+                    message="该步骤由宿主外部执行，等待 Agent 返回结果。",
+                    plan_id=plan.plan_id,
+                    step_id=step.step_id,
+                    agent_id=definition.agent_id,
+                    metadata={"handling_kind": "external_execution"},
+                )
+                plan = await self._save_step_status(
+                    plan, step, "blocked", next_action, publish=publish_plan
+                )
+                return PlanExecutionResponse(plan=plan, results=results, next_action=next_action)
+            if not isinstance(definition.handling, InvocationHandling):  # pragma: no cover
+                raise InvocationBindingUnavailableError(
+                    "Invocation Binding is unavailable",
+                    details={"reason_code": "plan_binding_unavailable"},
+                )
 
             invocation_input = build_invocation_input(
                 definition,
@@ -531,9 +431,7 @@ class PlanExecutor:
     ) -> dict[str, RegistrySnapshotSelection]:
         selections: dict[str, RegistrySnapshotSelection] = {}
         for step in plan.steps:
-            if step.status in {"completed", "failed", "cancelled"} or not _step_has_frozen_binding(
-                step
-            ):
+            if step.status in {"completed", "failed", "cancelled"}:
                 continue
             selection = revalidate_plan_step_binding_against_snapshot(
                 step,
@@ -600,14 +498,11 @@ def _trusted_plan_user(user: UserContext) -> UserContext:
 def _ensure_plan_agents_available(
     plan: Plan,
     selected_definitions: Mapping[str, PlanAgentDefinition],
-    *,
-    has_frozen_binding: bool | None = None,
 ) -> None:
     unavailable = [
         step.agent_id
         for step in plan.steps
         if step.status not in {"completed", "failed", "cancelled"}
-        and (has_frozen_binding is None or _step_has_frozen_binding(step) is has_frozen_binding)
         and step.agent_id not in selected_definitions
     ]
     if unavailable:
@@ -636,9 +531,7 @@ def _trusted_route_bindings_for_plan(
     selections: dict[str, RegistrySnapshotSelection] = {}
     snapshot_ids: set[str] = set()
     for step in plan.steps:
-        if step.status in {"completed", "failed", "cancelled"} or not _step_has_frozen_binding(
-            step
-        ):
+        if step.status in {"completed", "failed", "cancelled"}:
             continue
         selection = selected_bindings.get(step.agent_id)
         if not isinstance(selection, RegistrySnapshotSelection):
@@ -668,29 +561,28 @@ def _trusted_route_bindings_for_plan(
     return selections
 
 
-def _plan_has_frozen_bindings(plan: Plan) -> bool:
-    # Terminal Steps no longer dispatch or resume, so they do not need a live
-    # Registry Snapshot merely to return their durable terminal Plan state.
-    if plan.status in {"completed", "failed", "cancelled"}:
-        return False
-    return any(
-        step.status not in {"completed", "failed", "cancelled"} and _step_has_frozen_binding(step)
+def _require_frozen_plan_steps(plan: Plan) -> None:
+    """Reject pre-v2 persisted Steps before reading a live Registry Snapshot.
+
+    A Native runtime cannot safely recover a Plan authored before the v2
+    Binding contract. It must never fall back to a live Registry Definition or
+    infer an executor from a former ``type`` field.
+    """
+
+    incomplete = [
+        step.agent_id
         for step in plan.steps
-    )
-
-
-def _plan_has_legacy_steps(plan: Plan) -> bool:
-    if plan.status in {"completed", "failed", "cancelled"}:
-        return False
-    return any(
-        step.status not in {"completed", "failed", "cancelled"}
-        and not _step_has_frozen_binding(step)
-        for step in plan.steps
-    )
-
-
-def _step_has_frozen_binding(step: PlanStep) -> bool:
-    return step.agent_revision is not None or step.binding_requirement is not None
+        if step.status not in {"completed", "failed", "cancelled"}
+        and (step.agent_revision is None or step.binding_requirement is None)
+    ]
+    if incomplete:
+        raise PlanBindingUnavailableError(
+            "Plan Binding is unavailable",
+            details={
+                "reason_code": "legacy_plan_step_unsupported",
+                "agent_ids": list(dict.fromkeys(incomplete)),
+            },
+        )
 
 
 def _raise_plan_snapshot_unavailable() -> None:

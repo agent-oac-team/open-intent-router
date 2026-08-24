@@ -1,4 +1,4 @@
-import type { AgentDefinition, ConversationTurn, JsonRecord } from "./types";
+import type { AgentListItem, ConversationTurn, JsonRecord } from "./types";
 
 export type JourneyNodeId =
   | "input"
@@ -82,7 +82,7 @@ const waitingNode = (id: JourneyNodeId, label: string, summary = "等待前序�
 
 export function projectRoutingJourney(
   turn: ConversationTurn | null,
-  agents: AgentDefinition[],
+  agents: AgentListItem[],
 ): JourneyProjection {
   if (!turn) {
     return {
@@ -628,7 +628,7 @@ function summarizeContext(context: JsonRecord | null): ContextSummary {
   };
 }
 
-function projectPlanSteps(plan: JsonRecord | null, agents: AgentDefinition[]): JourneyStep[] {
+function projectPlanSteps(plan: JsonRecord | null, agents: AgentListItem[]): JourneyStep[] {
   return recordArray(plan?.steps).slice(0, 12).map((step, index) => {
     const agentId = String(step.agent_id || "").trim();
     return {
@@ -640,7 +640,7 @@ function projectPlanSteps(plan: JsonRecord | null, agents: AgentDefinition[]): J
   });
 }
 
-function agentName(agentId: string, agents: AgentDefinition[]): string {
+function agentName(agentId: string, agents: AgentListItem[]): string {
   if (!agentId) return "业务助手";
   return agents.find((agent) => agent.agent_id === agentId)?.name || agentId;
 }

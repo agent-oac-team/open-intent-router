@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.schemas.events import AgentEvent, ConversationEvent
 from app.schemas.logs import AgentResult, AgentRun, RouteLog
 from app.schemas.memory import (
@@ -52,17 +52,17 @@ class TurnRepository(Protocol):
 
 
 class AgentDefinitionRepository(Protocol):
-    async def list(self, *, enabled_only: bool = False) -> list[AgentDefinition]: ...
+    async def list(self, *, enabled_only: bool = False) -> list[AgentDefinitionV2]: ...
 
-    async def get(self, agent_id: str) -> AgentDefinition | None: ...
+    async def get(self, agent_id: str) -> AgentDefinitionV2 | None: ...
 
     async def upsert(
-        self, definition: AgentDefinition, *, expected_revision: int | None = None
-    ) -> AgentDefinition: ...
+        self, definition: AgentDefinitionV2, *, expected_revision: int | None = None
+    ) -> AgentDefinitionV2: ...
 
     async def set_enabled(
         self, agent_id: str, enabled: bool, *, expected_revision: int | None = None
-    ) -> AgentDefinition | None: ...
+    ) -> AgentDefinitionV2 | None: ...
 
     async def delete(self, agent_id: str, *, expected_revision: int | None = None) -> bool: ...
 

@@ -1,6 +1,7 @@
 import pytest
 
 from app.core.errors import RoutingError
+from app.schemas.common import UserContext
 from app.schemas.events import AgentEvent
 from app.schemas.invocation import InvokeRequest
 from app.schemas.plans import Plan, PlanStep
@@ -11,9 +12,10 @@ from app.schemas.routing import (
     RouteRequest,
     RouteResponse,
 )
-from app.services.invocation_service import InvocationService, build_default_invoker_registry
+from app.services.invocation_service import InvocationService
 from app.services.plan_service import PlanService
 from app.services.router_service import RouterService
+from tests.support.v2_runtime import freeze_plan_bindings
 
 
 async def test_mock_router_returns_invocation_preview(settings, registry_service) -> None:
@@ -158,7 +160,13 @@ async def test_confirmed_plan_control_routes_current_step_without_llm(
             ),
         ],
     )
-    await plan_service.save_plan(plan)
+    await plan_service.save_plan(
+        freeze_plan_bindings(
+            plan,
+            registry_service,
+            user=UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"}),
+        )
+    )
     llm = FailingLLM()
     service = RouterService(
         settings=settings,
@@ -673,7 +681,6 @@ async def test_mock_invocation_persists_run_and_result(
         registry=registry_service,
         run_repository=repositories["runs"],
         result_repository=repositories["results"],
-        invokers=build_default_invoker_registry(settings),
     )
     result = await service.invoke(
         InvokeRequest(
@@ -700,6 +707,8 @@ async def test_route_and_invoke_carries_selected_definition_without_registry_ref
     class CandidateSetOnlyRegistry:
         def __init__(self, delegate) -> None:
             self.delegate = delegate
+            self.snapshot_runtime = delegate.snapshot_runtime
+            self.binding_resolver = delegate.binding_resolver
             self.selection_calls = 0
             self.definition_reads = 0
 
@@ -721,7 +730,6 @@ async def test_route_and_invoke_carries_selected_definition_without_registry_ref
         registry=registry,
         run_repository=repositories["runs"],
         result_repository=repositories["results"],
-        invokers=build_default_invoker_registry(settings),
     )
     request = RouteRequest.model_validate(
         {
@@ -739,7 +747,7 @@ async def test_route_and_invoke_carries_selected_definition_without_registry_ref
     result = await invocation.invoke_from_route(request, route)
 
     assert result is not None and result.status == "completed"
-    assert registry.selection_calls == 1
+    assert registry.selection_calls == 0
     assert registry.definition_reads == 0
 
 

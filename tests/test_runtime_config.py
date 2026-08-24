@@ -5,7 +5,7 @@ from app.core.memory_runtime import build_memory_runtime_policy
 from app.dependencies import get_registry_service
 from app.main import create_app
 from app.repositories.memory import MemoryAgentDefinitionRepository
-from app.schemas.agents import AgentDefinition
+from app.schemas.agents import AgentDefinitionV2
 from app.services.registry_service import AgentRegistryService
 
 
@@ -77,7 +77,7 @@ def test_runtime_config_exposes_safe_status() -> None:
 
 async def test_runtime_config_reports_registry_agent_count(settings, summarizer_agent) -> None:
     repository = MemoryAgentDefinitionRepository()
-    await repository.upsert(AgentDefinition.model_validate(summarizer_agent.model_dump()))
+    await repository.upsert(AgentDefinitionV2.model_validate(summarizer_agent.model_dump()))
     registry = AgentRegistryService(settings=settings, repository=repository)
     await registry.load()
     app = create_app(settings=settings)
