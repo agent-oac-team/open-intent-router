@@ -106,6 +106,12 @@ release；Resolver 的实现也不得把请求凭据或租户状态保存在 Run
 若 Adapter 吞掉 deadline 取消，Runtime 会强持有并在 Catalog 释放前排空该任务；对应 Connector 的
 release 延后至任务真正结束，避免已关闭的私有 capability 被迟到代码继续使用。
 
+部署若注册内置 `http` Runtime Adapter，必须用 `http_runtime_descriptor(...)` 在 Runtime Catalog
+factory 中创建它，并让 HTTP Connector 的 operation map 提供 endpoint 与 method。Definition 只能声明
+`operation`；Connector Egress Policy 必须显式限定 host、port、method、可发送 Header 和请求/响应大小。
+默认 HTTPS、TLS verification、拒绝 redirect，且 Client 仅在 Adapter activate 时创建、Catalog dispose
+时关闭。若显式启用 redirect，每一跳均需重新通过同一 Egress Policy；不要在调用路径创建临时 HTTP Client。
+
 ## 部署与验收
 
 1. 在部署环境设置 `RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS`、

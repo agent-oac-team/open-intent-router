@@ -23,6 +23,7 @@ from app.core.errors import (
 from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogKeyError
 from app.runtime.invocation import (
     RuntimeAdapterBinding,
+    RuntimeAdapterConnectorValidator,
     RuntimeAdapterExecution,
     RuntimeAdapterExecutor,
 )
@@ -168,6 +169,14 @@ class BindingResolver:
         """
 
         if binding.requirement.connector_ref is None:
+            if (
+                binding.runtime_execution is not None
+                and binding.runtime_execution.requires_connector
+            ):
+                raise InvocationBindingUnavailableError(
+                    "Invocation Binding is unavailable",
+                    details={"reason_code": "connector_unavailable"},
+                )
             yield binding
             return
         if binding.runtime_execution is None:
@@ -227,6 +236,7 @@ class BindingResolver:
                 adapter_key=binding.adapter_key,
                 connector_ref=binding.requirement.connector_ref,
             )
+            self._validate_connector_for_adapter(binding, connector)
         except InvocationBindingUnavailableError:
             await self._release_connector(resolver, connector)
             raise
@@ -265,6 +275,33 @@ class BindingResolver:
         raise InvocationBindingUnavailableError(
             "Invocation Binding is unavailable",
             details={"reason_code": reason_code},
+        )
+
+    @staticmethod
+    def _validate_connector_for_adapter(
+        binding: ResolvedInvocationBinding,
+        connector: ResolvedConnector,
+    ) -> None:
+        """Run an Adapter's local Connector policy before Run acceptance."""
+
+        execution = binding.runtime_execution
+        validator = execution.connector_validator if execution is not None else None
+        if validator is None:
+            return
+        try:
+            accepted = validator(execution.binding, connector)
+        except Exception:
+            accepted = False
+        if isawaitable(accepted):
+            closer = getattr(accepted, "close", None)
+            if callable(closer):
+                closer()
+            accepted = False
+        if accepted is True:
+            return
+        raise InvocationBindingUnavailableError(
+            "Invocation Binding is unavailable",
+            details={"reason_code": "connector_unavailable"},
         )
 
     @staticmethod
@@ -351,6 +388,8 @@ class BindingResolver:
                     "Invocation Binding is unavailable",
                     details={"reason_code": "invocation_adapter_incompatible"},
                 )
+            connector_validator = _runtime_connector_validator(adapter)
+            requires_connector = _runtime_adapter_requires_connector(adapter)
             return ResolvedInvocationBinding(
                 selection=selection,
                 definition=definition,
@@ -363,6 +402,8 @@ class BindingResolver:
                         config=requirement.config,
                     ),
                     execute=cast(RuntimeAdapterExecutor, runtime_execute),
+                    connector_validator=connector_validator,
+                    requires_connector=requires_connector,
                     limits=handling.limits,
                     requires_knowledge_context=(
                         definition.context.knowledge.requirement == "required"
@@ -418,6 +459,31 @@ def _supports_runtime_adapter_protocol(method: object) -> bool:
     except Exception:
         return False
     return True
+
+
+def _runtime_connector_validator(adapter: object) -> RuntimeAdapterConnectorValidator | None:
+    """Capture an optional local-only Connector validator once with the Adapter."""
+
+    try:
+        candidate = getattr(adapter, "validate_connector", None)
+    except Exception:
+        return None
+    if not callable(candidate) or iscoroutinefunction(candidate):
+        return None
+    try:
+        signature(candidate).bind(object(), object())
+    except Exception:
+        return None
+    return cast(RuntimeAdapterConnectorValidator, candidate)
+
+
+def _runtime_adapter_requires_connector(adapter: object) -> bool:
+    """Read an explicit Adapter declaration without trusting a truthy foreign value."""
+
+    try:
+        return getattr(adapter, "requires_connector", False) is True
+    except Exception:
+        return False
 
 
 def _supports_v2_invocation_protocol(method: object) -> bool:

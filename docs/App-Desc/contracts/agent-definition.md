@@ -44,6 +44,9 @@ Definition。
   是单次调用值，单独交付给已经选中的 Adapter；它不能替换 Handling、Adapter 或候选/entitlement 结果。
   缺失、越权、无效或不可用 Connector 在 Run 受理前以安全 `503` 拒绝。Run 的 Binding Snapshot 最多记录
   逻辑 `connector_ref` 和安全 `connector_revision`，从不保存 endpoint、Header、Token 或 Secret。
+  内置 `http` Runtime Adapter 的 `config` 只接受稳定的 `operation` 名；endpoint、HTTP method、认证
+  Header、host/port allowlist、TLS、redirect 与 body 上限均属于部署提供的 HTTP Connector 和 Egress Policy，
+  不可写入 Definition。
 - `external_execution`：逻辑 `executor_ref` 与受限 `params`。Host External Executor 接受后，
   Runtime 创建受 Ticket 约束的 Delegated Run；Native Runtime 不把它伪装为本地 Invocation。
 - `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invoker。

@@ -248,6 +248,13 @@ Trace 和日志不输出 Connector 的 endpoint、Header、Token 或 Secret。
 Adapter 若吞掉 deadline 的取消，Core 会继续强持有它直至应用生命周期排空；为了不让该 Adapter 使用已关闭
 的私有 capability，Connector 的 release 在该迟到任务结束时完成，而不是在安全 deadline 响应返回时抢先关闭。
 
+内置 `http` Runtime Adapter 仅使用 HTTP Connector 中由 deployment 选择的 endpoint、method 与显式
+允许的认证 Header；它复用 Catalog 生命周期内唯一的 Async Client，不会临时创建 Client。默认只接受
+HTTPS、精确 host/port allowlist 与 TLS 验证；Definition 或调用方不能透传 URL、Host/Header、Token 或
+网络策略。请求与响应应用硬大小上限，redirect 默认失败；部署显式启用 redirect 时每一跳都重新校验完整
+Egress Policy。HTTP status、协议异常、非 JSON 和畸形 JSON 都收敛为既有安全 Invocation 失败，不向
+公共结果暴露远端 body 或异常文本。
+
 预检会构造唯一的 Agent Call Envelope。它只含只读执行 ID、Definition `input_schema` 已声明并通过
 校验的输入、默认 `subject/tenant` Principal、三方门控后可选的规范 claim、安全 Context 定位事实、
 有界 Artifact reference、绝对 deadline，以及已存在的可信 Plan 幂等键。Token、Header、完整

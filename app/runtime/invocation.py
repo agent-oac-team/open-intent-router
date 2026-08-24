@@ -316,6 +316,7 @@ RuntimeAdapterExecutor = Callable[
     [RuntimeAdapterBinding, ResolvedConnector | None, AgentCallEnvelope],
     Awaitable[RawInvocationOutcome],
 ]
+RuntimeAdapterConnectorValidator = Callable[[RuntimeAdapterBinding, ResolvedConnector], bool]
 
 _RAW_OUTCOME_FIELDS = (
     "message",
@@ -386,6 +387,12 @@ class RuntimeAdapterExecution:
     binding: RuntimeAdapterBinding
     execute: RuntimeAdapterExecutor
     connector: ResolvedConnector | None = None
+    connector_validator: RuntimeAdapterConnectorValidator | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    requires_connector: bool = False
     limits: InvocationLimits = field(default_factory=InvocationLimits)
     requires_knowledge_context: bool = False
     principal_claims: frozenset[InvocationPrincipalClaim] = frozenset()
