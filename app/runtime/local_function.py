@@ -296,8 +296,6 @@ def local_function_runtime_descriptor(
         capability=RuntimeAdapterCapability(
             invocation=True,
             cancellation=True,
-            v2_invocation=True,
-            invocation_runtime=True,
         ),
         factory=factory,
         health_check=health,

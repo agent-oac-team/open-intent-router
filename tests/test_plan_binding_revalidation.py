@@ -7,7 +7,6 @@ from app.api.plans import confirm_and_execute_plan
 from app.core.config import Settings
 from app.core.errors import (
     AgentUnavailableError,
-    InvocationBindingUnavailableError,
     PlanBindingUnavailableError,
 )
 from app.repositories.database import DatabasePlanRepository
@@ -23,10 +22,11 @@ from app.runtime.catalog import (
     RuntimeAdapterDescriptor,
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
+    RuntimeCatalogValidationError,
 )
+from app.runtime.invocation import AgentCallEnvelope, RawInvocationOutcome, RuntimeAdapterBinding
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.plans import Plan, PlanExecutionRequest, PlanStep
 from app.schemas.routing import RouteContext, RouteDecision, RouteRequest, RouteResponse
 from app.schemas.security import NativePrincipal
@@ -35,11 +35,7 @@ from app.services.invocation_service import InvocationService
 from app.services.plan_bindings import freeze_plan_step_binding
 from app.services.plan_executor import PlanExecutor
 from app.services.plan_service import PlanService
-from app.services.registry_snapshot import (
-    InvocationBindingRequirement,
-    RegistrySnapshotBuilder,
-    RegistrySnapshotRuntime,
-)
+from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
 from app.services.router_service import RouterService
 from app.services.turn_service import TurnService
 
@@ -50,7 +46,7 @@ class _NoRegistryReads:
 
 
 class _ProtocolBrokenAdapter:
-    """Advertises v2 capability but lacks the required async invocation protocol."""
+    """Lacks the required closed Runtime Adapter protocol."""
 
 
 class _ReloadingPlanService:
@@ -103,21 +99,16 @@ class _ReloadingConfirmPlanService:
 
 @dataclass
 class _Adapter:
-    calls: list[tuple[AgentDefinitionV2, InvocationBindingRequirement, AgentInvocation]] = field(
-        default_factory=list
-    )
+    calls: list[tuple[RuntimeAdapterBinding, AgentCallEnvelope]] = field(default_factory=list)
 
-    async def invoke_v2(
+    async def execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.calls.append((definition, requirement, invocation))
-        return AgentInvocationResult(
-            run_id="adapter-run",
-            agent_id="adapter-agent",
-            status="completed",
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, envelope))
+        return RawInvocationOutcome(
             output={"status": "completed"},
         )
 
@@ -133,7 +124,6 @@ async def _healthy(_adapter: object) -> bool:
 async def _catalog(
     adapter: object,
     *,
-    v2_invocation: bool = True,
     contract_version: str = "plan-contract-v1",
     implementation_version: str = "plan-implementation-v1",
 ) -> RuntimeCatalog:
@@ -149,7 +139,7 @@ async def _catalog(
                     "properties": {"function": {"const": "execute"}},
                     "additionalProperties": False,
                 },
-                capability=RuntimeAdapterCapability(invocation=True, v2_invocation=v2_invocation),
+                capability=RuntimeAdapterCapability(invocation=True),
                 factory=lambda _context: adapter,
                 health_check=_healthy,
                 lifecycle=RuntimeAdapterLifecycle(activate=_noop, dispose=_noop),
@@ -287,8 +277,7 @@ async def test_v2_plan_execution_revalidates_and_resolves_before_creating_a_run(
     assert response.plan.status == "completed"
     assert [item["step_id"] for item in response.results] == ["bound-step"]
     assert len(adapter.calls) == 1
-    assert adapter.calls[0][0].revision == 9
-    assert adapter.calls[0][1].connector_ref is None
+    assert adapter.calls[0][0].adapter_key == "plan_adapter"
     assert len(runs.runs) == len(results.results) == 1
     run = next(iter(runs.runs.values()))
     assert run.agent_revision == 9
@@ -336,7 +325,7 @@ async def test_v2_plan_execution_keeps_one_captured_snapshot_for_all_steps() -> 
     )
 
     assert response.plan.status == "completed"
-    assert adapter.calls[0][0].revision == 9
+    assert adapter.calls[0][0].adapter_key == "plan_adapter"
     assert (
         snapshot_runtime.snapshot.select_for_user("plan-agent", _user()).definition.revision == 10
     )
@@ -379,7 +368,7 @@ async def test_v2_route_and_execute_reuses_the_route_snapshot_after_reload() -> 
     )
 
     assert response.plan.status == "completed"
-    assert adapter.calls[0][0].revision == 9
+    assert adapter.calls[0][0].adapter_key == "plan_adapter"
 
     await catalog.aclose()
 
@@ -429,7 +418,7 @@ async def test_confirm_and_execute_reuses_its_preflight_snapshot_after_reload() 
     )
 
     assert response.plan.status == "completed"
-    assert adapter.calls[0][0].revision == 9
+    assert adapter.calls[0][0].adapter_key == "plan_adapter"
     assert (
         snapshot_runtime.snapshot.select_for_user("plan-agent", _user()).definition.revision == 10
     )
@@ -723,72 +712,20 @@ async def test_v2_plan_rejects_an_incompatible_restarted_adapter_before_executio
     plan_service = PlanService(plans)
     plan = await _plan(plan_service=plan_service, snapshot_runtime=initial_snapshot)
 
-    restarted_adapter = _Adapter()
-    restarted_catalog = await _catalog(restarted_adapter, v2_invocation=False)
-    restarted_snapshot = RegistrySnapshotRuntime(RegistrySnapshotBuilder(restarted_catalog))
-    restarted_snapshot.load([_definition()], source="restarted")
-    runs = MemoryRunRepository()
-    results = MemoryResultRepository()
-    executor = await _executor(
-        catalog=restarted_catalog,
-        snapshot_runtime=restarted_snapshot,
-        plans=plans,
-        runs=runs,
-        results=results,
-    )
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await _catalog(_ProtocolBrokenAdapter())
 
-    with pytest.raises(PlanBindingUnavailableError) as exc_info:
-        await executor.execute(
-            plan.plan_id,
-            user=_user(),
-            input_values={"text": "must not start after restart"},
-        )
-
-    assert exc_info.value.details == {"reason_code": "invocation_adapter_incompatible"}
     stored = await plan_service.get_plan(plan.plan_id, tenant_id="plan-tenant", user_id="plan-user")
     assert stored is not None and stored.status == "pending"
     assert initial_adapter.calls == []
-    assert restarted_adapter.calls == []
-    assert runs.runs == {}
-    assert results.results == []
 
     await initial_catalog.aclose()
-    await restarted_catalog.aclose()
 
 
 async def test_v2_plan_resolves_adapter_protocol_before_marking_the_step_running() -> None:
     broken_adapter = _ProtocolBrokenAdapter()
-    catalog = await _catalog(broken_adapter)
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_definition()], source="initial")
-    plans = MemoryPlanRepository()
-    plan_service = PlanService(plans)
-    plan = await _plan(plan_service=plan_service, snapshot_runtime=snapshot_runtime)
-    runs = MemoryRunRepository()
-    results = MemoryResultRepository()
-    executor = await _executor(
-        catalog=catalog,
-        snapshot_runtime=snapshot_runtime,
-        plans=plans,
-        runs=runs,
-        results=results,
-    )
-
-    with pytest.raises(InvocationBindingUnavailableError) as exc_info:
-        await executor.execute(
-            plan.plan_id,
-            user=_user(),
-            input_values={"text": "must fail before Plan state changes"},
-        )
-
-    assert exc_info.value.details == {"reason_code": "invocation_adapter_incompatible"}
-    stored = await plan_service.get_plan(plan.plan_id, tenant_id="plan-tenant", user_id="plan-user")
-    assert stored is not None and stored.status == "pending"
-    assert stored.steps[0].status == "pending"
-    assert runs.runs == {}
-    assert results.results == []
-
-    await catalog.aclose()
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await _catalog(broken_adapter)
 
 
 async def test_v2_plan_resolves_a_compatible_restarted_adapter_version() -> None:
@@ -1363,51 +1300,9 @@ async def test_plan_control_rejects_stale_v2_binding_before_host_execution_is_ex
     await catalog.aclose()
 
 
-async def test_plan_control_rejects_broken_v2_adapter_before_creating_a_turn() -> None:
-    catalog = await _catalog(_ProtocolBrokenAdapter())
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_definition()], source="initial")
-    plans = MemoryPlanRepository()
-    plan_service = PlanService(plans)
-    plan = await _plan(plan_service=plan_service, snapshot_runtime=snapshot_runtime)
-    running = await plan_service.save_plan(
-        plan.model_copy(update={"status": "running", "current_step_id": "bound-step"})
-    )
-    turns = MemoryTurnRepository()
-    router = RouterService(
-        settings=Settings(storage_backend="memory"),
-        registry=_NoRegistryReads(),
-        llm_client=_PlanLLM(),
-        plan_service=plan_service,
-        snapshot_runtime=snapshot_runtime,
-        binding_resolver=BindingResolver(catalog),
-        turn_service=TurnService(turns),
-    )
-
-    with pytest.raises(PlanBindingUnavailableError) as exc_info:
-        await router.route(
-            RouteRequest.model_validate(
-                {
-                    "request_id": "plan-control-broken-adapter",
-                    "session_id": "plan-session",
-                    "source": "plan_control",
-                    "plan_id": running.plan_id,
-                    "user": _user().model_dump(mode="json"),
-                    "input": {"text": "continue"},
-                }
-            )
-        )
-
-    assert exc_info.value.details == {"reason_code": "invocation_adapter_incompatible"}
-    assert turns.turns == {}
-    stored = await plan_service.get_plan(
-        running.plan_id,
-        tenant_id="plan-tenant",
-        user_id="plan-user",
-    )
-    assert stored is not None and stored.status == "running"
-
-    await catalog.aclose()
+async def test_plan_control_cannot_start_with_a_broken_runtime_adapter_descriptor() -> None:
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await _catalog(_ProtocolBrokenAdapter())
 
 
 async def test_database_plan_repository_round_trips_hidden_v2_binding_requirement(

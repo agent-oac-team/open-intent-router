@@ -17,18 +17,13 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
 )
-from app.schemas.agents import AgentDefinitionV2
+from app.runtime.invocation import AgentCallEnvelope, RawInvocationOutcome, RuntimeAdapterBinding
 from app.schemas.common import UserContext
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.plans import Plan
 from app.services.binding_resolution import BindingResolver
 from app.services.plan_bindings import freeze_plan_step_binding
 from app.services.registry_service import AgentRegistryService
-from app.services.registry_snapshot import (
-    InvocationBindingRequirement,
-    RegistrySnapshotBuilder,
-    RegistrySnapshotRuntime,
-)
+from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
 
 
 async def _no_op(_adapter: object) -> None:
@@ -41,43 +36,36 @@ async def _healthy(_adapter: object) -> bool:
 
 @dataclass
 class V2TestAdapter:
-    """A deterministic Adapter for tests that do not themselves test adapters."""
+    """A deterministic Runtime Adapter for orchestration-focused tests."""
 
     error: Exception | None = None
-    status: str = "completed"
-    invocations: list[AgentInvocation] = field(default_factory=list)
+    invocations: list[AgentCallEnvelope] = field(default_factory=list)
 
-    async def invoke_v2(
+    async def execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.invocations.append(invocation)
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.invocations.append(envelope)
         if self.error is not None:
             raise self.error
-        properties = definition.output_schema.properties
-        if requirement.config.get("function") == "invalid":
-            output: dict[str, object] = {"summary": 123}
-        elif "summary" in properties:
-            output: dict[str, object] = {"summary": "test summary"}
-        elif "task_id" in properties:
-            output = {
-                "task_id": "task-test",
-                "title": str(invocation.input.get("title") or "test task"),
-            }
-        else:
-            output = {
-                key: "test value"
-                for key, schema in properties.items()
-                if isinstance(schema, dict) and schema.get("type") == "string"
-            }
-        return AgentInvocationResult(
-            run_id=invocation.run_id,
-            agent_id=definition.agent_id,
-            status=self.status,
-            output=output,
-        )
+        # Test behavior is selected exclusively from the already-safe Runtime
+        # binding.  In particular, this helper never receives a Definition or
+        # legacy Invocation object merely to synthesize a response shape.
+        function = binding.config.get("function")
+        if function == "invalid":
+            return RawInvocationOutcome(output={"summary": 123})
+        if function == "summarize":
+            return RawInvocationOutcome(output={"summary": "test summary"})
+        if function == "create_task":
+            return RawInvocationOutcome(
+                output={
+                    "task_id": "task-test",
+                    "title": str(envelope.input.get("title") or "test task"),
+                }
+            )
+        return RawInvocationOutcome(message="test adapter completed.")
 
 
 async def activate_v2_test_catalog(
@@ -91,7 +79,7 @@ async def activate_v2_test_catalog(
         contract_version="test-v2-adapter-contract",
         implementation_version="test-v2-adapter-implementation",
         config_schema={"type": "object"},
-        capability=RuntimeAdapterCapability(invocation=True, v2_invocation=True),
+        capability=RuntimeAdapterCapability(invocation=True),
         factory=lambda _context: adapter,
         health_check=_healthy,
         lifecycle=RuntimeAdapterLifecycle(activate=_no_op, dispose=_no_op),

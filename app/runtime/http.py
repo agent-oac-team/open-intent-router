@@ -741,8 +741,6 @@ def http_runtime_descriptor(
         },
         capability=RuntimeAdapterCapability(
             invocation=True,
-            v2_invocation=True,
-            invocation_runtime=True,
         ),
         factory=factory,
         health_check=health,

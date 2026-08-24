@@ -34,7 +34,6 @@ from app.schemas.common import UserContext
 
 BindingStatus = Literal["ready", "isolated", "disabled"]
 RegistrySnapshotRuntimeState = Literal["not_loaded", "ready", "degraded", "error"]
-InvocationExecutionProtocol = Literal["runtime_adapter", "legacy_v2"]
 _SAFE_ISOLATION_REASON_CODES = frozenset(
     {
         "invocation_adapter_missing",
@@ -84,17 +83,11 @@ class RegistryDefinitionValidationError(RegistryError):
 
 @dataclass(frozen=True, slots=True)
 class InvocationBindingRequirement:
-    """Stable Invocation constraints; no activated Adapter object is retained.
-
-    The execution protocol is chosen while compiling an immutable Snapshot so
-    Binding Resolution never probes one live Adapter and then falls back to a
-    different execution owner during a request.
-    """
+    """Stable Invocation constraints; no activated Adapter object is retained."""
 
     adapter_key: str
     connector_ref: str | None
     _config_json: str = field(repr=False)
-    execution_protocol: InvocationExecutionProtocol
     kind: Literal["invocation"] = field(default="invocation", init=False)
 
     @property
@@ -649,7 +642,6 @@ class RegistrySnapshotBuilder:
                 _config_json=_canonical_json(
                     handling.config.model_dump(mode="json", exclude_none=True)
                 ),
-                execution_protocol=self._invocation_execution_protocol(handling.adapter_key),
             )
             return requirement, self._invocation_isolation_reason(requirement)
         if isinstance(handling, ExternalExecutionHandling):
@@ -677,20 +669,6 @@ class RegistrySnapshotBuilder:
             )
         raise ValueError("Unknown Agent Handling")
 
-    def _invocation_execution_protocol(
-        self,
-        adapter_key: str,
-    ) -> InvocationExecutionProtocol:
-        """Read one trusted descriptor declaration while building a Snapshot."""
-
-        catalog = self._runtime_catalog
-        if catalog is None or not catalog.has(adapter_key):
-            return "legacy_v2"
-        descriptor = catalog.descriptor(adapter_key)
-        if descriptor.capability.invocation_runtime:
-            return "runtime_adapter"
-        return "legacy_v2"
-
     def _supports_external_executor(self, executor_ref: str) -> bool:
         external_executor = self._external_executor
         if external_executor is None:
@@ -710,8 +688,6 @@ class RegistrySnapshotBuilder:
         descriptor = catalog.descriptor(requirement.adapter_key)
         if not descriptor.capability.invocation:
             return "invocation_adapter_unsupported"
-        if not descriptor.capability.v2_invocation:
-            return "invocation_adapter_incompatible"
         validator = Draft202012Validator(dict(descriptor.config_schema))
         if next(validator.iter_errors(dict(requirement.config)), None) is not None:
             return "invocation_config_invalid"
@@ -833,9 +809,6 @@ def _snapshot_identity(
 def _snapshot_binding_requirement_payload(
     requirement: BindingRequirement,
 ) -> dict[str, object]:
-    """Add Snapshot-only execution ownership without changing Plan schema."""
+    """Return the fully declarative Binding identity used in Snapshot hashing."""
 
-    payload = requirement.to_payload()
-    if isinstance(requirement, InvocationBindingRequirement):
-        payload["execution_protocol"] = requirement.execution_protocol
-    return payload
+    return requirement.to_payload()

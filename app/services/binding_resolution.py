@@ -20,9 +20,12 @@ from app.core.errors import (
     DirectInvocationUnsupportedError,
     InvocationBindingUnavailableError,
     InvocationDeadlineExceededError,
-    InvocationError,
 )
-from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogKeyError
+from app.runtime.catalog import (
+    RuntimeCatalog,
+    RuntimeCatalogKeyError,
+    validate_runtime_adapter_instance,
+)
 from app.runtime.invocation import (
     InvocationDeadline,
     RuntimeAdapterBinding,
@@ -34,7 +37,6 @@ from app.runtime.invocation import (
 )
 from app.schemas.agents import AgentDefinitionV2, InvocationHandling
 from app.schemas.common import UserContext
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.logs import (
     InvocationBindingSnapshot,
     binding_version_fingerprint,
@@ -55,14 +57,7 @@ class ResolvedInvocationBinding:
     requirement: InvocationBindingRequirement
     adapter_key: str
     persistence_snapshot: InvocationBindingSnapshot
-    runtime_execution: RuntimeAdapterExecution | None = None
-    _invoke_v2: (
-        Callable[
-            [AgentDefinitionV2, InvocationBindingRequirement, AgentInvocation],
-            Awaitable[AgentInvocationResult],
-        ]
-        | None
-    ) = field(default=None, repr=False)
+    runtime_execution: RuntimeAdapterExecution
     _release_before_terminal: Callable[[], Awaitable[None]] | None = field(
         default=None,
         repr=False,
@@ -85,11 +80,6 @@ class ResolvedInvocationBinding:
         """
 
         execution = self.runtime_execution
-        if execution is None:
-            raise InvocationBindingUnavailableError(
-                "Invocation Binding is unavailable",
-                details={"reason_code": "connector_adapter_incompatible"},
-            )
         return replace(
             self,
             persistence_snapshot=self.persistence_snapshot.model_copy(
@@ -116,26 +106,6 @@ class ResolvedInvocationBinding:
         release = self._release_before_terminal
         if release is not None:
             await release()
-
-    async def invoke(self, invocation: AgentInvocation) -> AgentInvocationResult:
-        """Execute the retained pre-Runtime Adapter protocol during expansion.
-
-        New Adapters resolve to ``runtime_execution`` and are always called by
-        ``InvocationRuntime``.  The legacy branch is intentionally temporary:
-        it keeps existing deployed test and Host entry points green while the
-        remaining Adapter contracts migrate.
-        """
-
-        invoke_v2 = self._invoke_v2
-        if invoke_v2 is None:
-            raise InvocationError("Runtime Adapter must execute through Invocation Runtime")
-        result = invoke_v2(self.definition, self.requirement, invocation)
-        if not isawaitable(result):
-            raise InvocationError("Runtime Adapter v2 Invocation must be async")
-        result = await result
-        if not isinstance(result, AgentInvocationResult):
-            raise InvocationError("Runtime Adapter returned an invalid Invocation result")
-        return result
 
 
 @dataclass(slots=True)
@@ -216,9 +186,9 @@ class BindingResolver:
     ) -> AsyncIterator[ResolvedInvocationBinding]:
         """Resolve then always release one Connector around an accepted call.
 
-        A Connector-bearing legacy Binding has no safe argument through which
-        to pass the private capability.  It therefore fails closed before
-        acceptance rather than silently bypassing Connector resolution.
+        A private Connector is never optional once the frozen Binding declares
+        one. Resolution, validation and release remain inside this scope so a
+        request cannot substitute a deployment capability or bypass cleanup.
         """
 
         if binding.requirement.connector_ref is None:
@@ -232,12 +202,6 @@ class BindingResolver:
                 )
             yield binding
             return
-        if binding.runtime_execution is None:
-            raise InvocationBindingUnavailableError(
-                "Invocation Binding is unavailable",
-                details={"reason_code": "connector_adapter_incompatible"},
-            )
-
         if not binding.definition.access_policy.allows(principal):
             raise InvocationBindingUnavailableError(
                 "Invocation Binding is unavailable",
@@ -527,11 +491,6 @@ class BindingResolver:
                 "Invocation Binding is unavailable",
                 details={"reason_code": "invocation_adapter_unsupported"},
             )
-        if not descriptor.capability.v2_invocation:
-            raise InvocationBindingUnavailableError(
-                "Invocation Binding is unavailable",
-                details={"reason_code": "invocation_adapter_incompatible"},
-            )
         try:
             persistence_snapshot = InvocationBindingSnapshot(
                 adapter_key=descriptor.key,
@@ -546,102 +505,49 @@ class BindingResolver:
                 "Invocation Binding is unavailable",
                 details={"reason_code": "binding_snapshot_invalid"},
             ) from exc
-        if requirement.execution_protocol == "runtime_adapter":
-            try:
-                runtime_execute = getattr(adapter, "execute", None)
-            except Exception as exc:
-                raise InvocationBindingUnavailableError(
-                    "Invocation Binding is unavailable",
-                    details={"reason_code": "invocation_adapter_incompatible"},
-                ) from exc
-            if not _supports_runtime_adapter_protocol(runtime_execute):
-                raise InvocationBindingUnavailableError(
-                    "Invocation Binding is unavailable",
-                    details={"reason_code": "invocation_adapter_incompatible"},
-                )
-            connector_validator = _runtime_connector_validator(adapter)
-            connector_preparer = _runtime_connector_preparer(adapter)
-            requires_connector = _runtime_adapter_requires_connector(adapter)
-            canceller = _runtime_adapter_canceller(
-                adapter,
-                capability_declared=descriptor.capability.cancellation,
-            )
-            if descriptor.capability.cancellation and canceller is None:
-                raise InvocationBindingUnavailableError(
-                    "Invocation Binding is unavailable",
-                    details={"reason_code": "invocation_adapter_incompatible"},
-                )
-            return ResolvedInvocationBinding(
-                selection=selection,
-                definition=definition,
-                requirement=requirement,
-                adapter_key=descriptor.key,
-                persistence_snapshot=persistence_snapshot,
-                runtime_execution=RuntimeAdapterExecution(
-                    binding=RuntimeAdapterBinding(
-                        adapter_key=descriptor.key,
-                        config=requirement.config,
-                    ),
-                    execute=cast(RuntimeAdapterExecutor, runtime_execute),
-                    cancel=canceller,
-                    connector_validator=connector_validator,
-                    connector_preparer=connector_preparer,
-                    requires_connector=requires_connector,
-                    limits=handling.limits,
-                    requires_knowledge_context=(
-                        definition.context.knowledge.requirement == "required"
-                    ),
-                    principal_claims=(
-                        frozenset(handling.principal_projection.claims)
-                        & descriptor.capability.accepted_principal_claims
-                    ),
-                    principal_attribute_keys=(
-                        frozenset(handling.principal_projection.attribute_keys)
-                        & descriptor.capability.accepted_principal_attribute_keys
-                    ),
-                ),
-            )
-        if requirement.execution_protocol != "legacy_v2":
-            raise InvocationBindingUnavailableError(
-                "Invocation Binding is unavailable",
-                details={"reason_code": "invocation_adapter_incompatible"},
-            )
         try:
-            invoke_v2 = getattr(adapter, "invoke_v2", None)
+            runtime_execute = adapter.execute
+            validate_runtime_adapter_instance(descriptor, adapter, execute=runtime_execute)
         except Exception as exc:
             raise InvocationBindingUnavailableError(
                 "Invocation Binding is unavailable",
                 details={"reason_code": "invocation_adapter_incompatible"},
             ) from exc
-        if not _supports_v2_invocation_protocol(invoke_v2):
-            raise InvocationBindingUnavailableError(
-                "Invocation Binding is unavailable",
-                details={"reason_code": "invocation_adapter_incompatible"},
-            )
+        connector_validator = _runtime_connector_validator(adapter)
+        connector_preparer = _runtime_connector_preparer(adapter)
+        requires_connector = _runtime_adapter_requires_connector(adapter)
+        canceller = _runtime_adapter_canceller(
+            adapter,
+            capability_declared=descriptor.capability.cancellation,
+        )
         return ResolvedInvocationBinding(
             selection=selection,
             definition=definition,
             requirement=requirement,
             adapter_key=descriptor.key,
             persistence_snapshot=persistence_snapshot,
-            _invoke_v2=cast(
-                Callable[
-                    [AgentDefinitionV2, InvocationBindingRequirement, AgentInvocation],
-                    Awaitable[AgentInvocationResult],
-                ],
-                invoke_v2,
+            runtime_execution=RuntimeAdapterExecution(
+                binding=RuntimeAdapterBinding(
+                    adapter_key=descriptor.key,
+                    config=requirement.config,
+                ),
+                execute=cast(RuntimeAdapterExecutor, runtime_execute),
+                cancel=canceller,
+                connector_validator=connector_validator,
+                connector_preparer=connector_preparer,
+                requires_connector=requires_connector,
+                limits=handling.limits,
+                requires_knowledge_context=(definition.context.knowledge.requirement == "required"),
+                principal_claims=(
+                    frozenset(handling.principal_projection.claims)
+                    & descriptor.capability.accepted_principal_claims
+                ),
+                principal_attribute_keys=(
+                    frozenset(handling.principal_projection.attribute_keys)
+                    & descriptor.capability.accepted_principal_attribute_keys
+                ),
             ),
         )
-
-
-def _supports_runtime_adapter_protocol(method: object) -> bool:
-    if not callable(method) or not iscoroutinefunction(method):
-        return False
-    try:
-        signature(method).bind(object(), object(), object())
-    except Exception:
-        return False
-    return True
 
 
 def _runtime_connector_validator(adapter: object) -> RuntimeAdapterConnectorValidator | None:
@@ -710,18 +616,6 @@ def _runtime_adapter_requires_connector(adapter: object) -> bool:
         return getattr(adapter, "requires_connector", False) is True
     except Exception:
         return False
-
-
-def _supports_v2_invocation_protocol(method: object) -> bool:
-    """Keep protocol mismatches on the pre-acceptance side of Direct Invoke."""
-
-    if not callable(method) or not iscoroutinefunction(method):
-        return False
-    try:
-        signature(method).bind(object(), object(), object())
-    except Exception:
-        return False
-    return True
 
 
 def _release_late_resolved_connector(

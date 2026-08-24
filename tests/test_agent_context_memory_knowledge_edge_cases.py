@@ -120,7 +120,10 @@ async def test_direct_invoke_with_partial_existing_context_assembles_missing_con
             agent_id=agent.agent_id,
             session_id="s1",
             user=UserContext(id="u1", roles=["operator"], attributes={"tenant_id": "t1"}),
-            input={"text": "risk rating", "memory_context": {"status": "ok", "items": []}},
+            input={"text": "risk rating"},
+            # Governed Context is a typed request field, never an
+            # untrusted value hidden inside Adapter input.
+            memory_context={"status": "ok", "items": []},
         )
     )
 

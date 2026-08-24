@@ -303,8 +303,6 @@ async def test_conformance_harness_exercises_controlled_and_local_runtime_adapte
         },
         capability=RuntimeAdapterCapability(
             invocation=True,
-            v2_invocation=True,
-            invocation_runtime=True,
         ),
         factory=lambda _context: controlled,
         health_check=_healthy,
@@ -316,6 +314,11 @@ async def test_conformance_harness_exercises_controlled_and_local_runtime_adapte
         return RawInvocationOutcome(output={"summary": "local"})
 
     local_registry.register("echo", local_echo)
+
+    def assert_local_disposed(adapter: object) -> None:
+        assert isinstance(adapter, LocalFunctionRuntimeAdapter)
+        assert adapter.closed is True
+
     cases = (
         RuntimeAdapterConformanceCase(
             descriptor=controlled_descriptor,
@@ -340,6 +343,7 @@ async def test_conformance_harness_exercises_controlled_and_local_runtime_adapte
                     "input": {"text": "local conformance input"},
                 }
             ),
+            assert_disposed=assert_local_disposed,
         ),
     )
 

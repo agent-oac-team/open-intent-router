@@ -160,7 +160,10 @@ Ticket 签发 API。完整所有权、Candidate Set、Plan 取消和 deadline �
 }
 ```
 
-在默认 Mock 配置下，路由器会基于本地 `config/agents.example.yaml` 中的 Agent 定义返回路由决策。使用 `route-and-invoke` 时，如果目标 Agent 支持后端调用，会继续返回调用结果。
+在默认 Mock 配置下，路由器会基于本地 `config/agents.example.yaml` 中的 Agent Definition 返回路由决策。示例中的
+`invocation` Binding 还需要由部署注册同名 Runtime Adapter；缺失时 Snapshot 会安全隔离该 Definition，
+不会创建临时 Client、猜测旧执行类型或回退执行。使用 `route-and-invoke` 时，只有已通过发布门禁的目标
+Binding 才会继续返回调用结果。
 
 ## Plan 与多意图
 
@@ -177,7 +180,7 @@ Ticket 签发 API。完整所有权、Candidate Set、Plan 取消和 deadline �
 - `auto_execute`：后端自动执行可调用步骤。
 - `host_managed`：Host App 自行推进。
 
-`invoke` 仍是单 Agent 调用能力；多步骤执行由 PlanExecutor 通过 `/plans/{plan_id}/execute`、`/plans/{plan_id}/confirm-and-execute` 和 `/route-and-execute` 复用底层 invoker 完成。
+`invoke` 仍是单 Agent 调用能力；多步骤执行由 PlanExecutor 通过 `/plans/{plan_id}/execute`、`/plans/{plan_id}/confirm-and-execute` 和 `/route-and-execute` 复用底层 Invocation Runtime 完成。
 
 ## Prompt 配置
 
@@ -292,4 +295,4 @@ Workflow 文件只会产生 GitHub checks；要让它们真正阻止合并，需
 - 核心模型保持通用，不绑定具体业务系统或第三方 Agent 平台。
 - Native Definition 只保存逻辑 Binding 引用和受限 Handling 配置；平台私有字段留在 Runtime Adapter 或 Host Adapter。
 - 数据库注册表用于生产环境，本地文件注册表用于开发、测试和故障兜底。
-- 路由决策、Agent 调用和事件记录分层实现，方便后续替换 LLM、Invoker 或 Registry Source。
+- 路由决策、Agent 调用和事件记录分层实现，方便后续替换 LLM、Runtime Adapter 或 Registry Source。

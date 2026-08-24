@@ -635,8 +635,9 @@ async def test_public_invoke_consumes_controlled_handle_before_invoker(
     )
 
     assert result.status == "completed"
-    assert adapter.invocations[0].knowledge_context.items[0].item_id == "refund-policy"
-    assert adapter.invocations[0].knowledge_context_handle is None
-    assert adapter.invocations[0].knowledge_context_trace_id is None
+    envelope = adapter.invocations[0]
+    assert envelope.context.knowledge[0].item_id == "refund-policy"
+    assert not hasattr(envelope, "knowledge_context_handle")
+    assert not hasattr(envelope, "knowledge_context_trace_id")
     assert handles.active_handle_count == 0
     await catalog.aclose()

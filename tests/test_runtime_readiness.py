@@ -18,6 +18,7 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalogRuntime,
 )
+from app.runtime.invocation import AgentCallEnvelope, RawInvocationOutcome, RuntimeAdapterBinding
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
 from app.services.registry_service import RegistryState
@@ -30,6 +31,14 @@ from app.services.snapshot_routing_service import SnapshotRoutingService
 class HealthProbe:
     healthy: bool = True
     calls: int = 0
+
+    async def execute(
+        self,
+        _binding: RuntimeAdapterBinding,
+        _connector: object,
+        _envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        return RawInvocationOutcome()
 
 
 def _descriptor(key: str, probe: HealthProbe) -> RuntimeAdapterDescriptor:
@@ -48,7 +57,7 @@ def _descriptor(key: str, probe: HealthProbe) -> RuntimeAdapterDescriptor:
         contract_version="oir-runtime-adapter-v1",
         implementation_version="test-v1",
         config_schema={"type": "object"},
-        capability=RuntimeAdapterCapability(invocation=True, v2_invocation=True),
+        capability=RuntimeAdapterCapability(invocation=True),
         factory=lambda _context: probe,
         health_check=health,
         lifecycle=RuntimeAdapterLifecycle(activate=activate, dispose=dispose),

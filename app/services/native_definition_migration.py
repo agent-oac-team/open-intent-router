@@ -128,13 +128,12 @@ class NativeDefinitionMigrationTargetCapabilities:
 
     The offline tool deliberately does not guess from the legacy runtime.  Its
     caller supplies the logical Runtime/Executor capabilities of the *target*
-    deployment, including each v2 Invocation configuration schema.  The
+    deployment, including each Runtime Adapter configuration schema.  The
     manifest is never persisted in rollback material or projected in CLI
     output; only the Definition's already-safe required identifiers are.
     """
 
     _runtime_adapter_schemas: Mapping[str, Mapping[str, object]]
-    _runtime_adapter_v2: frozenset[str]
     _runtime_adapter_invocation: frozenset[str]
     _executor_refs: frozenset[str]
 
@@ -151,22 +150,19 @@ class NativeDefinitionMigrationTargetCapabilities:
             raise NativeDefinitionMigrationError("migration_target_capabilities_invalid")
 
         schemas: dict[str, Mapping[str, object]] = {}
-        v2_adapters: set[str] = set()
         invocation_adapters: set[str] = set()
         for raw_adapter in raw_adapters:
             if not isinstance(raw_adapter, Mapping):
                 raise NativeDefinitionMigrationError("migration_target_capabilities_invalid")
             key = raw_adapter.get("adapter_key")
             invocation = raw_adapter.get("invocation")
-            v2_invocation = raw_adapter.get("v2_invocation")
             schema = raw_adapter.get("config_schema")
             if (
                 not isinstance(key, str)
                 or not isinstance(invocation, bool)
-                or not isinstance(v2_invocation, bool)
                 or not isinstance(schema, Mapping)
                 or key in schemas
-                or (v2_invocation and not invocation)
+                or "v2_invocation" in raw_adapter
             ):
                 raise NativeDefinitionMigrationError("migration_target_capabilities_invalid")
             try:
@@ -182,8 +178,6 @@ class NativeDefinitionMigrationTargetCapabilities:
             schemas[key] = MappingProxyType(schema_copy)
             if invocation:
                 invocation_adapters.add(key)
-            if v2_invocation:
-                v2_adapters.add(key)
 
         executor_refs: set[str] = set()
         for raw_executor in raw_executors:
@@ -198,7 +192,6 @@ class NativeDefinitionMigrationTargetCapabilities:
             executor_refs.add(raw_executor)
         return cls(
             _runtime_adapter_schemas=MappingProxyType(schemas),
-            _runtime_adapter_v2=frozenset(v2_adapters),
             _runtime_adapter_invocation=frozenset(invocation_adapters),
             _executor_refs=frozenset(executor_refs),
         )
@@ -219,8 +212,6 @@ class NativeDefinitionMigrationTargetCapabilities:
                 raise _DefinitionConversionError("runtime_adapter_capability_missing")
             if handling.adapter_key not in self._runtime_adapter_invocation:
                 raise _DefinitionConversionError("runtime_adapter_capability_unsupported")
-            if handling.adapter_key not in self._runtime_adapter_v2:
-                raise _DefinitionConversionError("runtime_adapter_capability_incompatible")
             try:
                 if (
                     next(
@@ -2209,7 +2200,6 @@ def _error_message(reason_code: str) -> str:
         "migration_preparation_conflict": "Another Native Definition migration window is active.",
         "runtime_adapter_capability_missing": "A required Runtime Adapter is absent from the target.",
         "runtime_adapter_capability_unsupported": "A target Runtime Adapter cannot invoke Agents.",
-        "runtime_adapter_capability_incompatible": "A target Runtime Adapter lacks v2 support.",
         "runtime_adapter_configuration_invalid": "Definition configuration is invalid for the target Runtime Adapter.",
         "external_executor_capability_missing": "A required External Executor is absent from the target.",
         "migration_commit_outcome_unknown": "Migration commit outcome could not be verified safely.",

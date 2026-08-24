@@ -37,6 +37,10 @@ from app.schemas.invocation import InvokeRequest
 from app.services.binding_resolution import BindingResolver
 from app.services.invocation_service import InvocationService
 from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
+from tests.support.runtime_adapter_conformance import (
+    RuntimeAdapterConformanceCase,
+    assert_runtime_adapter_conforms,
+)
 
 
 @dataclass
@@ -272,6 +276,37 @@ async def test_http_runtime_uses_connector_separately_and_reuses_one_lifespan_cl
         await catalog.aclose()
 
     assert first_client.is_closed is True
+
+
+async def test_http_runtime_adapter_passes_the_common_conformance_harness() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"output": {"summary": "conformant"}})
+
+    resolver = _ConnectorResolver(_connector())
+
+    def assert_disposed(adapter: object) -> None:
+        assert isinstance(adapter, HttpRuntimeAdapter)
+        assert adapter.client is None
+
+    result = await assert_runtime_adapter_conforms(
+        RuntimeAdapterConformanceCase(
+            descriptor=http_runtime_descriptor(
+                transport=httpx.MockTransport(handler),
+                target_resolver=_public_target_resolver,
+            ),
+            definition=_definition(),
+            request=_request(),
+            connector_resolver=resolver,
+            assert_disposed=assert_disposed,
+        )
+    )
+
+    assert result.output == {"summary": "conformant"}
+    assert len(captured) == len(resolver.requests) == len(resolver.released) == 1
+    assert captured[0].headers["authorization"] == "Bearer connector-test-secret"
 
 
 async def test_http_runtime_does_not_retain_or_replay_remote_cookies_across_connectors() -> None:

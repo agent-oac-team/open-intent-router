@@ -12,8 +12,8 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
 )
+from app.runtime.invocation import AgentCallEnvelope, RawInvocationOutcome, RuntimeAdapterBinding
 from app.schemas.agents import AgentDefinitionV2
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult
 from app.schemas.plans import NextAction
 from app.schemas.routing import (
     InvocationPreview,
@@ -25,11 +25,7 @@ from app.schemas.routing import (
 )
 from app.services.binding_resolution import BindingResolver
 from app.services.invocation_service import InvocationService
-from app.services.registry_snapshot import (
-    InvocationBindingRequirement,
-    RegistrySnapshotBuilder,
-    RegistrySnapshotRuntime,
-)
+from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
 from app.services.router_service import RouterService
 
 
@@ -44,21 +40,16 @@ class _NoRegistryReads:
 
 @dataclass
 class _V2Adapter:
-    calls: list[tuple[AgentDefinitionV2, InvocationBindingRequirement, AgentInvocation]] = field(
-        default_factory=list
-    )
+    calls: list[tuple[RuntimeAdapterBinding, AgentCallEnvelope]] = field(default_factory=list)
 
-    async def invoke_v2(
+    async def execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.calls.append((definition, requirement, invocation))
-        return AgentInvocationResult(
-            run_id="adapter-run-id",
-            agent_id="adapter-agent-id",
-            status="completed",
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, envelope))
+        return RawInvocationOutcome(
             output={"status": "completed"},
         )
 
@@ -136,7 +127,7 @@ async def _catalog(adapter: _V2Adapter) -> RuntimeCatalog:
                     "properties": {"function": {"const": "execute"}},
                     "additionalProperties": False,
                 },
-                capability=RuntimeAdapterCapability(invocation=True, v2_invocation=True),
+                capability=RuntimeAdapterCapability(invocation=True),
                 factory=lambda _context: adapter,
                 health_check=_healthy,
                 lifecycle=RuntimeAdapterLifecycle(activate=_noop, dispose=_noop),
@@ -292,9 +283,8 @@ async def test_route_v2_invocation_reuses_exact_snapshot_binding_without_registr
 
     assert result is not None and result.status == "completed"
     assert len(adapter.calls) == 1
-    assert adapter.calls[0][0].revision == 4
-    assert adapter.calls[0][1].connector_ref is None
-    assert "host_handling" not in adapter.calls[0][2].context
+    assert adapter.calls[0][0].adapter_key == "v2_adapter"
+    assert "host_handling" not in adapter.calls[0][1].model_dump_json()
     assert len(runs.runs) == len(results.results) == 1
     assert registry.calls == 0
 

@@ -318,8 +318,6 @@ async def _service(
                 },
                 capability=RuntimeAdapterCapability(
                     invocation=True,
-                    v2_invocation=True,
-                    invocation_runtime=True,
                     accepted_principal_claims=accepted_principal_claims,
                     accepted_principal_attribute_keys=accepted_principal_attribute_keys,
                 ),

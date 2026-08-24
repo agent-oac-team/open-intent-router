@@ -20,6 +20,7 @@ from app.runtime.catalog import (
     RuntimeCatalogRuntime,
     RuntimeCatalogValidationError,
 )
+from app.runtime.invocation import AgentCallEnvelope, RawInvocationOutcome, RuntimeAdapterBinding
 from app.services.registry_snapshot import RegistrySnapshotRuntime
 
 RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS = 5.0
@@ -30,6 +31,14 @@ class LifecycleProbe:
     key: str
     events: list[str]
     healthy: bool = True
+
+    async def execute(
+        self,
+        _binding: RuntimeAdapterBinding,
+        _connector: object,
+        _envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        return RawInvocationOutcome()
 
 
 @dataclass
@@ -387,6 +396,41 @@ async def test_catalog_rejects_synchronous_health_checks_before_activation() -> 
         )
 
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_blocks_a_retired_invoker_shape_before_it_can_serve_requests() -> None:
+    """A deployment cannot smuggle the removed Invoker surface through a descriptor."""
+
+    events: list[str] = []
+
+    class RetiredInvoker:
+        async def invoke(self, _definition: object, _invocation: object) -> object:
+            return object()
+
+    async def activate(_adapter: object) -> None:
+        events.append("activate")
+
+    async def dispose(_adapter: object) -> None:
+        events.append("dispose")
+
+    source = descriptor("retired-invoker", events)
+    malformed = replace(
+        source,
+        factory=lambda _context: RetiredInvoker(),
+        lifecycle=RuntimeAdapterLifecycle(activate=activate, dispose=dispose),
+    )
+
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await RuntimeCatalog.activate(
+            [malformed],
+            RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
+            shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+
+    # The factory result is still cleaned up, but it never reaches activation,
+    # health probing, Snapshot construction or a request-time fallback.
+    assert events == ["dispose"]
 
 
 def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure() -> None:

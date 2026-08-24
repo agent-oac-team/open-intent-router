@@ -1,8 +1,8 @@
 # Runtime Catalog 生命周期 Runbook
 
 本 Runbook 约束部署级 Runtime Catalog 的启动、就绪判定和关闭。Catalog 只在应用
-lifespan 内创建一次：部署组合显式提供的受信 v2 Adapter 先完成 Descriptor 校验、激活和健康检查，
-随后冻结。Core 不隐式激活旧 `mock`、`http`、`local_function` 或 `ui_handoff` Invoker；缺失 v2
+lifespan 内创建一次：部署组合显式提供的受信 Runtime Adapter 先完成 Descriptor 校验、激活和健康检查，
+随后冻结。Core 不隐式激活任何历史 `mock`、`http`、`local_function` 或 `ui_handoff` 实现；缺失 Runtime
 Binding 时 Definition 被安全隔离，而非回退。结构性失败（Descriptor、factory、activate）使 Catalog
 不可用；健康失败按部署策略分别处理，不在请求路径重新创建 Adapter。
 
@@ -50,7 +50,7 @@ Runtime 记录失败并保留其可能使用的数据库与 Catalog，不会在�
 无需重启。它不输出数据库 URL、DSN、凭据或原始异常。修改该值需要滚动重启，不支持请求期热更新。
 
 `RUNTIME_REQUIRED_ADAPTER_KEYS` 是逗号分隔的已注册 Adapter logical key。未列出的 Adapter
-属于可选能力：健康失败时只隔离依赖它的 v2 Definition，`/ready` 仍返回 `200 degraded`。
+属于可选能力：健康失败时只隔离依赖它的 Native Definition，`/ready` 仍返回 `200 degraded`。
 列出的 Adapter 不健康或缺失时，`/ready` 返回 `503`，原因固定为
 `runtime_required_adapter_unhealthy` 或 `runtime_required_adapter_missing`。修改上述配置均需
 滚动重启；不支持请求期热更新。
@@ -108,8 +108,8 @@ Runtime Adapter Descriptor 的 `capability.cancellation` 是独立于 `invocatio
 `true` 时，Binding Resolver 才会读取 Adapter 的 async
 `cancel(binding, AdapterControlEnvelope) -> RawInvocationCancellationOutcome` 协议；控制 Envelope
 只含 Runtime `execution_id`，不含 Definition、Connector、输入、完整 Principal、Header 或凭据。声明
-能力但未实现该闭合 async 协议的 Binding 在 Run 受理前以安全不可用失败；未声明能力的 Adapter 永远不会
-收到控制调用。
+能力但未实现该闭合 async 协议的部署会在 Catalog lifespan 激活期被拒绝，不能发布 Binding 或 Run；未声明
+能力的 Adapter 永远不会收到控制调用。
 
 Runtime 在内存中为已受理的 Invocation 记录 `pre_dispatch`、`dispatched`、`stop_confirmed`、
 `stop_unconfirmed` 和 `terminalizing` 事实。它只根据自身尚未派发的事实或 Adapter 的
@@ -118,6 +118,29 @@ Runtime 在内存中为已受理的 Invocation 记录 `pre_dispatch`、`dispatch
 `completion_certainty=unknown`、不自动 retry 或重派。并发和重复控制共享一项进程拥有的控制 Task；
 Local Function Adapter 以 Run ID 跟踪 in-flight Task，直到 Adapter/Catalog 生命周期结束，不能靠请求
 结束或重新解析依赖找回另一份状态。
+
+## Adapter 发布门禁
+
+每个新增或变更的 Runtime Adapter 都必须先通过同一黑盒 conformance harness：它只经由
+Catalog -> Snapshot -> Binding Resolver -> Invocation Runtime 调用 Adapter，而不允许测试或部署走
+请求期 factory、旧执行注册表或完整 Definition / Invocation 参数。该门禁至少验证 Descriptor/config、
+activate / health / dispose、最小 Envelope、身份无关的 `RawInvocationOutcome`、Limits 与 Artifact、
+失败脱敏、绝对 deadline / completion certainty，以及声明 cancellation 后的真实停止证明。
+
+内置 Local Function 和 HTTP Adapter 都必须运行该 harness；HTTP case 还必须提供受信 Connector，验证
+请求期 Connector 的 release 和 Catalog dispose 后共享 Client 的关闭。故意违规的 Adapter（旧 `invoke`
+表面、身份注入、敏感/畸形/超限 outcome 或虚假 control）必须被 Catalog 或 Invocation Runtime 安全拒绝，
+不能以兼容分支继续执行。发布前至少运行：
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/test_runtime_catalog.py \
+  tests/test_invocation_runtime.py \
+  tests/test_invocation_call_contract.py \
+  tests/test_invocation_runtime_failures.py \
+  tests/test_invocation_cancellation.py \
+  tests/test_http_runtime_adapter.py
+```
 
 ## Connector Resolver
 

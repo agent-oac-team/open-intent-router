@@ -90,7 +90,6 @@ def _target_capabilities(
                 {
                     "adapter_key": "local_function",
                     "invocation": True,
-                    "v2_invocation": True,
                     "config_schema": {"type": "object"},
                 }
             ],
@@ -217,14 +216,12 @@ async def test_enabled_binding_requires_a_verified_target_capability_manifest(
     assert plan.report.issues[0].reason_code == "migration_target_capabilities_required"
 
 
-async def test_capability_manifest_rejects_incompatible_or_unsupported_target_binding(
+async def test_capability_manifest_rejects_the_retired_v2_invocation_toggle(
     database_migration,
 ) -> None:
-    factory, _migration = database_migration
-    await _store_legacy(factory, _legacy_agent())
-    migration = NativeDefinitionMigrationService(
-        factory,
-        target_capabilities=_target_capabilities(
+    del database_migration
+    with pytest.raises(NativeDefinitionMigrationError) as exc_info:
+        _target_capabilities(
             runtime_adapters=[
                 {
                     "adapter_key": "local_function",
@@ -233,18 +230,9 @@ async def test_capability_manifest_rejects_incompatible_or_unsupported_target_bi
                     "config_schema": {"type": "object"},
                 }
             ]
-        ),
-    )
-    await migration.prepare(
-        source="database",
-        native_writes_frozen=True,
-        new_execution_frozen=True,
-    )
+        )
 
-    plan = await migration.dry_run_database()
-
-    assert plan.report.ready_to_migrate is False
-    assert plan.report.issues[0].reason_code == "runtime_adapter_capability_incompatible"
+    assert exc_info.value.reason_code == "migration_target_capabilities_invalid"
 
 
 async def test_prepare_enforces_database_native_write_and_new_execution_fence(
@@ -1591,7 +1579,6 @@ async def test_cli_uses_target_capability_manifest_for_a_valid_binding(
                     {
                         "adapter_key": "local_function",
                         "invocation": True,
-                        "v2_invocation": True,
                         "config_schema": {"type": "object"},
                     }
                 ],

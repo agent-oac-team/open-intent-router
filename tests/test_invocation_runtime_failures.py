@@ -211,8 +211,6 @@ async def _runtime_service(
         },
         capability=RuntimeAdapterCapability(
             invocation=True,
-            v2_invocation=True,
-            invocation_runtime=True,
         ),
         factory=lambda _context: adapter,
         health_check=_healthy,

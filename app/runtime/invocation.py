@@ -723,7 +723,7 @@ class InvocationRuntime:
         *,
         invocation: AgentInvocation,
         agent_id: str,
-        execution: RuntimeAdapterExecution | None,
+        execution: RuntimeAdapterExecution,
     ) -> None:
         """Register pre-dispatch control facts immediately after Run acceptance.
 
@@ -742,12 +742,8 @@ class InvocationRuntime:
                 session_id=invocation.session_id,
                 agent_id=agent_id,
             ),
-            binding=(
-                execution.binding
-                if execution is not None
-                else RuntimeAdapterBinding(adapter_key="legacy_v2", config={})
-            ),
-            canceller=execution.cancel if execution is not None else None,
+            binding=execution.binding,
+            canceller=execution.cancel,
         )
 
     async def mark_dispatch_started(self, run_id: str) -> bool:
@@ -1151,105 +1147,6 @@ class InvocationRuntime:
             invocation=invocation,
             agent_id=agent_id,
             output_schema=output_schema,
-        )
-
-    async def execute_legacy_v2(
-        self,
-        *,
-        invoke: Callable[[], Awaitable[AgentInvocationResult]],
-        invocation: AgentInvocation,
-        agent_id: str,
-    ) -> AgentInvocationResult:
-        """Bound a retained ``invoke_v2`` Adapter by the shared deadline.
-
-        ``legacy_v2`` remains a transition protocol, but it is still an
-        accepted Invocation path. It therefore cannot reset or bypass the
-        process-owned deadline merely because it does not consume an
-        ``AgentCallEnvelope`` yet.
-        """
-
-        deadline = self.deadline_for(invocation)
-        remaining = deadline.remaining_seconds()
-        if remaining <= 0:
-            return self.project_failure(
-                invocation=invocation,
-                agent_id=agent_id,
-                failure=RawInvocationFailure.for_category(
-                    "deadline_exceeded",
-                    retryable=False,
-                ),
-                completion_certainty="certain",
-            )
-        try:
-            result = await _await_runtime_value(
-                invoke(),
-                timeout=remaining,
-                observe_late_task=lambda task: self._observe_late_adapter_task(
-                    task,
-                    late_task_cleanup=None,
-                ),
-            )
-        except asyncio.CancelledError as exc:
-            return self._project_exception_or_expired_deadline(
-                deadline=deadline,
-                invocation=invocation,
-                agent_id=agent_id,
-                exc=exc,
-                completion_certainty="unknown",
-            )
-        except TimeoutError as exc:
-            return self._project_exception_or_expired_deadline(
-                deadline=deadline,
-                invocation=invocation,
-                agent_id=agent_id,
-                exc=exc,
-                completion_certainty="unknown",
-            )
-        except Exception as exc:
-            return self._project_exception_or_expired_deadline(
-                deadline=deadline,
-                invocation=invocation,
-                agent_id=agent_id,
-                exc=exc,
-                completion_certainty="unknown",
-            )
-        if deadline.remaining_seconds() <= 0:
-            return self.project_failure(
-                invocation=invocation,
-                agent_id=agent_id,
-                failure=RawInvocationFailure.for_category(
-                    "deadline_exceeded",
-                    retryable=False,
-                ),
-                completion_certainty="unknown",
-            )
-        if not isinstance(result, AgentInvocationResult):
-            return self.project_failure(
-                invocation=invocation,
-                agent_id=agent_id,
-                failure=RawInvocationFailure.for_category(
-                    "invalid_response",
-                    retryable=False,
-                ),
-            )
-        if result.status in {"completed", "blocked", "clarify"}:
-            # ``blocked``/``clarify`` are controlled non-terminal Adapter
-            # outcomes rather than evidence of a transport failure. They
-            # remain valid across the temporary legacy_v2 bridge after the
-            # shared deadline check above.
-            return result
-        # A retained v2 Adapter has already crossed the dispatch boundary.
-        # Its public result is an old compatibility shape, so it cannot
-        # attest that a remote side effect did not happen. Re-project it
-        # through the closed Runtime failure vocabulary and forbid redispatch.
-        category = _legacy_failure_category(result)
-        return self.project_failure(
-            invocation=invocation,
-            agent_id=agent_id,
-            failure=RawInvocationFailure.for_category(category, retryable=False),
-            completion_certainty=(
-                "unknown" if category in {"remote_failure", "deadline_exceeded"} else None
-            ),
         )
 
     async def execute_preflighted(
@@ -1681,20 +1578,6 @@ def _untrusted_outcome_field_value(field: str, value: object) -> object:
             for item in value
         ]
     return value
-
-
-def _legacy_failure_category(result: AgentInvocationResult) -> InvocationFailureCategory:
-    """Map retained v2 result codes back into the closed Runtime vocabulary."""
-
-    code = result.error.code if result.error is not None else None
-    categories: dict[str, InvocationFailureCategory] = {
-        "invocation_unavailable": "unavailable",
-        "invocation_deadline_exceeded": "deadline_exceeded",
-        "invocation_rejected": "rejected",
-        "invocation_remote_failure": "remote_failure",
-        "invocation_invalid_response": "invalid_response",
-    }
-    return categories.get(code or "", "remote_failure")
 
 
 def _declared_model_values(model: object, fields: tuple[str, ...]) -> dict[str, object]:

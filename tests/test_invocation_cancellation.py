@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import InvocationBindingUnavailableError
 from app.repositories.database import DatabaseResultRepository, DatabaseRunRepository
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
 from app.runtime.catalog import (
@@ -13,6 +12,7 @@ from app.runtime.catalog import (
     RuntimeAdapterDescriptor,
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
+    RuntimeCatalogValidationError,
 )
 from app.runtime.invocation import (
     AdapterControlEnvelope,
@@ -161,8 +161,6 @@ async def _service_for(
         capability=RuntimeAdapterCapability(
             invocation=True,
             cancellation=cancellation,
-            v2_invocation=True,
-            invocation_runtime=True,
         ),
         factory=lambda _context: adapter,
         health_check=_healthy,
@@ -234,19 +232,11 @@ async def test_undeclared_adapter_control_is_never_inspected_or_called() -> None
 async def test_declared_but_invalid_control_protocol_rejects_before_run_acceptance() -> None:
     adapter = _BlockingControlAdapter()
     # Hide the valid async method after construction. The descriptor attests to
-    # cancellation, so Binding Resolution must reject the mismatch before a
-    # Runtime Run can be accepted.
+    # cancellation, so the Catalog must reject the mismatch during lifespan
+    # activation, before any request can construct a Binding or Run.
     adapter.cancel = object()  # type: ignore[method-assign]
-    catalog, service, runs, results = await _service_for(adapter, cancellation=True)
-    try:
-        with pytest.raises(InvocationBindingUnavailableError) as raised:
-            await service.invoke(_request())
-
-        assert raised.value.details == {"reason_code": "invocation_adapter_incompatible"}
-        assert not runs.runs
-        assert not results.results
-    finally:
-        await catalog.aclose()
+    with pytest.raises(RuntimeCatalogValidationError, match="cancellation protocol"):
+        await _service_for(adapter, cancellation=True)
 
 
 async def test_pre_dispatch_cancel_skips_adapter_and_converges_cancelled() -> None:

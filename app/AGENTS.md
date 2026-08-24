@@ -12,7 +12,7 @@
 ## 事实与安全
 
 - PostgreSQL canonical 状态优先于 Session 展示消息、Route Log、Debug Trace、mem0 和 Milvus。
-- 权限、所有权、TTL、删除状态和 source policy 必须在 LLM、Invoker、Provider 或响应正文之前校验。
+- 权限、所有权、TTL、删除状态和 source policy 必须在 LLM、Runtime Adapter、Provider 或响应正文之前校验。
 - 外部调用不得持有数据库事务。涉及 Turn / Run / Result / Plan / Outbox 时，保持现有事务、幂等和重试不变量。
 - 配置定义只进入 `app/core/config.py`，示例同步到 `.env.example`，不得记录真实凭证。
 

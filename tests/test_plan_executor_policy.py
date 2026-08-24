@@ -410,8 +410,11 @@ async def test_plan_executor_marks_plan_failed_when_step_output_is_invalid(
 
     assert response.plan.status == "failed"
     assert response.plan.current_step_id is None
-    assert response.results[0]["status"] == "invalid_output"
-    assert response.results[0]["error"]["code"] == "invalid_output"
+    # The closed Runtime validates an Adapter outcome before it reaches the
+    # service-level output projection. Its public failure status is therefore
+    # the uniform Runtime failure shape.
+    assert response.results[0]["status"] == "failed"
+    assert response.results[0]["error"]["code"] == "invocation_invalid_response"
 
 
 def _executor(settings, registry_service, repositories) -> PlanExecutor:

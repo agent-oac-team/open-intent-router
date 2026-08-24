@@ -7,8 +7,11 @@ checks in each feature test.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from inspect import isawaitable
 
+from app.application import ConnectorResolverApplicationPort
 from app.core.config import Settings
 from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
 from app.runtime.catalog import RuntimeAdapterContext, RuntimeAdapterDescriptor, RuntimeCatalog
@@ -25,6 +28,8 @@ class RuntimeAdapterConformanceCase:
     descriptor: RuntimeAdapterDescriptor
     definition: AgentDefinitionV2
     request: InvokeRequest
+    connector_resolver: ConnectorResolverApplicationPort | None = None
+    assert_disposed: Callable[[object], object | Awaitable[object]] | None = None
 
 
 async def assert_runtime_adapter_conforms(
@@ -32,6 +37,11 @@ async def assert_runtime_adapter_conforms(
 ) -> AgentInvocationResult:
     """Exercise an Adapter only through its deployment Runtime contract."""
 
+    # Catalog activation is the deployment gate: descriptor schema, lifecycle,
+    # health and the closed Adapter method surface must all pass before a
+    # Definition can be bound. The rest of this helper deliberately goes
+    # through Snapshot -> Binding Resolver -> Invocation Runtime so it cannot
+    # accidentally revive a request-time construction path in tests.
     catalog = await RuntimeCatalog.activate(
         [case.descriptor],
         RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
@@ -47,7 +57,7 @@ async def assert_runtime_adapter_conforms(
             run_repository=runs,
             result_repository=results,
             snapshot_runtime=snapshot_runtime,
-            binding_resolver=BindingResolver(catalog),
+            binding_resolver=BindingResolver(catalog, connector_resolver=case.connector_resolver),
             invocation_runtime=InvocationRuntime(),
         )
         result = await invocation_service.invoke(case.request)
@@ -58,3 +68,8 @@ async def assert_runtime_adapter_conforms(
         return result
     finally:
         await catalog.aclose()
+        if case.assert_disposed is not None:
+            adapter = catalog.get(case.descriptor.key)
+            observed = case.assert_disposed(adapter)
+            if isawaitable(observed):
+                await observed

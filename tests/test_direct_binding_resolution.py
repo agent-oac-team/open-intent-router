@@ -18,20 +18,23 @@ from app.runtime.catalog import (
     RuntimeAdapterDescriptor,
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
+    RuntimeCatalogValidationError,
 )
-from app.runtime.invocation import InvocationRuntime, InvocationRuntimePolicy
+from app.runtime.invocation import (
+    AgentCallEnvelope,
+    InvocationRuntime,
+    InvocationRuntimePolicy,
+    RawInvocationOutcome,
+    RuntimeAdapterBinding,
+)
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.execution_traces import ExecutionTraceQuery
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
+from app.schemas.invocation import InvokeRequest
 from app.services.binding_resolution import BindingResolver
 from app.services.execution_trace_service import ExecutionTraceService
 from app.services.invocation_service import InvocationService
 from app.services.memory_formation import formation_turn_id
-from app.services.registry_snapshot import (
-    InvocationBindingRequirement,
-    RegistrySnapshotBuilder,
-    RegistrySnapshotRuntime,
-)
+from app.services.registry_snapshot import RegistrySnapshotBuilder, RegistrySnapshotRuntime
 
 
 class _NoRegistryReads:
@@ -40,113 +43,76 @@ class _NoRegistryReads:
 
 
 @dataclass
-class _V2Adapter:
+class _RuntimeAdapter:
     output: dict[str, object] = field(default_factory=lambda: {"status": "completed"})
-    calls: list[tuple[AgentDefinitionV2, InvocationBindingRequirement, AgentInvocation]] = field(
-        default_factory=list
-    )
+    calls: list[tuple[RuntimeAdapterBinding, AgentCallEnvelope]] = field(default_factory=list)
 
-    async def invoke_v2(
+    async def execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.calls.append((definition, requirement, invocation))
-        return AgentInvocationResult(
-            run_id="adapter-controlled-run-id",
-            agent_id="adapter-controlled-agent-id",
-            status="completed",
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, envelope))
+        return RawInvocationOutcome(
             output=self.output,
         )
 
 
-class _SlowV2Adapter(_V2Adapter):
-    async def invoke_v2(
+class _SlowRuntimeAdapter(_RuntimeAdapter):
+    async def execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.calls.append((definition, requirement, invocation))
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, envelope))
         await asyncio.sleep(0.05)
-        return AgentInvocationResult(
-            run_id="adapter-controlled-run-id",
-            agent_id="adapter-controlled-agent-id",
-            status="completed",
-            output=self.output,
-        )
+        return RawInvocationOutcome(output=self.output)
 
 
-class _SynchronousV2Adapter(_V2Adapter):
-    def invoke_v2(
+class _SynchronousRuntimeAdapter(_RuntimeAdapter):
+    def execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.calls.append((definition, requirement, invocation))
-        return AgentInvocationResult(
-            run_id="adapter-controlled-run-id",
-            agent_id="adapter-controlled-agent-id",
-            status="completed",
-            output=self.output,
-        )
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, envelope))
+        return RawInvocationOutcome(output=self.output)
 
 
-class _WrongSignatureV2Adapter(_V2Adapter):
-    async def invoke_v2(self, definition: AgentDefinitionV2) -> AgentInvocationResult:
-        return AgentInvocationResult(
-            run_id="adapter-controlled-run-id",
-            agent_id=definition.agent_id,
-            status="completed",
-            output=self.output,
-        )
+class _WrongSignatureRuntimeAdapter(_RuntimeAdapter):
+    async def execute(self, _binding: RuntimeAdapterBinding) -> RawInvocationOutcome:
+        return RawInvocationOutcome(output=self.output)
 
 
-class _DualProtocolAdapter(_V2Adapter):
-    """A transition adapter whose Runtime method must not win by fallback."""
-
-    async def execute(self, _binding: object, _envelope: object) -> object:
-        raise AssertionError("Snapshot declared the legacy v2 execution protocol")
-
-
-class _SwappingV2Adapter(_V2Adapter):
-    """Exposes a compatible method once, then a different one on later lookup."""
+class _SwappingRuntimeAdapter(_RuntimeAdapter):
+    """The Resolver captures the checked Runtime callable once per binding."""
 
     lookup_count = 0
 
     @property
-    def invoke_v2(self):
+    def execute(self):
         self.lookup_count += 1
-        return self._accepted_invoke_v2 if self.lookup_count == 1 else self._changed_invoke_v2
+        return self._accepted_execute if self.lookup_count <= 2 else self._changed_execute
 
-    async def _accepted_invoke_v2(
+    async def _accepted_execute(
         self,
-        definition: AgentDefinitionV2,
-        requirement: InvocationBindingRequirement,
-        invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        self.calls.append((definition, requirement, invocation))
-        return AgentInvocationResult(
-            run_id="adapter-controlled-run-id",
-            agent_id="adapter-controlled-agent-id",
-            status="completed",
-            output=self.output,
-        )
+        binding: RuntimeAdapterBinding,
+        _connector: object,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        self.calls.append((binding, envelope))
+        return RawInvocationOutcome(output=self.output)
 
-    def _changed_invoke_v2(
+    def _changed_execute(
         self,
-        _definition: AgentDefinitionV2,
-        _requirement: InvocationBindingRequirement,
-        _invocation: AgentInvocation,
-    ) -> AgentInvocationResult:
-        return AgentInvocationResult(
-            run_id="adapter-controlled-run-id",
-            agent_id="adapter-controlled-agent-id",
-            status="completed",
-            output=self.output,
-        )
+        _binding: RuntimeAdapterBinding,
+        _connector: object,
+        _envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        return RawInvocationOutcome(output=self.output)
 
 
 async def _noop(_adapter: object) -> None:
@@ -158,13 +124,11 @@ async def _healthy(_adapter: object) -> bool:
 
 
 def _descriptor(
-    adapter: _V2Adapter,
+    adapter: _RuntimeAdapter,
     *,
     key: str = "test_adapter",
     contract_version: str = "adapter-contract-v1",
     implementation_version: str = "adapter-implementation-v2",
-    v2_invocation: bool = True,
-    invocation_runtime: bool = False,
 ) -> RuntimeAdapterDescriptor:
     return RuntimeAdapterDescriptor(
         key=key,
@@ -178,8 +142,6 @@ def _descriptor(
         },
         capability=RuntimeAdapterCapability(
             invocation=True,
-            v2_invocation=v2_invocation,
-            invocation_runtime=invocation_runtime,
         ),
         factory=lambda _context: adapter,
         health_check=_healthy,
@@ -188,13 +150,11 @@ def _descriptor(
 
 
 async def _catalog(
-    adapter: _V2Adapter,
+    adapter: _RuntimeAdapter,
     *,
     adapter_key: str = "test_adapter",
     contract_version: str = "adapter-contract-v1",
     implementation_version: str = "adapter-implementation-v2",
-    v2_invocation: bool = True,
-    invocation_runtime: bool = False,
 ) -> RuntimeCatalog:
     return await RuntimeCatalog.activate(
         [
@@ -203,8 +163,6 @@ async def _catalog(
                 key=adapter_key,
                 contract_version=contract_version,
                 implementation_version=implementation_version,
-                v2_invocation=v2_invocation,
-                invocation_runtime=invocation_runtime,
             )
         ],
         RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
@@ -277,7 +235,7 @@ def _binding_version_fingerprint(value: str) -> str:
 
 
 async def test_direct_v2_invocation_resolves_before_run_and_persists_safe_binding() -> None:
-    adapter = _V2Adapter()
+    adapter = _RuntimeAdapter()
     catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
@@ -308,10 +266,9 @@ async def test_direct_v2_invocation_resolves_before_run_and_persists_safe_bindin
     assert first.status == second.status == "completed"
     assert first.run_id != second.run_id
     assert len(adapter.calls) == 2
-    assert adapter.calls[0][0].revision == 9
-    assert adapter.calls[0][1].adapter_key == "test_adapter"
-    assert adapter.calls[0][2].run_id == first.run_id
-    assert adapter.calls[0][2].context == {"caller_hint": "safe"}
+    assert adapter.calls[0][0].adapter_key == "test_adapter"
+    assert adapter.calls[0][1].execution_id == first.run_id
+    assert "caller_hint" not in adapter.calls[0][1].model_dump_json()
     run = await runs.get_run(first.run_id)
     assert run is not None
     assert run.agent_revision == 9
@@ -380,7 +337,7 @@ async def test_direct_v2_invocation_resolves_before_run_and_persists_safe_bindin
 async def test_direct_v2_invocation_rejects_non_invocation_handling_without_side_effects(
     handling: dict[str, object],
 ) -> None:
-    adapter = _V2Adapter()
+    adapter = _RuntimeAdapter()
     catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(
         RegistrySnapshotBuilder(catalog, supported_executor_refs={"host_executor"})
@@ -407,34 +364,15 @@ async def test_direct_v2_invocation_rejects_non_invocation_handling_without_side
     await catalog.aclose()
 
 
-async def test_direct_v2_invocation_rejects_isolated_binding_before_run() -> None:
-    adapter = _V2Adapter()
-    catalog = await _catalog(adapter, v2_invocation=False)
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_invocation_definition()], source="test")
-    runs = MemoryRunRepository()
-    results = MemoryResultRepository()
-    service = _service(
-        catalog=catalog,
-        snapshot_runtime=snapshot_runtime,
-        runs=runs,
-        results=results,
-    )
+async def test_catalog_rejects_invocation_descriptor_without_runtime_execute_protocol() -> None:
+    adapter = object()
 
-    with pytest.raises(InvocationBindingUnavailableError) as exc_info:
-        await service.invoke(_request())
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.details == {"reason_code": "invocation_adapter_incompatible"}
-    assert runs.runs == {}
-    assert results.results == []
-    assert adapter.calls == []
-
-    await catalog.aclose()
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await _catalog(adapter)  # type: ignore[arg-type]
 
 
 async def test_direct_v2_invocation_rejects_missing_adapter_before_run() -> None:
-    adapter = _V2Adapter()
+    adapter = _RuntimeAdapter()
     catalog = await _catalog(adapter, adapter_key="other_adapter")
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
@@ -460,58 +398,21 @@ async def test_direct_v2_invocation_rejects_missing_adapter_before_run() -> None
 
 
 async def test_direct_v2_invocation_rejects_synchronous_adapter_before_run() -> None:
-    adapter = _SynchronousV2Adapter()
-    catalog = await _catalog(adapter)
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_invocation_definition()], source="test")
-    runs = MemoryRunRepository()
-    results = MemoryResultRepository()
-    service = _service(
-        catalog=catalog,
-        snapshot_runtime=snapshot_runtime,
-        runs=runs,
-        results=results,
-    )
+    adapter = _SynchronousRuntimeAdapter()
 
-    with pytest.raises(InvocationBindingUnavailableError) as exc_info:
-        await service.invoke(_request())
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.details == {"reason_code": "invocation_adapter_incompatible"}
-    assert runs.runs == {}
-    assert results.results == []
-    assert adapter.calls == []
-
-    await catalog.aclose()
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await _catalog(adapter)
 
 
 async def test_direct_v2_invocation_rejects_wrong_adapter_signature_before_run() -> None:
-    adapter = _WrongSignatureV2Adapter()
-    catalog = await _catalog(adapter)
-    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
-    snapshot_runtime.load([_invocation_definition()], source="test")
-    runs = MemoryRunRepository()
-    results = MemoryResultRepository()
-    service = _service(
-        catalog=catalog,
-        snapshot_runtime=snapshot_runtime,
-        runs=runs,
-        results=results,
-    )
+    adapter = _WrongSignatureRuntimeAdapter()
 
-    with pytest.raises(InvocationBindingUnavailableError) as exc_info:
-        await service.invoke(_request())
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.details == {"reason_code": "invocation_adapter_incompatible"}
-    assert runs.runs == {}
-    assert results.results == []
-
-    await catalog.aclose()
+    with pytest.raises(RuntimeCatalogValidationError, match="invocation protocol"):
+        await _catalog(adapter)
 
 
 async def test_direct_v2_invocation_uses_the_preflight_validated_adapter_callable() -> None:
-    adapter = _SwappingV2Adapter()
+    adapter = _SwappingRuntimeAdapter()
     catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
@@ -527,16 +428,16 @@ async def test_direct_v2_invocation_uses_the_preflight_validated_adapter_callabl
     result = await service.invoke(_request())
 
     assert result.status == "completed"
-    assert adapter.lookup_count == 1
+    assert adapter.lookup_count == 2
     assert len(adapter.calls) == 1
     assert len(runs.runs) == len(results.results) == 1
 
     await catalog.aclose()
 
 
-async def test_direct_invocation_uses_the_protocol_frozen_by_the_snapshot() -> None:
-    adapter = _DualProtocolAdapter()
-    catalog = await _catalog(adapter, invocation_runtime=False)
+async def test_direct_invocation_uses_the_runtime_adapter_captured_by_binding_resolution() -> None:
+    adapter = _RuntimeAdapter()
+    catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
     selection = snapshot_runtime.preflight_for_user(
@@ -544,7 +445,6 @@ async def test_direct_invocation_uses_the_protocol_frozen_by_the_snapshot() -> N
         _request().user,
     )
     assert selection is not None
-    assert selection.binding_requirement.execution_protocol == "legacy_v2"
     runs = MemoryRunRepository()
     results = MemoryResultRepository()
     service = _service(
@@ -563,9 +463,9 @@ async def test_direct_invocation_uses_the_protocol_frozen_by_the_snapshot() -> N
     await catalog.aclose()
 
 
-async def test_legacy_v2_invocation_uses_the_shared_deadline_after_acceptance() -> None:
-    adapter = _SlowV2Adapter()
-    catalog = await _catalog(adapter, invocation_runtime=False)
+async def test_runtime_adapter_uses_the_shared_deadline_after_acceptance() -> None:
+    adapter = _SlowRuntimeAdapter()
+    catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
     runs = MemoryRunRepository()
@@ -595,9 +495,9 @@ async def test_legacy_v2_invocation_uses_the_shared_deadline_after_acceptance() 
     await catalog.aclose()
 
 
-async def test_legacy_v2_binding_with_a_connector_fails_before_run_acceptance() -> None:
-    adapter = _DualProtocolAdapter()
-    catalog = await _catalog(adapter, invocation_runtime=False)
+async def test_runtime_adapter_binding_with_a_connector_requires_a_resolver_before_run() -> None:
+    adapter = _RuntimeAdapter()
+    catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load(
         [
@@ -625,7 +525,7 @@ async def test_legacy_v2_binding_with_a_connector_fails_before_run_acceptance() 
         await service.invoke(_request())
 
     assert exc_info.value.status_code == 503
-    assert exc_info.value.details == {"reason_code": "connector_adapter_incompatible"}
+    assert exc_info.value.details == {"reason_code": "connector_unavailable"}
     assert adapter.calls == []
     assert runs.runs == {}
     assert results.results == []
@@ -651,7 +551,7 @@ async def test_legacy_v2_binding_with_a_connector_fails_before_run_acceptance() 
 async def test_direct_v2_invocation_projects_descriptor_versions_without_raw_persistence(
     descriptor_version: str,
 ) -> None:
-    adapter = _V2Adapter()
+    adapter = _RuntimeAdapter()
     catalog = await _catalog(
         adapter,
         contract_version=descriptor_version,
@@ -705,8 +605,8 @@ async def test_direct_v2_invocation_projects_descriptor_versions_without_raw_per
     await catalog.aclose()
 
 
-async def test_accepted_v2_invocation_output_validation_still_records_a_terminal_run() -> None:
-    adapter = _V2Adapter(output={"unexpected": True})
+async def test_accepted_runtime_output_validation_still_records_a_terminal_run() -> None:
+    adapter = _RuntimeAdapter(output={"unexpected": True})
     catalog = await _catalog(adapter)
     snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
     snapshot_runtime.load([_invocation_definition()], source="test")
@@ -721,9 +621,9 @@ async def test_accepted_v2_invocation_output_validation_still_records_a_terminal
 
     result = await service.invoke(_request())
 
-    assert result.status == "invalid_output"
+    assert result.status == "failed"
     assert result.error is not None
-    assert result.error.code == "invalid_output"
+    assert result.error.code == "invocation_invalid_response"
     assert len(runs.runs) == len(results.results) == 1
 
     await catalog.aclose()
@@ -735,7 +635,7 @@ async def test_direct_v2_invocation_persists_binding_facts_in_database(
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'binding.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
     await managed_database.initialize_schema(settings)
-    adapter = _V2Adapter()
+    adapter = _RuntimeAdapter()
     catalog = await RuntimeCatalog.activate(
         [_descriptor(adapter)],
         RuntimeAdapterContext(settings=settings),

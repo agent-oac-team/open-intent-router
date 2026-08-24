@@ -282,12 +282,12 @@ _避免_：Agent Knowledge、Memory Item、固定答案
 
 **Evidence Provider（证据提供者）**：
 在路由判断前提供 Evidence、意图提示或受控固定命中的能力边界。
-_避免_：Agent Registry、Knowledge Retriever、Agent Invoker
+_避免_：Agent Registry、Knowledge Retriever、Invocation Runtime
 
 **Knowledge Provider（知识提供者）**：
 为特定用途和消费者检索外部 Knowledge 的能力边界，不参与 Route Decision；具体实现
 由部署与租户策略解析，Agent 只声明知识需求。
-_避免_：Evidence Provider、knowledge_sys、Agent Invoker
+_避免_：Evidence Provider、knowledge_sys、Invocation Runtime
 
 **Knowledge Retrieval（知识检索）**：
 Knowledge Provider 面向 Context 组装提供的单一只读操作，输入查询、受信主体、逻辑

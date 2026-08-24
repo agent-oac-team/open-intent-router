@@ -6,7 +6,7 @@ import re
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from inspect import isawaitable, iscoroutinefunction
+from inspect import isawaitable, iscoroutinefunction, signature
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Literal, TypeVar
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _MAX_VERSION_LENGTH = 128
+_UNSET = object()
 
 AdapterFactory = Callable[["RuntimeAdapterContext"], object | Awaitable[object]]
 AdapterHealthCheck = Callable[[object], Awaitable[bool]]
@@ -50,20 +51,18 @@ class RuntimeCatalogKeyError(RuntimeCatalogError):
 class RuntimeAdapterCapability:
     """Stable capabilities declared by a trusted deployment adapter.
 
-    ``v2_invocation`` is deliberately separate from generic invocation support:
-    an adapter must explicitly opt into consuming an ``oir-agent-v2`` Invocation
-    Binding before it can be selected for a Native Definition.  During the
-    Invocation Runtime expansion, ``invocation_runtime`` freezes which of the
-    two supported execution protocols owns a Binding. ``cancellation`` is a
-    separate opt-in for Runtime control: only a descriptor declaring it may
-    expose the closed ``cancel(binding, control_envelope)`` protocol. It is a
-    deployment declaration, not a request-time feature probe.
+    An invocation-capable descriptor is always a Runtime Adapter.  The
+    Catalog validates its closed ``execute(binding, connector, envelope)``
+    surface while composing the application lifespan; no older Definition or
+    Invocation-shaped execution protocol remains selectable at request time.
+    ``cancellation`` is a separate opt-in for Runtime control: only a
+    descriptor declaring it may expose the closed
+    ``cancel(binding, control_envelope)`` protocol. It is a deployment
+    declaration, not a request-time feature probe.
     """
 
     invocation: bool
     cancellation: bool = False
-    v2_invocation: bool = False
-    invocation_runtime: bool = False
     accepted_principal_claims: frozenset[str] = frozenset()
     accepted_principal_attribute_keys: frozenset[str] = frozenset()
 
@@ -187,6 +186,7 @@ class RuntimeCatalog:
                     )
                 entry = _ActivatedAdapter(descriptor=descriptor, adapter=adapter)
                 activated.append(entry)
+                validate_runtime_adapter_instance(descriptor, adapter)
                 await _run_lifecycle_hook(descriptor.lifecycle.activate, adapter)
                 health = await _check_adapter_health(
                     descriptor,
@@ -412,7 +412,7 @@ def build_default_runtime_descriptors() -> tuple[RuntimeAdapterDescriptor, ...]:
     """Return no implicit Native Runtime Adapters.
 
     Native v2 Definitions bind only to trusted deployment descriptors supplied
-    at application composition. Retired Invoker implementations are never
+    at application composition. Retired execution implementations are never
     activated as a fallback by the default Catalog.
     """
 
@@ -454,18 +454,6 @@ def _validate_descriptors(
             raise RuntimeCatalogValidationError(
                 "Runtime Adapter cancellation capability is invalid"
             )
-        if not isinstance(descriptor.capability.v2_invocation, bool):
-            raise RuntimeCatalogValidationError(
-                "Runtime Adapter v2 invocation capability is invalid"
-            )
-        if not isinstance(descriptor.capability.invocation_runtime, bool):
-            raise RuntimeCatalogValidationError(
-                "Runtime Adapter Invocation Runtime capability is invalid"
-            )
-        if descriptor.capability.invocation_runtime and not descriptor.capability.v2_invocation:
-            raise RuntimeCatalogValidationError(
-                "Runtime Adapter Invocation Runtime capability requires v2 invocation"
-            )
         if not isinstance(descriptor.capability.accepted_principal_claims, frozenset) or not all(
             isinstance(claim, str) and claim in INVOCATION_PRINCIPAL_CLAIMS
             for claim in descriptor.capability.accepted_principal_claims
@@ -501,6 +489,73 @@ def _validate_descriptors(
     return validated
 
 
+def validate_runtime_adapter_instance(
+    descriptor: RuntimeAdapterDescriptor,
+    adapter: object,
+    *,
+    execute: object = _UNSET,
+) -> None:
+    """Validate the closed Runtime Adapter surface before it serves traffic.
+
+    This deliberately performs only structural checks.  Calling arbitrary
+    deployment code with a synthetic Envelope during startup could itself
+    dispatch work; behavior is exercised by the reusable conformance kit.
+    The Catalog still prevents a descriptor that advertises invocation or
+    cancellation from reaching a request with a legacy or malformed method.
+    """
+
+    capability = descriptor.capability
+    if not capability.invocation:
+        return
+    if execute is _UNSET:
+        try:
+            execute = getattr(adapter, "execute", None)
+        except Exception as exc:
+            raise RuntimeCatalogValidationError(
+                "Runtime Adapter invocation protocol is invalid"
+            ) from exc
+    if not _is_async_protocol_method(execute, argument_count=3):
+        raise RuntimeCatalogValidationError("Runtime Adapter invocation protocol is invalid")
+
+    try:
+        requires_connector = getattr(adapter, "requires_connector", False)
+    except Exception as exc:
+        raise RuntimeCatalogValidationError(
+            "Runtime Adapter connector declaration is invalid"
+        ) from exc
+    if not isinstance(requires_connector, bool):
+        raise RuntimeCatalogValidationError("Runtime Adapter connector declaration is invalid")
+
+    try:
+        validator = getattr(adapter, "validate_connector", None)
+    except Exception as exc:
+        raise RuntimeCatalogValidationError(
+            "Runtime Adapter connector validator is invalid"
+        ) from exc
+    if validator is not None and not _is_sync_protocol_method(validator, argument_count=2):
+        raise RuntimeCatalogValidationError("Runtime Adapter connector validator is invalid")
+
+    try:
+        preparer = getattr(adapter, "prepare_connector", None)
+    except Exception as exc:
+        raise RuntimeCatalogValidationError(
+            "Runtime Adapter connector preparer is invalid"
+        ) from exc
+    if preparer is not None and not _is_async_protocol_method(preparer, argument_count=2):
+        raise RuntimeCatalogValidationError("Runtime Adapter connector preparer is invalid")
+
+    if not capability.cancellation:
+        return
+    try:
+        canceller = getattr(adapter, "cancel", None)
+    except Exception as exc:
+        raise RuntimeCatalogValidationError(
+            "Runtime Adapter cancellation protocol is invalid"
+        ) from exc
+    if not _is_async_protocol_method(canceller, argument_count=2):
+        raise RuntimeCatalogValidationError("Runtime Adapter cancellation protocol is invalid")
+
+
 def _validate_shutdown_timeout(timeout_seconds: float) -> None:
     if (
         isinstance(timeout_seconds, bool)
@@ -529,6 +584,26 @@ def _is_async_callable(callback: object) -> bool:
     return callable(callback) and (
         iscoroutinefunction(callback) or iscoroutinefunction(type(callback).__call__)
     )
+
+
+def _is_async_protocol_method(method: object, *, argument_count: int) -> bool:
+    if not callable(method) or not iscoroutinefunction(method):
+        return False
+    try:
+        signature(method).bind(*(object() for _ in range(argument_count)))
+    except Exception:
+        return False
+    return True
+
+
+def _is_sync_protocol_method(method: object, *, argument_count: int) -> bool:
+    if not callable(method) or iscoroutinefunction(method):
+        return False
+    try:
+        signature(method).bind(*(object() for _ in range(argument_count)))
+    except Exception:
+        return False
+    return True
 
 
 def _copy_descriptor_metadata(

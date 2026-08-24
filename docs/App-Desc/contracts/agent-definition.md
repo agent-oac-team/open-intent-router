@@ -35,7 +35,9 @@ Definition。
 
 - `invocation`：`adapter_key`，可选 `connector_ref`，以及 `config` 中的符号操作引用和受限调优。
   Runtime Catalog 在构建 Snapshot 时解析并校验该 Binding；缺失或不兼容时隔离 Definition，而不是
-  回退到旧 Invoker 类型。它可选声明 `limits`（输入、Context、message、structured output、
+  回退到任何旧执行类型。所有 invocation-capable Adapter 必须在应用 lifespan 中通过 Catalog 的闭合
+  `execute(binding, connector, envelope)` 发布校验；它们不能接收完整 Definition/Invocation，也不能
+  返回 Run/Agent 身份或公共终态。它可选声明 `limits`（输入、Context、message、structured output、
   Artifact 数量与 metadata 的上限）和 `principal_projection`。前者只能比部署级硬上限更严格；后者
   只可请求规范 claim（`roles`、`groups`、`entitlements`）或审核过的安全属性键，仍须同时由部署 policy
   和 Adapter descriptor 允许，不能借此传递 token、Header、凭据或完整 Principal attributes。
@@ -52,7 +54,7 @@ Definition。
   host/port local override 开启，且 Runtime 必须运行在 `APP_ENV=local`，Definition、Connector 操作或请求都不能自行放宽。
 - `external_execution`：逻辑 `executor_ref` 与受限 `params`。Host External Executor 接受后，
   Runtime 创建受 Ticket 约束的 Delegated Run；Native Runtime 不把它伪装为本地 Invocation。
-- `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invoker。
+- `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invocation Runtime。
 
 示例：
 
@@ -86,7 +88,7 @@ handling:
 
 ## Context 配置
 
-`context` 是 M5/M6 的产品入口。Agent 只声明需要什么上下文；中控、Invoker 或固定工作流节点负责召回、预算、审计和传参。
+`context` 是 M5/M6 的产品入口。Agent 只声明需要什么上下文；中控、Invocation Runtime 或固定工作流节点负责召回、预算、审计和传参。
 
 ```yaml
 context:

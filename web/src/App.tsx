@@ -1240,10 +1240,10 @@ function AgentEditorModal({
         {form.handling_kind === "invocation" ? (
           <div className="form-grid three">
             <TextField
-              label="已注册 v2 Adapter Key"
+              label="已注册 Runtime Adapter Key"
               value={form.adapter_key}
               onChange={(value) => update("adapter_key", value)}
-              placeholder="例如 example_v2_adapter"
+              placeholder="例如 example_runtime_adapter"
               required
             />
             <TextField label="Connector Ref（可选）" value={form.connector_ref} onChange={(value) => update("connector_ref", value)} />
@@ -1391,7 +1391,7 @@ function ConversationPanel(props: {
           </div>
         ) : null}
         <div className="submit-row">
-          <span>{props.executionMode === "route" ? "只返回路由结果" : "路由后调用基础 Invoker"}</span>
+          <span>{props.executionMode === "route" ? "只返回路由结果" : "路由后调用 Runtime Adapter"}</span>
           <button type="submit" className="primary-button" disabled={!props.canSubmit || props.busy}>
             {props.busy ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
             发送

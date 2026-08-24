@@ -699,7 +699,7 @@ describe("意图路由测试台", () => {
             agents: [
               {
                 ...mockAgent,
-                handling: { kind: "invocation", adapter_key: "example_v2_adapter", config: {} },
+                handling: { kind: "invocation", adapter_key: "example_runtime_adapter", config: {} },
               },
             ],
           });
@@ -895,17 +895,20 @@ describe("意图路由测试台", () => {
   });
 
   it.each([
-    ["invocation", { kind: "invocation", adapter_key: "example_v2_adapter", config: {} }],
+    ["invocation", { kind: "invocation", adapter_key: "example_runtime_adapter", config: {} }],
     ["external_execution", { kind: "external_execution", executor_ref: "oac-executor", params: {} }],
     ["ui_handoff", { kind: "ui_handoff", route: "/host/demo", params: {} }],
-  ] as const)("以 v2 handling 创建 %s Agent", async (kind, expectedHandling) => {
+  ] as const)("以 Native handling 创建 %s Agent", async (kind, expectedHandling) => {
     render(<App />);
 
     await screen.findByText("mock-router");
     await userEvent.click(screen.getByRole("button", { name: "新增 Agent" }));
     await userEvent.selectOptions(screen.getByLabelText("Handling"), kind);
     if (kind === "invocation") {
-      await userEvent.type(screen.getByLabelText("已注册 v2 Adapter Key"), "example_v2_adapter");
+      await userEvent.type(
+        screen.getByLabelText("已注册 Runtime Adapter Key"),
+        "example_runtime_adapter",
+      );
     }
     if (kind === "external_execution") {
       await userEvent.type(screen.getByLabelText("Executor Ref"), "oac-executor");

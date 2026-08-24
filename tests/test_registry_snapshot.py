@@ -10,6 +10,7 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
     RuntimeCatalog,
 )
+from app.runtime.invocation import AgentCallEnvelope, RawInvocationOutcome, RuntimeAdapterBinding
 from app.schemas.agents import AgentDefinitionV2, InvocationHandling
 from app.schemas.common import UserContext
 from app.services.registry_snapshot import (
@@ -23,6 +24,14 @@ from app.services.registry_snapshot import (
 @dataclass
 class _Adapter:
     key: str
+
+    async def execute(
+        self,
+        _binding: RuntimeAdapterBinding,
+        _connector: object,
+        _envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        return RawInvocationOutcome()
 
 
 async def _noop(_adapter: object) -> None:
@@ -46,17 +55,13 @@ def _descriptor(
     *,
     config_schema: dict[str, object] | None = None,
     invocation: bool = True,
-    v2_invocation: bool = True,
 ) -> RuntimeAdapterDescriptor:
     return RuntimeAdapterDescriptor(
         key=key,
         contract_version="oir-runtime-adapter-v1",
         implementation_version="test-v1",
         config_schema=config_schema or {"type": "object"},
-        capability=RuntimeAdapterCapability(
-            invocation=invocation,
-            v2_invocation=v2_invocation,
-        ),
+        capability=RuntimeAdapterCapability(invocation=invocation),
         factory=lambda _context: _Adapter(key),
         health_check=_healthy,
         lifecycle=RuntimeAdapterLifecycle(activate=_noop, dispose=_noop),
@@ -186,9 +191,9 @@ async def test_snapshot_runtime_swaps_only_complete_loads_and_preserves_selected
 
 
 @pytest.mark.asyncio
-async def test_snapshot_isolates_an_installed_adapter_without_v2_capability() -> None:
-    adapter_key = "non_v2_adapter"
-    catalog = await _catalog(_descriptor(adapter_key, v2_invocation=False))
+async def test_snapshot_isolates_an_installed_adapter_without_invocation_capability() -> None:
+    adapter_key = "non_invocation_adapter"
+    catalog = await _catalog(_descriptor(adapter_key, invocation=False))
     builder = RegistrySnapshotBuilder(catalog)
     definition = _definition(
         f"legacy-{adapter_key}-agent",
@@ -206,7 +211,7 @@ async def test_snapshot_isolates_an_installed_adapter_without_v2_capability() ->
     assert snapshot.select_for_user(f"legacy-{adapter_key}-agent", user) is None
     entry = snapshot.entry_for(f"legacy-{adapter_key}-agent")
     assert entry is not None
-    assert entry.isolation_reason_code == "invocation_adapter_incompatible"
+    assert entry.isolation_reason_code == "invocation_adapter_unsupported"
 
     await catalog.aclose()
 

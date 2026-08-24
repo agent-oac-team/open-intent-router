@@ -2,8 +2,8 @@
 # Deployment adapters own any concrete connector or executor configuration;
 # this file retains only safe logical identifiers and declarative Handling.
 # ``invocation`` examples require a deployment Runtime Adapter whose descriptor
-# advertises ``v2_invocation: true`` for ``example_v2_adapter``. Historical
-# ``mock`` Invoker code is not activated as a Native v2 fallback.
+# registers the closed Runtime Adapter contract for ``example_runtime_adapter``.
+# No historical execution implementation is activated as a Native Runtime fallback.
 agents:
   - schema_version: oir-agent-v2
     agent_id: script_writer
@@ -46,7 +46,7 @@ agents:
     priority: 20
     handling:
       kind: invocation
-      adapter_key: example_v2_adapter
+      adapter_key: example_runtime_adapter
       config: {function: script_writer}
 
   - schema_version: oir-agent-v2
@@ -99,7 +99,7 @@ agents:
     priority: 30
     handling:
       kind: invocation
-      adapter_key: example_v2_adapter
+      adapter_key: example_runtime_adapter
       config: {function: visit_preparation}
 
   - schema_version: oir-agent-v2
@@ -180,5 +180,5 @@ agents:
     priority: 15
     handling:
       kind: invocation
-      adapter_key: example_v2_adapter
+      adapter_key: example_runtime_adapter
       config: {function: wealth_knowledge}

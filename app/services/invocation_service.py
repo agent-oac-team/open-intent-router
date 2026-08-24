@@ -119,7 +119,7 @@ class InvocationService:
         # independently.  A composition may publish an already-built Snapshot
         # and resolver beside that service; every execution path below still
         # consumes the resulting Snapshot selection instead of reading Registry
-        # records or dispatching by a legacy type.
+        # records or dispatching by an obsolete handling type.
         published_snapshot_runtime = getattr(registry, "snapshot_runtime", None)
         published_binding_resolver = getattr(registry, "binding_resolver", None)
         if snapshot_runtime is None and isinstance(
@@ -399,20 +399,19 @@ class InvocationService:
         deadline = self.invocation_runtime.deadline_for(invocation)
         definition = resolved.definition
         runtime_execution = resolved.runtime_execution
-        if runtime_execution is not None:
-            invocation = invocation.model_copy(
-                update={
-                    "input": self.invocation_runtime.preflight_input(
-                        execution=runtime_execution,
-                        invocation=invocation,
-                        input_schema=definition.input_schema.model_dump(
-                            mode="json",
-                            exclude_none=True,
-                        ),
-                        reject_reserved_request_keys=True,
-                    )
-                }
-            )
+        invocation = invocation.model_copy(
+            update={
+                "input": self.invocation_runtime.preflight_input(
+                    execution=runtime_execution,
+                    invocation=invocation,
+                    input_schema=definition.input_schema.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    ),
+                    reject_reserved_request_keys=True,
+                )
+            }
+        )
 
         binding_resolver = self.binding_resolver
         if binding_resolver is None:
@@ -465,9 +464,7 @@ class InvocationService:
         binding_snapshot = binding.persistence_snapshot
         runtime_execution = binding.runtime_execution
 
-        def preflight(prepared_invocation: AgentInvocation) -> AgentCallEnvelope | None:
-            if runtime_execution is None:
-                return None
+        def preflight(prepared_invocation: AgentInvocation) -> AgentCallEnvelope:
             return self.invocation_runtime.preflight(
                 execution=runtime_execution,
                 invocation=prepared_invocation,
@@ -479,21 +476,8 @@ class InvocationService:
 
         async def execute(
             prepared_invocation: AgentInvocation,
-            envelope: AgentCallEnvelope | None,
+            envelope: AgentCallEnvelope,
         ) -> AgentInvocationResult:
-            if runtime_execution is None:
-                return await self.invocation_runtime.execute_legacy_v2(
-                    invoke=lambda: self._invoke_with_claim_heartbeat(
-                        binding.invoke,
-                        prepared_invocation,
-                        deadline=deadline,
-                    ),
-                    invocation=prepared_invocation,
-                    agent_id=definition.agent_id,
-                )
-            if envelope is None:
-                raise InvocationError("Invocation Runtime preflight is unavailable")
-
             async def invoke_runtime(
                 runtime_invocation: AgentInvocation,
             ) -> AgentInvocationResult:
@@ -530,7 +514,7 @@ class InvocationService:
             },
             execute=execute,
             runtime_execution=runtime_execution,
-            preflight=preflight if runtime_execution is not None else None,
+            preflight=preflight,
             release_before_terminal=binding.release_before_terminal,
             deadline=deadline,
             on_accepted=on_accepted,
@@ -542,15 +526,13 @@ class InvocationService:
         invocation: AgentInvocation,
         *,
         invoker_type: str,
-        execute: Callable[
-            [AgentInvocation, AgentCallEnvelope | None], Awaitable[AgentInvocationResult]
-        ],
+        execute: Callable[[AgentInvocation, AgentCallEnvelope], Awaitable[AgentInvocationResult]],
         agent_revision: int,
         handling_kind: AgentHandlingKind,
         binding_snapshot: InvocationBindingSnapshot,
         binding_trace_facts: dict[str, object],
-        runtime_execution: RuntimeAdapterExecution | None = None,
-        preflight: Callable[[AgentInvocation], AgentCallEnvelope | None] | None = None,
+        runtime_execution: RuntimeAdapterExecution,
+        preflight: Callable[[AgentInvocation], AgentCallEnvelope],
         release_before_terminal: Callable[[], Awaitable[None]] | None = None,
         deadline: InvocationDeadline,
         on_accepted: Callable[[], None] | None = None,
@@ -559,7 +541,7 @@ class InvocationService:
         # must occur before a canonical Plan Step is claimed or a Run exists.
         deadline.require_remaining()
         invocation = await self._with_agent_context(definition, invocation, deadline=deadline)
-        preflight_envelope = preflight(invocation) if preflight is not None else None
+        preflight_envelope = preflight(invocation)
         request_suppressed = request_prohibits_memory(invocation)
         canonical_managed = bool(invocation.context.get("_canonical_turn_managed"))
         if canonical_managed and self.canonical_invocation_store is None:

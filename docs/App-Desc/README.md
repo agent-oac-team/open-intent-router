@@ -39,7 +39,7 @@ Host Adapter 可以包含 OAC、IRS、Coze、Legacy 字段和兼容行为；Core
 | `app/services` | Router、Invocation、Plan、Turn、Context、Memory、Knowledge 业务编排 | 保持领域边界；复用现有生命周期与事务入口 |
 | `app/repositories` | memory / database / file 存储与事务实现 | canonical、幂等、所有权、并发和序列化一致性 |
 | `app/db`、`sql` | SQLAlchemy 模型和 PostgreSQL 初始化 / 迁移快照 | 数据表与约束是事实源；SQLite / PostgreSQL 行为对齐 |
-| `app/llm`、`app/invokers`、`app/plugins` | LLM、Agent 调用与 Evidence 扩展 | Provider 细节不泄漏到公共契约；超时与失败可控 |
+| `app/llm`、`app/runtime`、`app/plugins` | LLM、Runtime Adapter 与 Evidence 扩展 | Provider 细节不泄漏到公共契约；超时与失败可控 |
 | `host_adapters/oac` | IRS wire-compatible API、Mapper、V2 identity、Shadow、Cutover | 只调用应用端口；无 IRS runtime 依赖；中控失败 fail closed |
 | `host_apps/oac` | OAC 进程组合、Host 配置和运行门禁 | Composition only；启动前校验数据域、key、write fence |
 | `web/src` | 本地开发测试台 | 非生产 UI；每轮数据与真实后端 trace 对齐 |

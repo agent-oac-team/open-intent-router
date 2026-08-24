@@ -76,7 +76,7 @@ npm run dev
 - `app/services/plan_executor.py`：Plan 步骤执行、依赖推进、结果回填、暂停恢复和 `next_action` 协作。
 - `app/services/registry_service.py`：Agent Registry 加载、合并和候选过滤。
 - `app/llm`：Mock 与 OpenAI-compatible LLM Client。
-- `app/invokers`：Agent 调用器实现。
+- `app/runtime`：Runtime Catalog、Adapter、共享 Client 与 Invocation Runtime。
 - `app/plugins/evidence.py`：可选 Evidence Provider，只提供证据、弱意图提示或固定问命中。
 - `host_adapters/oac`：IRS 兼容协议、V2 身份、映射、Fallback、Shadow 和 Cutover，只能调用应用端口。
 - `host_apps/oac`：OAC Host 组合根、配置和启动门禁，不复制领域状态机。
@@ -90,9 +90,10 @@ npm run dev
 - `show_plan` 只保留为兼容语义，不应成为后续核心设计。
 - 后端负责意图识别、候选裁剪、路由决策、Plan 状态、Run / Result / Event 和可后端执行的步骤推进。
 - 前端或 Host App 负责展示、确认、用户输入、打开 UI 和上报外部事件。
-- Agent Registry 保持轻量。MVP 不强制增加大量执行字段，优先根据 `type` / `invocation.type` 推断是否可后端执行。
-- 如需覆盖执行策略，优先使用 `metadata.execution.policy` 或 `metadata.execution_policy`，待模式稳定后再考虑一等字段。
-- LLM Provider、Evidence Provider、Agent Invoker、Registry Source 都应可插拔。
+- Native Agent Registry 只接受 `oir-agent-v2` Definition；是否可执行只由封闭的 `handling` union
+  声明，不能从旧 `type`、`invocation` 或 metadata 推断。
+- 执行策略使用一等的 Plan / Handling 契约；不得把它写回任意 metadata 或引入第二套执行语义。
+- LLM Provider、Evidence Provider、Runtime Adapter、Registry Source 都应可插拔。
 - 核心项目不内置重型工作流引擎、完整知识库平台或分布式任务系统。
 
 ## 开发规范
@@ -100,8 +101,10 @@ npm run dev
 - 修改前先阅读相关 schema、service、repository 和测试，遵循当前分层。
 - 保持改动范围最小，不做与任务无关的重构、格式化或依赖升级。
 - 新增或修改 API 契约时，同步更新 schema、测试和 `docs/App-Desc/contracts/api.md`。
-- 新增执行路径时，优先复用 `InvocationService` 和已有 invoker，不创建第二套调用逻辑。
-- 新增 Agent 类型时，应同时考虑 Registry schema、invoker 注册、输入构造、输出校验和测试。
+- 新增执行路径时，优先复用 `InvocationService`、`InvocationRuntime` 和已发布的 Runtime Adapter，
+  不创建第二套调用逻辑。
+- 新增 Handling 类型时，应同时考虑 Registry schema、Runtime Catalog descriptor、输入构造、输出
+  校验和测试。
 - 不把业务专有名称写入核心模块、默认 Prompt 或公共 schema。
 - 数据库和本地文件注册表要保持共存：数据库为主，本地文件用于开发和兜底。
 - 保持 API 向后兼容；需要破坏性迁移时先通过 OpenSpec 说明。

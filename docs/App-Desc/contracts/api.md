@@ -82,7 +82,7 @@ Canonical Turn 当前是 OIR 内部应用契约，不新增公开 Turn HTTP 端�
 路由前筛选顺序固定为：权限过滤 > 强确定性规则 > 语义/标签筛选 > LLM 判断。
 
 一次受信请求只形成一个 Candidate Set。Direct Invoke 先从该集合选择目标再产生 Context、Run、
-Result 或 Invoker 副作用；route-and-invoke 复用 Route 已生成的候选 ID，不重复执行访问策略。
+Result 或 Runtime Adapter 副作用；route-and-invoke 复用 Route 已生成的候选 ID，不重复执行访问策略。
 Plan 的 confirm、execute、confirm-and-execute 和 resume 是不同请求，因此各自重新形成一次
 Candidate Set，并在该请求的全部 Step 预检和执行中复用；任一非终态 Step 的 Agent 不可用时返回
 `404 agent_not_available`，Plan 保持不变。
@@ -143,7 +143,7 @@ Rollout 语义：
 - `observe`：构建新 Pack/Projection/Trace，记录 `legacy_input_hash` 和 `projection_hash`，Router LLM 仍只调用一次并使用旧输入。
 - `enforced`：Router Prompt 和 Agent context 只由 governed Projection 生成。
 
-M5/M6 起，路由器和 Invoker 会根据目标 Agent 的 `context` 配置组装平台治理上下文。目标 Agent 不直接自由调用记忆或知识检索，而是消费稳定字段：
+M5/M6 起，路由器和 Invocation Runtime 会根据目标 Agent 的 `context` 配置组装平台治理上下文。目标 Agent 不直接自由调用记忆或知识检索，而是消费稳定字段：
 
 - `memory_context`：包含 `summary`、结构化 `items`、`status`、`truncated`、`errors` 和调试 `metadata`。
 - `knowledge_context`：包含 `summary`、结构化 `items`、`citations`、`source_ids`、`status`、`truncated`、`errors` 和调试 `metadata`。
@@ -194,7 +194,7 @@ empty、denied、JWT 4xx 和业务 4xx 不计入故障。Deadline、Circuit 窗�
 适用场景：
 
 - 宿主应用希望后端直接完成“识别意图 + 调用工具”。
-- 目标 Agent 的 `handling.kind=invocation` 已由当前 Registry Snapshot 解析为受支持的 v2 Runtime
+- 目标 Agent 的 `handling.kind=invocation` 已由当前 Registry Snapshot 解析为受支持的 Runtime
   Adapter Binding。
 - 调用过程需要统一记录 Agent Run、事件和结果。
 
@@ -230,11 +230,16 @@ Delegated Run；Runtime 继续拥有 Binding、Deadline、Run/Result 和终态�
 
 根据 `agent_id` 显式调用目标 Agent，不再重新做意图识别。
 
-只有 `handling.kind=invocation` 且 Snapshot Binding 已解析为部署注册的 v2 Runtime Adapter 时，
+只有 `handling.kind=invocation` 且 Snapshot Binding 已解析为部署注册的 Runtime Adapter 时，
 该接口才会执行。Adapter Key、Connector 与配置都是部署/Definition 的受治理逻辑引用；Native
-Runtime 不会按旧 `type` 选择 `mock`、`http` 或 `local_function` Invoker，也不会把 Binding 缺失
+Runtime 不会按旧 `type` 选择 `mock`、`http` 或 `local_function` 历史实现，也不会把 Binding 缺失
 猜测为外部委派。`ui_handoff` 与 `external_execution` 由路由或 Plan 返回 Host 协作动作，不是
 direct-invoke 目标。
+
+Invocation-capable descriptor 只在应用 lifespan 中激活。Catalog 会在接收流量前校验其闭合
+`execute(binding, connector, envelope)` 协议，以及声明的 cancellation、Connector validator / preparer
+和 lifecycle / health hooks；不合规部署进入安全 readiness 失败，不能等到请求期再选择历史实现或
+创建临时 Adapter / Client。
 
 Direct Invoke 在 Binding、输入和受治理 Context 预检通过后才受理：它先短事务创建 `running` Run，
 在事务外调用 Runtime Adapter，再短事务原子写入终态 Run 和唯一 Result。Adapter 的已受理失败以
@@ -441,7 +446,7 @@ Ticket 由创建 Delegated Run 的受信内部调用方签发。
 进度 Event 在命令提交后 release Ticket，以便后续进度继续使用；`agent_result`、`agent_error` 和
 `agent_cancelled` 在 Run/Turn/可选 Plan Step/Event/Outbox 原子提交后 consume Ticket。相同 Event ID
 重放返回 `duplicate=true`，不复制 Result、Event 或 Outbox；拒绝路径不产生部分业务写入。内部
-Invoker 仍直接调用应用服务，不通过 HTTP 或重复验证 Ticket。
+受信内部调用方仍直接调用应用服务，不通过 HTTP 或重复验证 Ticket。
 
 ## Run 查询
 

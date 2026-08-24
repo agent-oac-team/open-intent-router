@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import PlanBindingUnavailableError
+from app.core.errors import InvocationPreflightRejectedError, PlanBindingUnavailableError
 from app.core.memory_runtime import build_memory_runtime_policy
 from app.llm.conversation_formation import (
     ConversationFormationResponse,
@@ -30,6 +30,7 @@ from app.repositories.memory_formation import (
     MemoryFormationTurnJobRepository,
 )
 from app.repositories.memory_traces import MemoryFormationTraceRepository
+from app.runtime.invocation import RawInvocationOutcome
 from app.schemas.common import UserContext
 from app.schemas.events import AgentEvent
 from app.schemas.invocation import AgentInvocationResult, InvokeRequest
@@ -1613,7 +1614,7 @@ async def test_private_plan_executor_unavailable_preflight_has_no_transition() -
             return []
 
     class InvocationStub:
-        invokers = AvailableInvokers()
+        pass
 
     executor = PlanExecutor(
         plan_service=service,
@@ -1643,15 +1644,9 @@ async def test_private_plan_executor_unavailable_preflight_has_no_transition() -
     assert await repository.list_formation_pending() == []
 
 
-class AvailableInvokers:
-    def has(self, _invoker_type: str) -> bool:
-        return True
-
-
 class CancellingInvocationService:
     def __init__(self, plan_service: PlanService) -> None:
         self.plan_service = plan_service
-        self.invokers = AvailableInvokers()
 
     async def invoke_agent(self, **kwargs) -> AgentInvocationResult:
         plan_id = kwargs["context"]["plan_id"]
@@ -1708,21 +1703,6 @@ async def test_plan_executor_reloads_canonical_plan_before_persisting_step_resul
 )
 def test_continuation_classifier_rejects_negated_or_new_tasks(text: str) -> None:
     assert not requests_plan_continuation(text)
-
-
-class InvocationCapturingInvoker:
-    def __init__(self, *, status: str = "completed") -> None:
-        self.status = status
-        self.invocations = []
-
-    async def invoke(self, definition, invocation):
-        self.invocations.append(invocation)
-        return AgentInvocationResult(
-            run_id=invocation.run_id,
-            agent_id=definition.agent_id,
-            status=self.status,
-            message=self.status,
-        )
 
 
 async def test_agent_task_memory_requires_matching_active_canonical_plan(
@@ -1832,41 +1812,23 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         )
     )
     assert unrelated.status == "completed"
-    assert adapter.invocations[-1].memory_context.items == []
+    assert adapter.invocations[-1].context.memory == []
 
-    static = await service.invoke_agent(
-        session_id="s_static",
-        agent_id="summarizer",
-        user=plan_user,
-        input={
-            "text": "continue",
-            "memory_context": {
-                "status": "ok",
-                "items": [
-                    {
-                        "memory_id": "forged_static",
-                        "scope": "task_memory",
-                        "content": "stale",
-                        "structured_value": {
-                            "object_type": "plan",
-                            "plan_id": "plan_static",
-                            "status": "cancelled",
-                            "current_step": {"step_id": "stale"},
-                        },
-                    }
-                ],
+    with pytest.raises(InvocationPreflightRejectedError):
+        await service.invoke_agent(
+            session_id="s_static",
+            agent_id="summarizer",
+            user=plan_user,
+            input={
+                "text": "continue",
+                "memory_context": {"status": "ok", "items": []},
             },
-        },
-        context={"plan_id": "plan_static"},
-        selected_definition=selection.definition,
-        selected_binding=selection,
-        resolved_binding=resolved_binding,
-    )
-    assert static.status == "completed"
-    static_item = adapter.invocations[-1].memory_context.items[0]
-    assert static_item.structured_value["status"] == "running"
-    assert static_item.structured_value["current_step"]["step_id"] == "static_canonical_step"
-    assert "stale" not in str(static_item.structured_value)
+            context={"plan_id": "plan_static"},
+            selected_definition=selection.definition,
+            selected_binding=selection,
+            resolved_binding=resolved_binding,
+        )
+    assert len(adapter.invocations) == 1
 
     continued = await service.invoke_agent(
         session_id="s1",
@@ -1879,11 +1841,8 @@ async def test_agent_task_memory_requires_matching_active_canonical_plan(
         resolved_binding=resolved_binding,
     )
     assert continued.status == "completed"
-    items = adapter.invocations[-1].memory_context.items
+    items = adapter.invocations[-1].context.memory
     assert [item.memory_id for item in items] == ["matching"]
-    assert items[0].structured_value.get("status") == "running", items[0].model_dump()
-    assert items[0].structured_value["current_step"]["step_id"] == "canonical_step"
-    assert "stale" not in str(items[0].structured_value)
     used = [
         event
         for event in memories.events
@@ -1912,18 +1871,13 @@ class BarrierV2Adapter(V2TestAdapter):
         self.calls = 0
         self.contexts = []
 
-    async def invoke_v2(self, definition, requirement, invocation):
-        del requirement
+    async def execute(self, binding, connector, envelope):
+        del binding, connector
         self.calls += 1
-        self.contexts.append(invocation.context)
+        self.contexts.append(envelope.idempotency_key)
         self.started.set()
         await self.release.wait()
-        return AgentInvocationResult(
-            run_id=invocation.run_id,
-            agent_id=definition.agent_id,
-            status="completed",
-            message="done",
-        )
+        return RawInvocationOutcome(message="done")
 
 
 async def test_concurrent_plan_execution_claims_step_once(registry_service) -> None:
@@ -2004,7 +1958,7 @@ async def test_plan_claim_heartbeat_prevents_reclaim_during_long_agent_call(
     )
     assert invoker.calls == 1
     assert second.results == [] and second.plan.status == "running"
-    assert invoker.contexts[0]["plan_execution_idempotency_key"].startswith("plan_exec_")
+    assert invoker.contexts[0].startswith("plan_exec_")
     invoker.release.set()
     completed = await first
     assert completed.plan.status == "completed"
@@ -2047,11 +2001,13 @@ async def test_request_private_suppresses_structured_jobs_but_records_skip(
     assert [event.event_type for event in memories.events] == ["formation_skipped"]
 
 
-async def test_blocked_invocation_publishes_run_update_not_fail(registry_service) -> None:
+async def test_runtime_adapter_success_publishes_the_runtime_owned_terminal_update(
+    registry_service,
+) -> None:
     sink = CapturingStructuredSink()
     catalog = await attach_v2_runtime(
         registry_service,
-        adapter=V2TestAdapter(status="blocked"),
+        adapter=V2TestAdapter(),
     )
     service = InvocationService(
         registry=registry_service,
@@ -2067,6 +2023,6 @@ async def test_blocked_invocation_publishes_run_update_not_fail(registry_service
             input={"text": "block"},
         )
     )
-    assert result.status == "blocked"
-    assert sink.run_events == [("create", "running"), ("update", "blocked")]
+    assert result.status == "completed"
+    assert sink.run_events == [("create", "running"), ("complete", "completed")]
     await catalog.aclose()
