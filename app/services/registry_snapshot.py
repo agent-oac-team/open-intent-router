@@ -34,6 +34,7 @@ from app.schemas.common import UserContext
 
 BindingStatus = Literal["ready", "isolated", "disabled"]
 RegistrySnapshotRuntimeState = Literal["not_loaded", "ready", "degraded", "error"]
+InvocationExecutionProtocol = Literal["runtime_adapter", "legacy_v2"]
 _SAFE_ISOLATION_REASON_CODES = frozenset(
     {
         "invocation_adapter_missing",
@@ -83,11 +84,17 @@ class RegistryDefinitionValidationError(RegistryError):
 
 @dataclass(frozen=True, slots=True)
 class InvocationBindingRequirement:
-    """Stable Invocation constraints; no activated Adapter object is retained."""
+    """Stable Invocation constraints; no activated Adapter object is retained.
+
+    The execution protocol is chosen while compiling an immutable Snapshot so
+    Binding Resolution never probes one live Adapter and then falls back to a
+    different execution owner during a request.
+    """
 
     adapter_key: str
     connector_ref: str | None
     _config_json: str = field(repr=False)
+    execution_protocol: InvocationExecutionProtocol
     kind: Literal["invocation"] = field(default="invocation", init=False)
 
     @property
@@ -95,6 +102,13 @@ class InvocationBindingRequirement:
         return _frozen_configuration(self._config_json)
 
     def to_payload(self) -> dict[str, object]:
+        """Return the declarative Agent Handling persisted on a Plan Step.
+
+        The runtime protocol is intentionally omitted: Plan persistence stores
+        the public Handling schema, while each request consumes the protocol
+        frozen by its captured Registry Snapshot.
+        """
+
         return {
             "kind": self.kind,
             "adapter_key": self.adapter_key,
@@ -635,6 +649,7 @@ class RegistrySnapshotBuilder:
                 _config_json=_canonical_json(
                     handling.config.model_dump(mode="json", exclude_none=True)
                 ),
+                execution_protocol=self._invocation_execution_protocol(handling.adapter_key),
             )
             return requirement, self._invocation_isolation_reason(requirement)
         if isinstance(handling, ExternalExecutionHandling):
@@ -661,6 +676,20 @@ class RegistrySnapshotBuilder:
                 None,
             )
         raise ValueError("Unknown Agent Handling")
+
+    def _invocation_execution_protocol(
+        self,
+        adapter_key: str,
+    ) -> InvocationExecutionProtocol:
+        """Read one trusted descriptor declaration while building a Snapshot."""
+
+        catalog = self._runtime_catalog
+        if catalog is None or not catalog.has(adapter_key):
+            return "legacy_v2"
+        descriptor = catalog.descriptor(adapter_key)
+        if descriptor.capability.invocation_runtime:
+            return "runtime_adapter"
+        return "legacy_v2"
 
     def _supports_external_executor(self, executor_ref: str) -> bool:
         external_executor = self._external_executor
@@ -781,7 +810,7 @@ def _snapshot_identity(
                 "isolation_reason_code": entry.isolation_reason_code,
                 "definition": json.loads(entry._definition_json),
                 "binding_requirement": (
-                    entry.binding_requirement.to_payload()
+                    _snapshot_binding_requirement_payload(entry.binding_requirement)
                     if entry.binding_requirement is not None
                     else None
                 ),
@@ -799,3 +828,14 @@ def _snapshot_identity(
     }
     digest = hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
     return f"registry-snapshot-v1:{digest}"
+
+
+def _snapshot_binding_requirement_payload(
+    requirement: BindingRequirement,
+) -> dict[str, object]:
+    """Add Snapshot-only execution ownership without changing Plan schema."""
+
+    payload = requirement.to_payload()
+    if isinstance(requirement, InvocationBindingRequirement):
+        payload["execution_protocol"] = requirement.execution_protocol
+    return payload

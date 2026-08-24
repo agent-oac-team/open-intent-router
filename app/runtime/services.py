@@ -90,6 +90,7 @@ from app.repositories.turn_route_completion import (
 from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
 from app.runtime.application import ApplicationComposition, ApplicationContainer
 from app.runtime.catalog import RuntimeCatalog
+from app.runtime.invocation import InvocationRuntime
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.agent_event_service import NativeAgentEventService
 from app.services.binding_resolution import BindingResolver
@@ -170,6 +171,7 @@ class ApplicationServices:
     knowledge_provider: KnowledgeProvider | None
     agent_context_service: AgentContextAssemblyService
     router_service: RouterService
+    invocation_runtime: InvocationRuntime
     invocation_service: InvocationService
     plan_service: PlanService
     plan_executor: PlanExecutor
@@ -460,6 +462,7 @@ def build_application_container(
             outbox_repository=turn_outbox_repository,
         )
     )
+    invocation_runtime = InvocationRuntime()
     invocation_service = InvocationService(
         registry=registry,
         run_repository=repository_bundle["runs"],
@@ -475,6 +478,7 @@ def build_application_container(
         snapshot_runtime=snapshot_runtime,
         binding_resolver=BindingResolver(catalog),
         execution_traces=execution_trace_service,
+        invocation_runtime=invocation_runtime,
     )
     plan_executor = PlanExecutor(
         plan_service=plan_service,
@@ -551,6 +555,7 @@ def build_application_container(
         knowledge_provider=knowledge_provider,
         agent_context_service=agent_context,
         router_service=router_service,
+        invocation_runtime=invocation_runtime,
         invocation_service=invocation_service,
         plan_service=plan_service,
         plan_executor=plan_executor,

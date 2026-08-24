@@ -40,6 +40,10 @@ def test_lifespan_publishes_a_complete_container_from_explicit_settings(tmp_path
         assert container.registry is not None
         assert container.services is not None
         assert container.services.router_service is not None
+        assert (
+            container.services.invocation_runtime
+            is container.services.invocation_service.invocation_runtime
+        )
         assert container.services.invocation_service is not None
         assert container.services.memory_service is not None
         assert not hasattr(container, "engine")

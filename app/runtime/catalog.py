@@ -48,12 +48,16 @@ class RuntimeAdapterCapability:
 
     ``v2_invocation`` is deliberately separate from generic invocation support:
     an adapter must explicitly opt into consuming an ``oir-agent-v2`` Invocation
-    Binding before it can be selected for a Native Definition.
+    Binding before it can be selected for a Native Definition.  During the
+    Invocation Runtime expansion, ``invocation_runtime`` freezes which of the
+    two supported execution protocols owns a Binding.  It is a deployment
+    declaration, not a request-time feature probe.
     """
 
     invocation: bool
     cancellation: bool = False
     v2_invocation: bool = False
+    invocation_runtime: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +449,14 @@ def _validate_descriptors(
         if not isinstance(descriptor.capability.v2_invocation, bool):
             raise RuntimeCatalogValidationError(
                 "Runtime Adapter v2 invocation capability is invalid"
+            )
+        if not isinstance(descriptor.capability.invocation_runtime, bool):
+            raise RuntimeCatalogValidationError(
+                "Runtime Adapter Invocation Runtime capability is invalid"
+            )
+        if descriptor.capability.invocation_runtime and not descriptor.capability.v2_invocation:
+            raise RuntimeCatalogValidationError(
+                "Runtime Adapter Invocation Runtime capability requires v2 invocation"
             )
         if not callable(descriptor.factory):
             raise RuntimeCatalogValidationError("Runtime Adapter factory is required")

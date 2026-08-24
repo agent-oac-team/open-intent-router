@@ -85,6 +85,13 @@ class _WrongSignatureV2Adapter(_V2Adapter):
         )
 
 
+class _DualProtocolAdapter(_V2Adapter):
+    """A transition adapter whose Runtime method must not win by fallback."""
+
+    async def execute(self, _binding: object, _envelope: object) -> object:
+        raise AssertionError("Snapshot declared the legacy v2 execution protocol")
+
+
 class _SwappingV2Adapter(_V2Adapter):
     """Exposes a compatible method once, then a different one on later lookup."""
 
@@ -138,6 +145,7 @@ def _descriptor(
     contract_version: str = "adapter-contract-v1",
     implementation_version: str = "adapter-implementation-v2",
     v2_invocation: bool = True,
+    invocation_runtime: bool = False,
 ) -> RuntimeAdapterDescriptor:
     return RuntimeAdapterDescriptor(
         key=key,
@@ -152,6 +160,7 @@ def _descriptor(
         capability=RuntimeAdapterCapability(
             invocation=True,
             v2_invocation=v2_invocation,
+            invocation_runtime=invocation_runtime,
         ),
         factory=lambda _context: adapter,
         health_check=_healthy,
@@ -166,6 +175,7 @@ async def _catalog(
     contract_version: str = "adapter-contract-v1",
     implementation_version: str = "adapter-implementation-v2",
     v2_invocation: bool = True,
+    invocation_runtime: bool = False,
 ) -> RuntimeCatalog:
     return await RuntimeCatalog.activate(
         [
@@ -175,6 +185,7 @@ async def _catalog(
                 contract_version=contract_version,
                 implementation_version=implementation_version,
                 v2_invocation=v2_invocation,
+                invocation_runtime=invocation_runtime,
             )
         ],
         RuntimeAdapterContext(settings=Settings(storage_backend="memory")),
@@ -496,6 +507,35 @@ async def test_direct_v2_invocation_uses_the_preflight_validated_adapter_callabl
 
     assert result.status == "completed"
     assert adapter.lookup_count == 1
+    assert len(adapter.calls) == 1
+    assert len(runs.runs) == len(results.results) == 1
+
+    await catalog.aclose()
+
+
+async def test_direct_invocation_uses_the_protocol_frozen_by_the_snapshot() -> None:
+    adapter = _DualProtocolAdapter()
+    catalog = await _catalog(adapter, invocation_runtime=False)
+    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
+    snapshot_runtime.load([_invocation_definition()], source="test")
+    selection = snapshot_runtime.preflight_for_user(
+        "bound-agent",
+        _request().user,
+    )
+    assert selection is not None
+    assert selection.binding_requirement.execution_protocol == "legacy_v2"
+    runs = MemoryRunRepository()
+    results = MemoryResultRepository()
+    service = _service(
+        catalog=catalog,
+        snapshot_runtime=snapshot_runtime,
+        runs=runs,
+        results=results,
+    )
+
+    result = await service.invoke(_request())
+
+    assert result.status == "completed"
     assert len(adapter.calls) == 1
     assert len(runs.runs) == len(results.results) == 1
 

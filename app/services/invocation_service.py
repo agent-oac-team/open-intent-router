@@ -13,6 +13,7 @@ from app.core.errors import (
     InvocationError,
 )
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
+from app.runtime.invocation import InvocationRuntime
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
 from app.schemas.agents import AgentDefinitionV2, AgentHandlingKind
 from app.schemas.common import ErrorDetail
@@ -61,6 +62,7 @@ class InvocationService:
         snapshot_runtime: RegistrySnapshotRuntime | None = None,
         binding_resolver: BindingResolver | None = None,
         execution_traces: ExecutionTraceService | None = None,
+        invocation_runtime: InvocationRuntime | None = None,
     ) -> None:
         # The service no longer reads Native Registry records directly. Keep
         # this argument temporarily so host composition can be migrated
@@ -97,6 +99,10 @@ class InvocationService:
         self.snapshot_runtime = snapshot_runtime
         self.binding_resolver = binding_resolver
         self.execution_traces = execution_traces
+        # Production composition creates this once for the application
+        # lifespan.  The local fallback keeps direct service construction a
+        # usable test seam while never constructing an Adapter per request.
+        self.invocation_runtime = invocation_runtime or InvocationRuntime()
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
         snapshot_runtime = self.snapshot_runtime
@@ -277,6 +283,22 @@ class InvocationService:
         binding_snapshot = resolved.persistence_snapshot
 
         async def execute(prepared_invocation: AgentInvocation) -> AgentInvocationResult:
+            runtime_execution = resolved.runtime_execution
+            if runtime_execution is not None:
+
+                async def invoke_runtime(
+                    runtime_invocation: AgentInvocation,
+                ) -> AgentInvocationResult:
+                    return await self.invocation_runtime.execute(
+                        execution=runtime_execution,
+                        invocation=runtime_invocation,
+                        agent_id=definition.agent_id,
+                    )
+
+                return await self._invoke_with_claim_heartbeat(
+                    invoke_runtime,
+                    prepared_invocation,
+                )
             return await self._invoke_with_claim_heartbeat(resolved.invoke, prepared_invocation)
 
         return await self._execute_accepted_invocation(
