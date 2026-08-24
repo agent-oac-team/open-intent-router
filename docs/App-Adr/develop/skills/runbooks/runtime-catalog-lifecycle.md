@@ -102,6 +102,23 @@ cleanup deadline 内失败，而不会被静默遗忘或以迟到成功覆盖已
 保留数据库与 Catalog 给仍被强持有的任务，交由进程监督器终止实例；不得为了继续 shutdown 而让该任务
 在已 dispose 的 Adapter、Connector 或数据库上运行。
 
+## Invocation 停止控制
+
+Runtime Adapter Descriptor 的 `capability.cancellation` 是独立于 `invocation` 的受信部署声明。只有它为
+`true` 时，Binding Resolver 才会读取 Adapter 的 async
+`cancel(binding, AdapterControlEnvelope) -> RawInvocationCancellationOutcome` 协议；控制 Envelope
+只含 Runtime `execution_id`，不含 Definition、Connector、输入、完整 Principal、Header 或凭据。声明
+能力但未实现该闭合 async 协议的 Binding 在 Run 受理前以安全不可用失败；未声明能力的 Adapter 永远不会
+收到控制调用。
+
+Runtime 在内存中为已受理的 Invocation 记录 `pre_dispatch`、`dispatched`、`stop_confirmed`、
+`stop_unconfirmed` 和 `terminalizing` 事实。它只根据自身尚未派发的事实或 Adapter 的
+`stopped=true` 闭合证明写入 `cancelled`；Adapter 控制异常、`stopped=false`、进程重启后缺少状态或
+晚到终态均不能伪造取消。已可能派发但无法证明远端停止时，公开控制结果保持
+`completion_certainty=unknown`、不自动 retry 或重派。并发和重复控制共享一项进程拥有的控制 Task；
+Local Function Adapter 以 Run ID 跟踪 in-flight Task，直到 Adapter/Catalog 生命周期结束，不能靠请求
+结束或重新解析依赖找回另一份状态。
+
 ## Connector Resolver
 
 Deployment 如为某个 Runtime Adapter Binding 配置逻辑 `connector_ref`，必须在应用组合时注入一个窄

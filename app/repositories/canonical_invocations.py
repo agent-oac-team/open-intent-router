@@ -387,7 +387,13 @@ def _completion_bundle(
     if result.run_id != run.run_id:
         raise CanonicalInvocationConflict("Result does not belong to Run")
     now = datetime.now(UTC)
-    terminal_status = TurnStatus.COMPLETED if result.status == "completed" else TurnStatus.FAILED
+    terminal_status = (
+        TurnStatus.COMPLETED
+        if result.status == "completed"
+        else TurnStatus.CANCELLED
+        if result.status == "cancelled"
+        else TurnStatus.FAILED
+    )
     terminal_run = run.model_copy(
         update={
             "status": result.status,
@@ -423,7 +429,13 @@ def _completion_bundle(
             "completed_at": now,
         }
     )
-    event_type = "turn.completed" if terminal_status == TurnStatus.COMPLETED else "turn.failed"
+    event_type = (
+        "turn.completed"
+        if terminal_status == TurnStatus.COMPLETED
+        else "turn.cancelled"
+        if terminal_status == TurnStatus.CANCELLED
+        else "turn.failed"
+    )
     outbox = TurnOutboxEvent(
         outbox_id=f"outbox_{uuid4().hex}",
         turn_id=turn.turn_id,

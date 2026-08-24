@@ -22,7 +22,9 @@ from app.runtime.catalog import (
     RuntimeAdapterLifecycle,
 )
 from app.runtime.invocation import (
+    AdapterControlEnvelope,
     AgentCallEnvelope,
+    RawInvocationCancellationOutcome,
     RawInvocationFailure,
     RawInvocationOutcome,
     RuntimeAdapterBinding,
@@ -90,7 +92,12 @@ class LocalFunctionRuntimeAdapter:
             raise ValueError("Local Function completed cache limit must be positive")
         self._functions = MappingProxyType(dict(functions))
         self._completed_cache_limit = completed_cache_limit
+        # Execution id is the Runtime-owned Run id. Unlike a Plan's optional
+        # idempotency key it identifies one concrete in-flight invocation and
+        # therefore lets a later control request find exactly the task that
+        # received the original Envelope.
         self._inflight: dict[str, asyncio.Task[RawInvocationOutcome]] = {}
+        self._idempotency_inflight: dict[str, asyncio.Task[RawInvocationOutcome]] = {}
         self._completed: dict[str, RawInvocationOutcome] = {}
         self._active = False
         self._closed = False
@@ -116,8 +123,9 @@ class LocalFunctionRuntimeAdapter:
             return
         self._closed = True
         self._active = False
-        tasks = tuple(self._inflight.values())
+        tasks = tuple(set(self._inflight.values()) | set(self._idempotency_inflight.values()))
         self._inflight.clear()
+        self._idempotency_inflight.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -141,31 +149,89 @@ class LocalFunctionRuntimeAdapter:
         if function is None:
             return _unavailable_outcome()
         if envelope.idempotency_key is None:
-            return await self._call(function, envelope)
+            return await self._invoke_execution(
+                envelope.execution_id,
+                function,
+                envelope,
+            )
         return await self._invoke_idempotent(
             envelope.idempotency_key,
+            envelope.execution_id,
             function,
             envelope,
         )
 
+    async def cancel(
+        self,
+        binding: RuntimeAdapterBinding,
+        control: AdapterControlEnvelope,
+    ) -> RawInvocationCancellationOutcome:
+        """Confirm only cooperative async Local Function cancellation.
+
+        A synchronous function runs in ``asyncio.to_thread`` and cannot be
+        proven stopped by cancelling its wrapper task. It therefore returns an
+        explicit unconfirmed result rather than claiming cancellation. Async
+        functions are confirmed only after their concrete Runtime task is
+        actually cancelled.
+        """
+
+        task = self._inflight.get(control.execution_id)
+        if task is None or task.done():
+            return RawInvocationCancellationOutcome(stopped=False)
+        function_name = binding.config.get("function")
+        function = self._functions.get(function_name) if isinstance(function_name, str) else None
+        if function is None or not iscoroutinefunction(function):
+            return RawInvocationCancellationOutcome(stopped=False)
+        task.cancel()
+        # Do not await an Adapter-owned function indefinitely. One scheduling
+        # turn is enough to prove a cooperative Task accepted cancellation;
+        # an Adapter that suppresses it remains truthfully unconfirmed.
+        await asyncio.sleep(0)
+        return RawInvocationCancellationOutcome(stopped=task.cancelled())
+
+    async def _invoke_execution(
+        self,
+        execution_id: str,
+        function: LocalRuntimeFunction,
+        envelope: AgentCallEnvelope,
+    ) -> RawInvocationOutcome:
+        task = self._inflight.get(execution_id)
+        if task is None:
+            task = asyncio.create_task(self._call(function, envelope))
+            self._inflight[execution_id] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done() and self._inflight.get(execution_id) is task:
+                self._inflight.pop(execution_id, None)
+
     async def _invoke_idempotent(
         self,
         execution_key: str,
+        execution_id: str,
         function: LocalRuntimeFunction,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         completed = self._completed.get(execution_key)
         if completed is not None:
             return completed.model_copy(deep=True)
-        task = self._inflight.get(execution_key)
+        task = self._idempotency_inflight.get(execution_key)
         if task is None:
             task = asyncio.create_task(self._call(function, envelope))
-            self._inflight[execution_key] = task
+            self._idempotency_inflight[execution_key] = task
+        # The Runtime execution id is the control key even when a trusted Plan
+        # idempotency key makes two in-process callers await the same function
+        # Task. Every accepted caller must still be able to find that shared
+        # work by its own Run id; cancellation never guesses a different task.
+        self._inflight[execution_id] = task
         try:
             outcome = await asyncio.shield(task)
         finally:
             if task.done():
-                self._inflight.pop(execution_key, None)
+                if self._idempotency_inflight.get(execution_key) is task:
+                    self._idempotency_inflight.pop(execution_key, None)
+                if self._inflight.get(execution_id) is task:
+                    self._inflight.pop(execution_id, None)
         self._completed[execution_key] = outcome.model_copy(deep=True)
         while len(self._completed) > self._completed_cache_limit:
             self._completed.pop(next(iter(self._completed)))
@@ -229,6 +295,7 @@ def local_function_runtime_descriptor(
         },
         capability=RuntimeAdapterCapability(
             invocation=True,
+            cancellation=True,
             v2_invocation=True,
             invocation_runtime=True,
         ),

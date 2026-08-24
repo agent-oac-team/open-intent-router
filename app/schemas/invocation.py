@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field
 
@@ -38,6 +39,35 @@ class AgentInvocationResult(StrictBaseModel):
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
     usage: JsonDict = Field(default_factory=dict)
     error: ErrorDetail | None = None
+
+
+InvocationControlState = Literal[
+    "cancelled",
+    "stop_confirmed",
+    "stop_unconfirmed",
+    "unsupported",
+    "terminal",
+]
+
+
+class InvocationCancelRequest(StrictBaseModel):
+    """An intentionally empty, principal-bound request to stop one accepted Run."""
+
+
+class InvocationCancelResponse(StrictBaseModel):
+    """Truthful, bounded control facts for one owned Invocation Run.
+
+    ``control_state`` is deliberately separate from ``run_status``. A Runtime
+    may know that an Adapter confirmed stop while the short canonical terminal
+    transaction is still settling; it must not report the Run as cancelled
+    until that transition is durable.
+    """
+
+    run_id: str
+    run_status: str
+    control_state: InvocationControlState
+    completion_certainty: Literal["certain", "unknown"] | None = None
+    reason_code: str | None = Field(default=None, max_length=64)
 
 
 class InvokeRequest(StrictBaseModel):

@@ -23,12 +23,19 @@ from app.runtime.invocation import (
     InvocationDeadline,
     InvocationRuntime,
     RawInvocationFailure,
+    RuntimeAdapterExecution,
+    RuntimeExecutionIdentity,
 )
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
 from app.schemas.agents import AgentDefinitionV2, AgentHandlingKind
 from app.schemas.common import ErrorDetail
 from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
-from app.schemas.invocation import AgentInvocation, AgentInvocationResult, InvokeRequest
+from app.schemas.invocation import (
+    AgentInvocation,
+    AgentInvocationResult,
+    InvocationCancelResponse,
+    InvokeRequest,
+)
 from app.schemas.logs import AgentResult, AgentRun, InvocationBindingSnapshot
 from app.schemas.plans import Plan
 from app.schemas.routing import RouteRequest, RouteResponse
@@ -177,6 +184,62 @@ class InvocationService:
             knowledge_context_trace_id=request.knowledge_context_trace_id,
         )
         return await self._invoke_resolved_binding(resolved, invocation)
+
+    async def cancel_run(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> InvocationCancelResponse | None:
+        """Request truthful stop control for one owned Runtime Invocation Run.
+
+        Durable ownership is always read before touching the process Runtime.
+        A stale process record, a non-Invocation Run, or a post-restart running
+        Run never grants an Adapter control call merely because a caller knows
+        a Run id.
+        """
+
+        run = await self.run_repository.get_owned_run(
+            run_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+        if run is None:
+            return None
+        if run.status != "running":
+            return InvocationCancelResponse(
+                run_id=run.run_id,
+                run_status=run.status,
+                control_state="cancelled" if run.status == "cancelled" else "terminal",
+            )
+        if run.handling_kind != "invocation" or not isinstance(
+            run.binding_snapshot,
+            InvocationBindingSnapshot,
+        ):
+            return InvocationCancelResponse(
+                run_id=run.run_id,
+                run_status=run.status,
+                control_state="unsupported",
+                completion_certainty="unknown",
+                reason_code="control_unsupported",
+            )
+        decision = await self.invocation_runtime.request_cancellation(
+            RuntimeExecutionIdentity(
+                run_id=run.run_id,
+                tenant_id=run.tenant_id,
+                user_id=run.user_id,
+                session_id=run.session_id,
+                agent_id=run.agent_id,
+            )
+        )
+        return InvocationCancelResponse(
+            run_id=run.run_id,
+            run_status=run.status,
+            control_state=decision.control_state,
+            completion_certainty=decision.completion_certainty,
+            reason_code=decision.reason_code,
+        )
 
     async def issue_controlled_knowledge_context_handle(
         self,
@@ -466,6 +529,7 @@ class InvocationService:
                 "adapter_implementation_version": binding_snapshot.adapter_implementation_version,
             },
             execute=execute,
+            runtime_execution=runtime_execution,
             preflight=preflight if runtime_execution is not None else None,
             release_before_terminal=binding.release_before_terminal,
             deadline=deadline,
@@ -485,6 +549,7 @@ class InvocationService:
         handling_kind: AgentHandlingKind,
         binding_snapshot: InvocationBindingSnapshot,
         binding_trace_facts: dict[str, object],
+        runtime_execution: RuntimeAdapterExecution | None = None,
         preflight: Callable[[AgentInvocation], AgentCallEnvelope | None] | None = None,
         release_before_terminal: Callable[[], Awaitable[None]] | None = None,
         deadline: InvocationDeadline,
@@ -668,6 +733,16 @@ class InvocationService:
         if replay_result is not None:
             await self._release_unaccepted_plan_claim(plan_claim)
             return _invocation_result_from_record(replay_result)
+        # ``start_run`` returned in this Task, so its durable mutation and the
+        # following in-memory registration are one uninterrupted event-loop
+        # turn. Registering only here prevents a losing concurrent start
+        # attempt from leaving a process-local pre-dispatch control record for
+        # somebody else's canonical Run.
+        self.invocation_runtime.register_execution_control(
+            invocation=invocation,
+            agent_id=definition.agent_id,
+            execution=runtime_execution,
+        )
         adapter_dispatch_started = False
         try:
             # All accepted-but-pre-dispatch collaborators consume the same
@@ -690,12 +765,22 @@ class InvocationService:
                     suppressed=formation_suppressed,
                 )
             )
-            adapter_dispatch_started = True
-            result = await execute(invocation, preflight_envelope)
-            result = result.model_copy(
-                update={"run_id": invocation.run_id, "agent_id": definition.agent_id}
-            )
-            result = _validate_output(definition, result)
+            if not await self.invocation_runtime.mark_dispatch_started(invocation.run_id):
+                # A control request reached this accepted Run before the
+                # Adapter edge. The Runtime itself is the proof that no
+                # dispatch occurred, so cancellation is certain without
+                # invoking an Adapter control method.
+                result = _cancelled_invocation_result(
+                    invocation=invocation,
+                    agent_id=definition.agent_id,
+                )
+            else:
+                adapter_dispatch_started = True
+                result = await execute(invocation, preflight_envelope)
+                result = result.model_copy(
+                    update={"run_id": invocation.run_id, "agent_id": definition.agent_id}
+                )
+                result = _validate_output(definition, result)
         except asyncio.CancelledError as exc:
             # The accepted Run may be cancelled during side-effecting Adapter
             # work or any best-effort pre-dispatch publication.  Either way,
@@ -713,6 +798,14 @@ class InvocationService:
                 agent_id=definition.agent_id,
                 exc=exc,
                 completion_certainty=("unknown" if adapter_dispatch_started else "certain"),
+            )
+        # Once the Runtime has a result, no late control request may reach the
+        # Adapter. A confirmed stop wins over a non-terminal Adapter outcome;
+        # it is the only fact allowed to produce the public cancelled state.
+        if await self.invocation_runtime.begin_terminalization(invocation.run_id):
+            result = _cancelled_invocation_result(
+                invocation=invocation,
+                agent_id=definition.agent_id,
             )
         if release_before_terminal is not None:
             try:
@@ -735,7 +828,7 @@ class InvocationService:
                     exc=exc,
                     completion_certainty=("unknown" if adapter_dispatch_started else "certain"),
                 )
-        return await self._await_terminal_completion(
+        completed = await self._await_terminal_completion(
             self._complete_accepted_invocation(
                 run=run,
                 result=result,
@@ -747,6 +840,8 @@ class InvocationService:
                 deadline=deadline,
             )
         )
+        self.invocation_runtime.complete_execution_control(invocation.run_id)
+        return completed
 
     async def _reconcile_late_durable_start_task(
         self,
@@ -2091,6 +2186,8 @@ def _is_same_durable_start_attempt(existing: AgentRun, attempted: AgentRun) -> b
 def _run_event_type(status: str) -> str:
     if status == "completed":
         return "complete"
+    if status == "cancelled":
+        return "cancel"
     if status in {"failed", "invalid_output"}:
         return "fail"
     return "update"
@@ -2107,9 +2204,26 @@ def _run_source_order(status: str) -> int:
 def _result_step_status(status: str) -> str:
     if status == "completed":
         return "completed"
+    if status == "cancelled":
+        return "cancelled"
     if status in {"blocked", "clarify"}:
         return "blocked"
     return "failed"
+
+
+def _cancelled_invocation_result(
+    *,
+    invocation: AgentInvocation,
+    agent_id: str,
+) -> AgentInvocationResult:
+    """Project the closed terminal result after Runtime proves a stop."""
+
+    return AgentInvocationResult(
+        run_id=invocation.run_id,
+        agent_id=agent_id,
+        status="cancelled",
+        message="Agent invocation was cancelled.",
+    )
 
 
 def _current_plan_step(plan):

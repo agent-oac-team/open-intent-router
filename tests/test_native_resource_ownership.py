@@ -21,6 +21,7 @@ from app.repositories.memory import (
 )
 from app.schemas.agents import AgentDefinitionV2
 from app.schemas.common import UserContext
+from app.schemas.invocation import InvocationCancelResponse
 from app.schemas.logs import AgentRun
 from app.schemas.plans import Plan, PlanExecutionResponse
 from app.schemas.routing import LLMRouteInput, RouteContext, RouteDecision, RouteResponse
@@ -82,6 +83,45 @@ async def test_native_run_read_is_owner_scoped_without_admin_bypass(
         404,
     ]
     assert missing_identity.status_code == 401
+
+
+async def test_native_run_cancel_is_principal_bound_and_accepts_no_caller_identity(
+    non_lifespan_test_client,
+) -> None:
+    service = _CapturingInvocationCancellationService()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        app_env="production",
+        native_principal_secret=_PRINCIPAL_SECRET,
+    )
+    app.dependency_overrides[get_invocation_service] = lambda: service
+    client = non_lifespan_test_client(app)
+
+    owner = client.post("/api/v1/runs/run-owned/cancel", headers=_headers())
+    foreign = client.post(
+        "/api/v1/runs/run-owned/cancel",
+        headers=_headers(subject="user-2"),
+    )
+    forged_identity = client.post(
+        "/api/v1/runs/run-owned/cancel",
+        headers=_headers(),
+        json={"tenant_id": "tenant-2", "user_id": "user-2"},
+    )
+
+    assert owner.status_code == 200
+    assert owner.json() == {
+        "run_id": "run-owned",
+        "run_status": "running",
+        "control_state": "unsupported",
+        "completion_certainty": "unknown",
+        "reason_code": "control_unsupported",
+    }
+    assert foreign.status_code == 404
+    assert forged_identity.status_code == 422
+    assert service.calls == [
+        ("run-owned", "tenant-1", "user-1"),
+        ("run-owned", "tenant-1", "user-2"),
+    ]
 
 
 async def test_native_session_messages_use_principal_owner_and_hide_foreign_history(
@@ -623,6 +663,29 @@ def _headers(
         tenant=tenant,
         roles=roles,
     )
+
+
+class _CapturingInvocationCancellationService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def cancel_run(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> InvocationCancelResponse | None:
+        self.calls.append((run_id, tenant_id, user_id))
+        if (tenant_id, user_id) != ("tenant-1", "user-1"):
+            return None
+        return InvocationCancelResponse(
+            run_id=run_id,
+            run_status="running",
+            control_state="unsupported",
+            completion_certainty="unknown",
+            reason_code="control_unsupported",
+        )
 
 
 class _CapturingPlanExecutor:

@@ -44,6 +44,7 @@ AgentRunStatus = Literal[
     "pending",
     "running",
     "completed",
+    "cancelled",
     "failed",
     "blocked",
     "clarify",

@@ -54,8 +54,10 @@ class RuntimeAdapterCapability:
     an adapter must explicitly opt into consuming an ``oir-agent-v2`` Invocation
     Binding before it can be selected for a Native Definition.  During the
     Invocation Runtime expansion, ``invocation_runtime`` freezes which of the
-    two supported execution protocols owns a Binding.  It is a deployment
-    declaration, not a request-time feature probe.
+    two supported execution protocols owns a Binding. ``cancellation`` is a
+    separate opt-in for Runtime control: only a descriptor declaring it may
+    expose the closed ``cancel(binding, control_envelope)`` protocol. It is a
+    deployment declaration, not a request-time feature probe.
     """
 
     invocation: bool

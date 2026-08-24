@@ -166,6 +166,68 @@ async def test_canonical_invocation_store_closes_turn_and_persists_outbox(
         assert outbox.payload_text.find('"mode":"enforced"') >= 0
 
 
+async def test_canonical_invocation_store_persists_confirmed_stop_as_cancelled(
+    canonical_store,
+) -> None:
+    """A Runtime-confirmed stop is a canonical cancellation, not a failure."""
+
+    store, turns, _, _, _, backend = canonical_store
+    started = await turns.start_turn(
+        tenant_id="tenant-1",
+        user_id="user-1",
+        session_id="session-cancel",
+        request_id="request-cancel",
+        source="host_chat",
+        user_input=TurnUserInput(text="cancel the work"),
+    )
+    now = datetime.now(UTC)
+    run, _, replay, created = await store.start_run(
+        AgentRun(
+            run_id="run-cancelled",
+            request_id="request-cancel",
+            session_id="session-cancel",
+            agent_id="agent-1",
+            user_id="user-1",
+            tenant_id="tenant-1",
+            status="running",
+            invoker_type="runtime-adapter",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    assert replay is None and created is True
+
+    completed_run, result, completed_turn = await store.complete_run(
+        run=run.model_copy(update={"status": "cancelled"}),
+        result=AgentResult(
+            result_id="result-cancelled",
+            run_id=run.run_id,
+            session_id=run.session_id,
+            agent_id=run.agent_id,
+            user_id=run.user_id,
+            tenant_id=run.tenant_id,
+            status="cancelled",
+            message="Agent invocation was cancelled.",
+            created_at=now,
+        ),
+        response_text="Agent invocation was cancelled.",
+        eligibility=FormationEligibilitySnapshot(
+            mode="enforced", policy_version="formation-policy-v1"
+        ),
+    )
+
+    assert completed_run.status == result.status == "cancelled"
+    assert completed_turn.status.value == "cancelled"
+    assert completed_turn.turn_id == started.turn.turn_id
+    if isinstance(backend, MemoryTurnOutboxRepository):
+        event = next(iter(backend.events.values()))
+        assert event.event_type == "turn.cancelled"
+    else:
+        async with backend() as session:
+            event = (await session.execute(select(TurnOutboxModel))).scalar_one()
+        assert event.event_type == "turn.cancelled"
+
+
 async def test_canonical_invocation_store_replays_terminal_result(canonical_store) -> None:
     store, turns, _, _, _, _ = canonical_store
     await turns.start_turn(

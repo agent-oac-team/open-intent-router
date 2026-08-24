@@ -23,7 +23,15 @@ from urllib.parse import unquote, urlsplit
 from jsonschema import SchemaError as JsonSchemaSchemaError
 from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
-from pydantic import ConfigDict, Field, StrictInt, StrictStr, ValidationError, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
 
 from app.application import ResolvedConnector
 from app.core.errors import InvocationDeadlineExceededError, InvocationPreflightRejectedError
@@ -431,6 +439,26 @@ class RawInvocationOutcome(StrictBaseModel):
         return self
 
 
+class AdapterControlEnvelope(StrictBaseModel):
+    """The only identity fact a Runtime Adapter receives for stop control.
+
+    Control never receives an Agent Definition, Connector, request body, or
+    Principal projection. The Core has already verified ownership against the
+    durable Run; an Adapter can only act on its own process-local execution
+    identifier.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    execution_id: str = Field(min_length=1)
+
+
+class RawInvocationCancellationOutcome(StrictBaseModel):
+    """Closed proof from a control-capable Adapter that execution stopped."""
+
+    stopped: StrictBool
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeAdapterBinding:
     """Safe, already-resolved Adapter configuration for one invocation."""
@@ -445,6 +473,10 @@ class RuntimeAdapterBinding:
 RuntimeAdapterExecutor = Callable[
     [RuntimeAdapterBinding, ResolvedConnector | None, AgentCallEnvelope],
     Awaitable[RawInvocationOutcome],
+]
+RuntimeAdapterCanceller = Callable[
+    [RuntimeAdapterBinding, AdapterControlEnvelope],
+    Awaitable[RawInvocationCancellationOutcome],
 ]
 RuntimeAdapterConnectorValidator = Callable[[RuntimeAdapterBinding, ResolvedConnector], bool]
 RuntimeAdapterConnectorPreparer = Callable[
@@ -540,6 +572,13 @@ class RuntimeAdapterExecution:
         repr=False,
         compare=False,
     )
+    # Append new protocol surface after the established execution fields so
+    # deployment code using positional construction keeps its old meaning.
+    cancel: RuntimeAdapterCanceller | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     async def invoke(self, envelope: AgentCallEnvelope) -> RawInvocationOutcome:
         candidate = self.execute(self.binding, self.connector, envelope)
@@ -563,6 +602,82 @@ class RuntimeAdapterExecution:
             )
         except (AttributeError, TypeError, ValidationError, ValueError):
             raise _InvalidRuntimeAdapterOutcome from None
+
+
+_RuntimeExecutionState = Literal[
+    "pre_dispatch",
+    "dispatched",
+    "stop_confirmed",
+    "stop_unconfirmed",
+    "terminalizing",
+]
+RuntimeControlState = Literal[
+    "stop_confirmed",
+    "stop_unconfirmed",
+    "unsupported",
+    "terminal",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeExecutionIdentity:
+    """The durable ownership facts that authorize one Runtime control action."""
+
+    run_id: str
+    tenant_id: str | None
+    user_id: str | None
+    session_id: str
+    agent_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCancellationDecision:
+    """One safe control observation; it never exposes Adapter diagnostics."""
+
+    control_state: RuntimeControlState
+    completion_certainty: Literal["certain", "unknown"] | None = None
+    reason_code: str | None = None
+
+
+@dataclass(slots=True)
+class _RuntimeExecutionControl:
+    identity: RuntimeExecutionIdentity
+    binding: RuntimeAdapterBinding
+    canceller: RuntimeAdapterCanceller | None
+    state: _RuntimeExecutionState = "pre_dispatch"
+    dispatched: bool = False
+    cancellation_task: asyncio.Future[object] | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+
+def _control_decision(control: _RuntimeExecutionControl) -> RuntimeCancellationDecision:
+    """Project one locked control record without exposing Adapter details."""
+
+    if control.state == "stop_confirmed":
+        return RuntimeCancellationDecision(
+            control_state="stop_confirmed",
+            completion_certainty=("unknown" if control.dispatched else "certain"),
+        )
+    if control.state == "stop_unconfirmed":
+        return RuntimeCancellationDecision(
+            control_state="stop_unconfirmed",
+            completion_certainty="unknown",
+            reason_code="control_stop_unconfirmed",
+        )
+    if control.state == "terminalizing":
+        return RuntimeCancellationDecision(
+            control_state="terminal",
+            completion_certainty=("unknown" if control.dispatched else "certain"),
+            reason_code="control_terminalizing",
+        )
+    # The task that performs control always settles ``dispatched`` to a closed
+    # fact. Retain a conservative fallback in case a future Adapter integration
+    # violates that internal promise.
+    return RuntimeCancellationDecision(
+        control_state="stop_unconfirmed",
+        completion_certainty="unknown",
+        reason_code="control_stop_unconfirmed",
+    )
 
 
 class InvocationRuntime:
@@ -595,6 +710,212 @@ class InvocationRuntime:
         # redispatch an Adapter; they only read the stable Run identity and
         # converge it or safely release its fenced Plan claim.
         self._durable_start_reconciliation_tasks: set[asyncio.Future[object]] = set()
+        # One record exists only for an accepted in-process Invocation. It
+        # contains safe identity/binding facts and no Connector, Definition,
+        # input, or Principal payload. A process restart deliberately loses the
+        # record; an otherwise-running durable Run then reports unconfirmed
+        # control instead of pretending it can stop an unknown remote effect.
+        self._execution_controls: dict[str, _RuntimeExecutionControl] = {}
+        self._control_tasks: set[asyncio.Future[object]] = set()
+
+    def register_execution_control(
+        self,
+        *,
+        invocation: AgentInvocation,
+        agent_id: str,
+        execution: RuntimeAdapterExecution | None,
+    ) -> None:
+        """Register pre-dispatch control facts immediately after Run acceptance.
+
+        The surrounding service invokes this synchronously after its durable
+        start await returns and before the next await. That makes the record
+        visible with the accepted Run while ensuring a losing concurrent start
+        attempt never leaves a process-local control record for another
+        worker's Run.
+        """
+
+        self._execution_controls[invocation.run_id] = _RuntimeExecutionControl(
+            identity=RuntimeExecutionIdentity(
+                run_id=invocation.run_id,
+                tenant_id=invocation.user.tenant_id,
+                user_id=invocation.user.id,
+                session_id=invocation.session_id,
+                agent_id=agent_id,
+            ),
+            binding=(
+                execution.binding
+                if execution is not None
+                else RuntimeAdapterBinding(adapter_key="legacy_v2", config={})
+            ),
+            canceller=execution.cancel if execution is not None else None,
+        )
+
+    async def mark_dispatch_started(self, run_id: str) -> bool:
+        """Record the exact dispatch edge and honor a prior stop proof.
+
+        ``False`` means a pre-dispatch cancellation was already confirmed, so
+        the caller must converge the accepted Run as cancelled without calling
+        the Adapter.
+        """
+
+        control = self._execution_controls.get(run_id)
+        if control is None:
+            return True
+        async with control.lock:
+            if control.state in {"stop_confirmed", "terminalizing"}:
+                return False
+            control.state = "dispatched"
+            control.dispatched = True
+            return True
+
+    async def begin_terminalization(self, run_id: str) -> bool:
+        """Close control before a durable Run/Result transition starts.
+
+        A late cancellation must not call an Adapter after the Runtime already
+        chose a result. The boolean preserves an earlier confirmed stop so the
+        caller can project the canonical ``cancelled`` terminal result.
+        """
+
+        control = self._execution_controls.get(run_id)
+        if control is None:
+            return False
+        async with control.lock:
+            confirmed = control.state == "stop_confirmed"
+            control.state = "terminalizing"
+            return confirmed
+
+    def complete_execution_control(self, run_id: str) -> None:
+        """Release ephemeral control state after the canonical terminal write."""
+
+        self._execution_controls.pop(run_id, None)
+
+    async def request_cancellation(
+        self,
+        identity: RuntimeExecutionIdentity,
+    ) -> RuntimeCancellationDecision:
+        """Apply capability-gated stop control to one already-owned execution.
+
+        Missing process state is deliberately not interpreted as a completed
+        stop: the durable Run may have survived a worker restart or an unknown
+        remote dispatch. Only the Runtime's pre-dispatch fact or a closed
+        Adapter confirmation can move the state to ``stop_confirmed``.
+        """
+
+        control = self._execution_controls.get(identity.run_id)
+        if control is None:
+            return RuntimeCancellationDecision(
+                control_state="stop_unconfirmed",
+                completion_certainty="unknown",
+                reason_code="control_state_unavailable",
+            )
+        if control.identity != identity:
+            return RuntimeCancellationDecision(
+                control_state="unsupported",
+                completion_certainty="unknown",
+                reason_code="control_identity_unavailable",
+            )
+
+        task: asyncio.Future[object] | None = None
+        async with control.lock:
+            if control.state == "pre_dispatch":
+                control.state = "stop_confirmed"
+                return RuntimeCancellationDecision(
+                    control_state="stop_confirmed",
+                    completion_certainty="certain",
+                )
+            if control.state == "stop_confirmed":
+                return RuntimeCancellationDecision(
+                    control_state="stop_confirmed",
+                    completion_certainty=("unknown" if control.dispatched else "certain"),
+                )
+            if control.state == "stop_unconfirmed":
+                return RuntimeCancellationDecision(
+                    control_state="stop_unconfirmed",
+                    completion_certainty="unknown",
+                    reason_code="control_stop_unconfirmed",
+                )
+            if control.state == "terminalizing":
+                return RuntimeCancellationDecision(
+                    control_state="terminal",
+                    completion_certainty=("unknown" if control.dispatched else "certain"),
+                    reason_code="control_terminalizing",
+                )
+            if control.canceller is None:
+                return RuntimeCancellationDecision(
+                    control_state="unsupported",
+                    completion_certainty="unknown",
+                    reason_code="control_unsupported",
+                )
+            task = control.cancellation_task
+            if task is None:
+                task = asyncio.ensure_future(self._call_adapter_canceller(control))
+                control.cancellation_task = task
+                self._retain_control_task(task)
+
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A disconnected control caller must not cancel the process-owned
+            # Adapter control task. Its eventual safe outcome remains in the
+            # Runtime state and is observed during lifecycle shutdown.
+            raise
+        except Exception:  # pragma: no cover - the task closes all failures.
+            pass
+
+        async with control.lock:
+            return _control_decision(control)
+
+    async def _call_adapter_canceller(self, control: _RuntimeExecutionControl) -> None:
+        """Run and atomically record one closed Adapter control observation.
+
+        The control task owns the state transition instead of the awaiting HTTP
+        request.  This closes the race where a cooperative Adapter cancels the
+        execute Task, the invocation pipeline terminalizes it, and only then
+        the control caller gets a chance to record its already-confirmed stop.
+        """
+
+        canceller = control.canceller
+        stopped = False
+        try:
+            if canceller is None:  # pragma: no cover - caller gates this branch.
+                return
+            candidate = canceller(
+                control.binding,
+                AdapterControlEnvelope(execution_id=control.identity.run_id),
+            )
+            if not isawaitable(candidate):
+                return
+            else:
+                outcome = await candidate
+                if isinstance(outcome, RawInvocationCancellationOutcome):
+                    values = object.__getattribute__(outcome, "__dict__")
+                    validated = RawInvocationCancellationOutcome.model_validate(
+                        {"stopped": values.get("stopped")}
+                    )
+                    stopped = validated.stopped is True
+        except (asyncio.CancelledError, Exception):
+            stopped = False
+        finally:
+            async with control.lock:
+                # Terminalization won the race if it began before this control
+                # proof returned. A late Adapter answer must never reopen or
+                # overwrite the canonical result selected by the Runtime.
+                if control.state == "dispatched":
+                    control.state = "stop_confirmed" if stopped else "stop_unconfirmed"
+
+    def _retain_control_task(self, task: asyncio.Future[object]) -> None:
+        """Keep an in-flight stop attempt process-owned through shutdown."""
+
+        self._control_tasks.add(task)
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            self._control_tasks.discard(completed)
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                return
+
+        task.add_done_callback(consume)
 
     def establish_deadline(self, invocation: AgentInvocation) -> AgentInvocation:
         """Stamp the sole absolute deadline at pipeline entry.
@@ -685,6 +1006,7 @@ class InvocationRuntime:
             or self._late_adapter_cleanup_tasks
             or self._late_preflight_tasks
             or self._late_preflight_cleanup_tasks
+            or self._control_tasks
         ):
             accepted_tasks = tuple(self._accepted_execution_tasks)
             for task in accepted_tasks:
@@ -724,6 +1046,13 @@ class InvocationRuntime:
                     task.cancel()
                 await _drain_shutdown_tasks(preflight_cleanup_tasks)
                 self._late_preflight_cleanup_tasks.difference_update(preflight_cleanup_tasks)
+
+            control_tasks = tuple(self._control_tasks)
+            if control_tasks:
+                for task in control_tasks:
+                    task.cancel()
+                await _drain_shutdown_tasks(control_tasks)
+                self._control_tasks.difference_update(control_tasks)
 
             reconciliation_tasks = tuple(self._durable_start_reconciliation_tasks)
             if reconciliation_tasks:

@@ -26,7 +26,7 @@ from app.repositories.memory import MemoryResultRepository, MemoryRunRepository
 from app.schemas.logs import AgentResult, AgentRun
 
 _RESULT_BACKED_RUN_STATUSES = frozenset(
-    {"completed", "failed", "invalid_output", "blocked", "clarify"}
+    {"completed", "cancelled", "failed", "invalid_output", "blocked", "clarify"}
 )
 _COMPLETION_PERSISTENCE_ATTEMPTS = 3
 

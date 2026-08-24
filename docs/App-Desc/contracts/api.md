@@ -283,6 +283,30 @@ Resolver、Context 预检、Envelope 与 Adapter。每个嵌套操作只能消�
 `unknown`。`unknown` 不是自动重试、重新派发或远端 exactly-once 的证明。客户端断连只会结束该
 客户端等待；已受理 Run 继续在服务端收敛，除非另有受治理的控制事实。
 
+### `POST /api/v1/runs/{run_id}/cancel`
+
+这是对一个已受理 Native Invocation Run 的**停止控制请求**，不是客户端自行宣告取消。请求体可以
+省略；若提供则必须是空对象。调用者身份只取 Principal，Run 也只按 Principal 的
+`(tenant, subject)` 查找，跨用户、跨租户和不存在的 Run 一律返回 `404`，不会触及 Runtime Adapter。
+
+响应只包含安全的 `run_id`、当前 `run_status`、`control_state`、可选
+`completion_certainty` 和固定 `reason_code`，不包含 Definition、Connector、endpoint、凭据、Adapter
+异常或远端诊断。`control_state` 的含义如下：
+
+- `stop_confirmed`：Runtime 已证明尚未派发，或当前 Descriptor 显式声明 cancellation 且 Adapter
+  以闭合控制结果确认已停止。前者 certainty 为 `certain`；已可能派发时为 `unknown`，直到 canonical
+  Run/Result 的 `cancelled` 终态事务完成。
+- `stop_unconfirmed`：进程状态丢失、Adapter 明确未能证明停止、控制异常或不可信控制结果；可能的
+  远端副作用仍为 `unknown`，不会自动标记 retryable、重派或伪造 `cancelled`。
+- `unsupported`：此 Run 不是当前可控制的 Invocation，或已派发 Adapter 的 Descriptor 没有声明
+  cancellation。未声明能力的 Adapter 连控制方法都不会被读取或调用。
+- `terminal`：Runtime 已开始或已经完成 canonical 终态收口，晚到控制不会覆盖该结果；已是
+  `cancelled` 的 Run 返回 `control_state=cancelled`。
+
+同一 in-flight Run 的重复或并发控制共享一次 Adapter 控制尝试；控制请求断连不会取消这项
+进程拥有的尝试。只有未派发或已得到 Adapter 明确停止证明的 Run 可以收敛到 `cancelled`。Local
+Function Adapter 的 in-flight 索引属于 Catalog 生命周期，因原调用请求断连或依赖重新解析而不丢失。
+
 请求中的 `memory_context` 或 `knowledge_context` 只是 Core 组装受治理 Context 的候选；v2 Runtime
 Adapter 不会沿用其完整对象。`controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、
 Source Scope 和 trace 匹配的短时单次 Handle，不能由调用方正文绕过。

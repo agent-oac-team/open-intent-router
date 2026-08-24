@@ -26,6 +26,7 @@ from app.runtime.catalog import RuntimeCatalog, RuntimeCatalogKeyError
 from app.runtime.invocation import (
     InvocationDeadline,
     RuntimeAdapterBinding,
+    RuntimeAdapterCanceller,
     RuntimeAdapterConnectorPreparer,
     RuntimeAdapterConnectorValidator,
     RuntimeAdapterExecution,
@@ -561,6 +562,15 @@ class BindingResolver:
             connector_validator = _runtime_connector_validator(adapter)
             connector_preparer = _runtime_connector_preparer(adapter)
             requires_connector = _runtime_adapter_requires_connector(adapter)
+            canceller = _runtime_adapter_canceller(
+                adapter,
+                capability_declared=descriptor.capability.cancellation,
+            )
+            if descriptor.capability.cancellation and canceller is None:
+                raise InvocationBindingUnavailableError(
+                    "Invocation Binding is unavailable",
+                    details={"reason_code": "invocation_adapter_incompatible"},
+                )
             return ResolvedInvocationBinding(
                 selection=selection,
                 definition=definition,
@@ -573,6 +583,7 @@ class BindingResolver:
                         config=requirement.config,
                     ),
                     execute=cast(RuntimeAdapterExecutor, runtime_execute),
+                    cancel=canceller,
                     connector_validator=connector_validator,
                     connector_preparer=connector_preparer,
                     requires_connector=requires_connector,
@@ -663,6 +674,33 @@ def _runtime_connector_preparer(adapter: object) -> RuntimeAdapterConnectorPrepa
     except Exception:
         return None
     return cast(RuntimeAdapterConnectorPreparer, candidate)
+
+
+def _runtime_adapter_canceller(
+    adapter: object,
+    *,
+    capability_declared: bool,
+) -> RuntimeAdapterCanceller | None:
+    """Capture control only after the trusted descriptor explicitly opts in.
+
+    In particular, do not even read ``adapter.cancel`` for an Adapter whose
+    deployment Descriptor lacks cancellation capability. This prevents a
+    legacy/foreign control method from becoming an accidental Runtime surface.
+    """
+
+    if not capability_declared:
+        return None
+    try:
+        candidate = getattr(adapter, "cancel", None)
+    except Exception:
+        return None
+    if not callable(candidate) or not iscoroutinefunction(candidate):
+        return None
+    try:
+        signature(candidate).bind(object(), object())
+    except Exception:
+        return None
+    return cast(RuntimeAdapterCanceller, candidate)
 
 
 def _runtime_adapter_requires_connector(adapter: object) -> bool:
