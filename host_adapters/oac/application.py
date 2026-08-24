@@ -5,6 +5,7 @@ from app.application import (
     EventApplicationPort,
     ExecutionTraceApplicationPort,
     ExternalExecutionApplicationPort,
+    InvocationApplicationPort,
     MemoryGovernanceApplicationPort,
     MemoryManagementApplicationPort,
     PlanApplicationPort,
@@ -24,6 +25,7 @@ class OacAdapterApplicationPorts:
     plans: PlanApplicationPort
     delegated_runs: DelegatedRunApplicationPort
     turns: TurnApplicationPort
+    invocation: InvocationApplicationPort | None = None
     registry_snapshot_refresh: RegistrySnapshotRefreshApplicationPort | None = None
     plan_preflight: PlanPreflightApplicationPort | None = None
     external_execution: ExternalExecutionApplicationPort | None = None

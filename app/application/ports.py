@@ -29,6 +29,7 @@ from app.schemas.external_execution import (
     ExternalExecutorAcceptance,
     ExternalExecutorAcceptanceRequest,
 )
+from app.schemas.invocation import AgentInvocationResult, InvokeRequest
 from app.schemas.memory import (
     MemoryGovernanceRepairResponse,
     MemoryGovernanceResponse,
@@ -135,6 +136,25 @@ class ConnectorResolverApplicationPort(Protocol):
 @runtime_checkable
 class RoutingApplicationPort(Protocol):
     async def route(self, request: RouteRequest) -> RouteResponse: ...
+
+
+@runtime_checkable
+class InvocationApplicationPort(Protocol):
+    """Execute a Core-governed Invocation through the shared Runtime.
+
+    Direct calls still select against the current trusted Snapshot. Routed
+    calls retain the private Route capability so Runtime consumes the exact
+    Candidate Set and Binding selected by Router. Hosts never supply an Adapter
+    key, Connector, or replacement Handling.
+    """
+
+    async def invoke(self, request: InvokeRequest) -> AgentInvocationResult: ...
+
+    async def invoke_from_route(
+        self,
+        route_request: RouteRequest,
+        route_response: RouteResponse,
+    ) -> AgentInvocationResult | None: ...
 
 
 @runtime_checkable

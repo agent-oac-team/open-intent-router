@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.application import RoutingApplicationPort
+from app.application import InvocationApplicationPort, RoutingApplicationPort
 from app.core.config import Settings
 from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
 from host_adapters.oac.api.capabilities import build_capability_router
@@ -172,6 +172,7 @@ def test_adapter_composition_exposes_only_public_application_ports() -> None:
 
     assert isinstance(ports, OacAdapterApplicationPorts)
     assert isinstance(ports.routing, RoutingApplicationPort)
+    assert isinstance(ports.invocation, InvocationApplicationPort)
     assert not hasattr(ports, "knowledge")
     assert not hasattr(ports, "knowledge_assets")
     assert not hasattr(ports, "run_repository")

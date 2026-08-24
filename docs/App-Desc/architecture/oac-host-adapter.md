@@ -75,6 +75,12 @@ Run 或 Ticket。Run 和 Trace 只记录受限的 executor 标识及不可逆 bi
 跨进程双签或失败补偿误终止已签发的 Run。接受记录的请求指纹和 binding 指纹均使用配置密钥的域分隔 HMAC，
 避免低熵 principal、entitlement 或 Host binding 值被离线枚举。
 
+如果将来的 Host Route 已可信选中 `handling.kind=invocation`，Adapter 只通过
+`InvocationApplicationPort.invoke_from_route` 转交原始受信 Route capability。它不从 Legacy
+metadata 推断 Adapter、不能创建 Delegated Run/Ticket，也不能覆盖 Core 的 Handling。当前 OAC Legacy
+Registry 只能映射 `external_execution` 或 `ui_handoff`，因此这项端口扩展不改变冻结的 Legacy wire 或
+Agent Event callback 契约。
+
 配置任一 External Executor capability 时，Host 必须同时设置
 `OAC_HOST_EXECUTION_TICKET_SECRET` 或 Core 的 `EXECUTION_TICKET_SECRET`，以便跨进程重建同一
 不透明 Ticket；缺失时启动失败而不是在路由期间留下半完成 Run。

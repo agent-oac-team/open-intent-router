@@ -22,9 +22,10 @@ from app.schemas.external_execution import (
     ExternalExecutorAcceptance,
     ExternalExecutorAcceptanceRequest,
 )
+from app.schemas.invocation import AgentInvocationResult
 from app.schemas.logs import external_execution_binding_fingerprint
 from app.schemas.plans import NextAction, Plan, PlanActionResponse, PlanStep
-from app.schemas.routing import RouteContext, RouteDecision, RouteResponse
+from app.schemas.routing import InvocationPreview, RouteContext, RouteDecision, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketService
 from app.services.execution_trace_service import ExecutionTraceService
@@ -143,6 +144,50 @@ class UiHandoffRoutingPort(RoutingPort):
                     metadata={"handling_kind": "ui_handoff"},
                 )
             }
+        )
+
+
+class InvocationRoutingPort(RoutingPort):
+    """A Host-neutral Route capability selected for Runtime Invocation."""
+
+    async def route(self, request):
+        self.last_request = request
+        response = RouteResponse(
+            request_id=request.request_id or "request-1",
+            session_id=request.session_id,
+            decision=RouteDecision(
+                action="open_agent",
+                target_agent_id="agent-1",
+                message="invoke",
+            ),
+            context=RouteContext(candidate_agent_ids=["agent-1"]),
+            invocation=InvocationPreview(
+                mode="invoke",
+                agent_id="agent-1",
+                input={"text": request.input.text},
+                metadata={"host_handling": "must-not-control-handling"},
+            ),
+        )
+        return response.bind_routed_execution(request)
+
+
+class InvocationPort:
+    """Record the narrow Host-to-Core Runtime handoff without a delegated Run."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, RouteResponse]] = []
+
+    async def invoke(self, _request):  # pragma: no cover - Central uses routed Invocation.
+        raise AssertionError("Central must not turn a routed Invocation into Direct Invoke")
+
+    async def invoke_from_route(self, request, response):
+        assert response.has_trusted_invocation_for(request)
+        self.calls.append((request, response))
+        return AgentInvocationResult(
+            run_id="run-local-invocation",
+            agent_id="agent-1",
+            status="completed",
+            message="completed by the shared Runtime",
         )
 
 
@@ -612,6 +657,73 @@ def test_route_ui_handoff_does_not_start_delegated_run_or_issue_ticket(
         "metadata": {"handling_kind": "ui_handoff"},
     }
     assert route.json()["execution_ticket"] is None
+    assert delegated.started is None
+
+
+def test_central_route_hands_a_trusted_invocation_to_the_application_port(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    invocation = InvocationPort()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=InvocationRoutingPort(),
+        invocation=invocation,
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-local-invocation",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "invoke through Core",
+        },
+    )
+
+    assert route.status_code == 200
+    assert route.json()["execution_ticket"] is None
+    assert delegated.started is None
+    assert len(invocation.calls) == 1
+    native_request, native_response = invocation.calls[0]
+    assert native_request.input.text == "invoke through Core"
+    assert native_response.invocation is not None
+    assert native_response.invocation.metadata == {"host_handling": "must-not-control-handling"}
+
+
+def test_central_route_rejects_invocation_when_the_runtime_port_is_unavailable(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    client.app.dependency_overrides[get_oac_adapter_application_ports] = lambda: replace(
+        ports,
+        routing=InvocationRoutingPort(),
+    )
+
+    route = client.post(
+        "/api/v1/central/route",
+        json={
+            "request_id": "request-local-invocation-unavailable",
+            "session_id": "session-1",
+            "user_id": "trusted-user",
+            "user_tags": ["运营版"],
+            "source": "central_chat",
+            "user_query": "invoke through Core",
+        },
+    )
+
+    assert route.status_code == 503
+    assert route.json() == {
+        "detail": {
+            "code": "invocation_binding_unavailable",
+            "message": "Invocation Runtime is unavailable",
+            "details": {"reason_code": "invocation_application_unavailable"},
+        }
+    }
     assert delegated.started is None
 
 

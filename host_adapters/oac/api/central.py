@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.core.errors import (
     ExternalExecutionBindingUnavailableError,
+    InvocationBindingUnavailableError,
     PlanBindingUnavailableError,
 )
 from app.schemas.common import UserContext
@@ -207,14 +208,20 @@ async def central_route(
         )
         ticket = None
         is_external_execution = native_response.is_routed_external_execution()
-        if is_external_execution or _requires_delegated_execution(native_response):
-            deadline = datetime.now(UTC) + timedelta(seconds=settings.execution_ticket_ttl_seconds)
+        if (
+            is_external_execution
+            or native_response.invocation is not None
+            or _requires_delegated_execution(native_response)
+        ):
             if is_external_execution:
                 if ports.external_execution is None:
                     raise ExternalExecutionBindingUnavailableError(
                         "External Execution Binding is unavailable",
                         details={"reason_code": "external_executor_unavailable"},
                     )
+                deadline = datetime.now(UTC) + timedelta(
+                    seconds=settings.execution_ticket_ttl_seconds
+                )
                 external_started = await ports.external_execution.start_from_route(
                     native_request,
                     native_response,
@@ -247,7 +254,23 @@ async def central_route(
                     and trace_complete
                 )
                 ticket = external_started.execution_ticket
+            elif native_response.invocation is not None:
+                if ports.invocation is None:
+                    raise InvocationBindingUnavailableError(
+                        "Invocation Runtime is unavailable",
+                        details={"reason_code": "invocation_application_unavailable"},
+                    )
+                # A Host may pass only the exact trusted Route capability that
+                # Router already bound. The Invocation Runtime, rather than
+                # Central metadata, owns Binding resolution, timeout and the
+                # canonical Run/Result outcome. Legacy Registry rows cannot
+                # produce this branch, so the frozen Ticket callback contract
+                # remains exclusively on delegated/external handling.
+                await ports.invocation.invoke_from_route(native_request, native_response)
             else:
+                deadline = datetime.now(UTC) + timedelta(
+                    seconds=settings.execution_ticket_ttl_seconds
+                )
                 started = await ports.delegated_runs.start(
                     DelegatedRunStartCommand(
                         tenant_id=identity.tenant_id,
@@ -317,6 +340,8 @@ async def central_route(
 
 def _requires_delegated_execution(response) -> bool:
     if response.decision.action not in {"open_agent", "continue_agent"}:
+        return False
+    if response.invocation is not None:
         return False
     next_action = response.next_action or (response.plan.next_action if response.plan else None)
     return not (

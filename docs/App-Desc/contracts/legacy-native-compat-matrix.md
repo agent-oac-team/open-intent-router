@@ -2,7 +2,7 @@
 
 | Legacy API | 操作类 | OIR 应用端口 | 自动回退 |
 |---|---|---|---|
-| `POST /api/v1/central/route` | route_stateful | Routing、Turn、Delegated Run | 仅 `not_accepted` |
+| `POST /api/v1/central/route` | route_stateful | Routing、Turn、Invocation（仅可信 v2 Route capability）、Delegated Run | 仅 `not_accepted` |
 | `POST /api/v1/central/events/navigation` | runtime_write | Events | 禁止 |
 | `POST /api/v1/central/events/agent` | runtime_write | Delegated Run、Events | 禁止 |
 | `GET /api/v1/central/active-plan` | read_only | Plans | 禁止 |

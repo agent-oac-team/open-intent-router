@@ -63,6 +63,7 @@ def build_oac_application_container(
         plans=services.plan_service,
         delegated_runs=services.delegated_run_service,
         turns=services.turn_service,
+        invocation=services.invocation_service,
         registry_snapshot_refresh=registry_snapshot_refresh,
         plan_preflight=routing,
         external_execution=services.external_execution_service,

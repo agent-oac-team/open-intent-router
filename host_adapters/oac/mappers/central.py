@@ -40,6 +40,7 @@ _SAFE_REASON_CODES = frozenset(
         "invocation_adapter_incompatible",
         "invocation_adapter_missing",
         "invocation_adapter_unsupported",
+        "invocation_application_unavailable",
         "invocation_config_invalid",
         "plan_binding_agent_mismatch",
         "plan_binding_incomplete",

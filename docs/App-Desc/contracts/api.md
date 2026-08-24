@@ -209,6 +209,11 @@ empty、denied、JWT 4xx 和业务 4xx 不计入故障。Deadline、Circuit 窗�
 `POST /api/v1/route-and-execute` 的非 Plan 单 Agent 分支复用同一收口路径。显式
 `POST /api/v1/invoke` 仍保留无 Canonical Turn 的 direct-invoke 语义。
 
+Host Adapter 通过 `InvocationApplicationPort` 承接时，也只能把同一次 Route 的受信
+`RouteRequest` 与私有 `RouteResponse` capability 交给 `invoke_from_route`。Host 不得从
+metadata 重选 Agent、替换 Handling、构造 Adapter/Connector，或把 Invocation Binding 缺失猜测为
+Delegated Run；Runtime 继续拥有 Binding、Deadline、Run/Result 和终态收口。
+
 ### `POST /api/v1/route-and-execute`
 
 先执行路由，再根据执行策略处理结果：
