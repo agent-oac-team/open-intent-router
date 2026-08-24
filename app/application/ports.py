@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -76,6 +76,56 @@ RegistrySnapshotSourceMapper = Callable[
     [RegistrySnapshotSourceState],
     RegistrySnapshotSourceInput | Awaitable[RegistrySnapshotSourceInput],
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorResolutionRequest:
+    """Trusted facts that scope one deployment-owned Connector lookup.
+
+    ``principal`` is deliberately request-local and not serializable.  The
+    Core builds this value from the already-bound Native Principal; a Connector
+    implementation must not recover any of these facts from adapter input or
+    from caller-provided configuration.
+    """
+
+    tenant_id: str
+    principal: UserContext = field(repr=False)
+    adapter_key: str
+    connector_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedConnector:
+    """One request-scoped Connector capability delivered only to an Adapter.
+
+    ``connection`` may contain endpoint, credentials, a short-lived client, or
+    another deployment-private value.  It is excluded from ``repr`` and
+    equality so Core persistence, trace, and diagnostic code can retain only
+    the safe identity fields above it.
+    """
+
+    tenant_id: str
+    adapter_key: str
+    connector_ref: str
+    revision: str
+    connection: object = field(repr=False, compare=False)
+
+
+@runtime_checkable
+class ConnectorResolverApplicationPort(Protocol):
+    """Resolve and release one Connector without becoming a plugin catalog.
+
+    A deployment supplies one narrow implementation.  It receives only the
+    immutable Binding-selected adapter/ref and the trusted request Principal;
+    it never chooses Handling or dispatches an Adapter itself.
+    """
+
+    async def resolve(
+        self,
+        request: ConnectorResolutionRequest,
+    ) -> ResolvedConnector | None: ...
+
+    async def release(self, connector: ResolvedConnector) -> None: ...
 
 
 @runtime_checkable

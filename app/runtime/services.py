@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from app.adapters.knowledge_sys import KnowledgeSysHttpProvider, load_signing_private_key
 from app.application import (
+    ConnectorResolverApplicationPort,
     ExternalExecutionAcceptanceApplicationPort,
     ExternalExecutorApplicationPort,
 )
@@ -213,6 +214,7 @@ def build_application_service_composition(
     settings: Settings,
     external_executor: ExternalExecutorApplicationPort | None = None,
     external_executor_factory: ExternalExecutorFactory | None = None,
+    connector_resolver: ConnectorResolverApplicationPort | None = None,
     memory_runtime_policy: MemoryRuntimePolicy | None = None,
     memory_data_settings: Settings | None = None,
     execution_ticket_secret: str | None = None,
@@ -233,6 +235,7 @@ def build_application_service_composition(
             databases=databases,
             external_executor=external_executor,
             external_executor_factory=external_executor_factory,
+            connector_resolver=connector_resolver,
             memory_runtime_policy=runtime_policy,
             memory_data_settings=selected_memory_settings,
             execution_ticket_secret=execution_ticket_secret,
@@ -293,6 +296,7 @@ def build_application_container(
     databases: Mapping[str, ManagedDatabase],
     external_executor: ExternalExecutorApplicationPort | None = None,
     external_executor_factory: ExternalExecutorFactory | None = None,
+    connector_resolver: ConnectorResolverApplicationPort | None = None,
     memory_runtime_policy: MemoryRuntimePolicy | None = None,
     memory_data_settings: Settings | None = None,
     execution_ticket_secret: str | None = None,
@@ -488,7 +492,7 @@ def build_application_container(
         runtime_policy=runtime_policy,
         memory_formation_policy_version=settings.memory_formation_policy_version,
         snapshot_runtime=snapshot_runtime,
-        binding_resolver=BindingResolver(catalog),
+        binding_resolver=BindingResolver(catalog, connector_resolver=connector_resolver),
         execution_traces=execution_trace_service,
         invocation_runtime=invocation_runtime,
         completion_store=invocation_completion_store,

@@ -15,6 +15,7 @@ from inspect import isawaitable, iscoroutinefunction
 from types import MappingProxyType
 from typing import Any
 
+from app.application import ResolvedConnector
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterDescriptor,
@@ -126,6 +127,7 @@ class LocalFunctionRuntimeAdapter:
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        _connector: ResolvedConnector | None,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         if not self._active or self._closed:

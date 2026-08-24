@@ -91,6 +91,21 @@ Invocation Runtime 作为 Application Runtime 的受管后台组件，在 Catalo
 调用 deadline 的 Adapter task。Adapter 必须协作响应取消；一直吞掉取消会使受管 cleanup 在既有应用
 cleanup deadline 内失败，而不会被静默遗忘或以迟到成功覆盖已完成的 Run。
 
+## Connector Resolver
+
+Deployment 如为某个 Runtime Adapter Binding 配置逻辑 `connector_ref`，必须在应用组合时注入一个窄
+Connector Resolver。它不是 Runtime Catalog 或动态插件框架：每次调用只接收已验证 Native Principal、
+tenant、冻结 `adapter_key` 和逻辑 reference，并只返回该次 Adapter 执行使用的短生命周期 Connector。
+Connector 的 endpoint、credentials、Header 或短时 client 不属于 Definition、Envelope、Run、Result、Trace
+或日志；持久 Binding Snapshot 仅可记录逻辑 reference 和安全 revision。
+
+Resolver 返回值必须与当前 tenant、Adapter key 和逻辑 reference 精确一致，并带安全 revision；缺少 Resolver、
+缺失/越权/不兼容 Connector 或 Resolver 异常都在 Run 受理前投影为安全
+`invocation_binding_unavailable`。Core 无论预检、Adapter 执行、deadline 或取消如何结束都会调用该值的
+release；Resolver 的实现也不得把请求凭据或租户状态保存在 Runtime Adapter 或进程单例中。
+若 Adapter 吞掉 deadline 取消，Runtime 会强持有并在 Catalog 释放前排空该任务；对应 Connector 的
+release 延后至任务真正结束，避免已关闭的私有 capability 被迟到代码继续使用。
+
 ## 部署与验收
 
 1. 在部署环境设置 `RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS`、

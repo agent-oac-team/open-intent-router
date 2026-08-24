@@ -165,9 +165,16 @@ def _definition(
     agent_id: str = "plan-agent",
     revision: int = 9,
     allow_roles: list[str] | None = None,
-    connector_ref: str = "plan_connector",
+    connector_ref: str | None = None,
     handling: dict[str, object] | None = None,
 ) -> AgentDefinitionV2:
+    invocation_handling = {
+        "kind": "invocation",
+        "adapter_key": "plan_adapter",
+        "config": {"function": "execute"},
+    }
+    if connector_ref is not None:
+        invocation_handling["connector_ref"] = connector_ref
     return AgentDefinitionV2.model_validate(
         {
             "schema_version": "oir-agent-v2",
@@ -186,13 +193,7 @@ def _definition(
                 "required": ["status"],
                 "properties": {"status": {"type": "string"}},
             },
-            "handling": handling
-            or {
-                "kind": "invocation",
-                "adapter_key": "plan_adapter",
-                "connector_ref": connector_ref,
-                "config": {"function": "execute"},
-            },
+            "handling": handling or invocation_handling,
         }
     )
 
@@ -287,7 +288,7 @@ async def test_v2_plan_execution_revalidates_and_resolves_before_creating_a_run(
     assert [item["step_id"] for item in response.results] == ["bound-step"]
     assert len(adapter.calls) == 1
     assert adapter.calls[0][0].revision == 9
-    assert adapter.calls[0][1].connector_ref == "plan_connector"
+    assert adapter.calls[0][1].connector_ref is None
     assert len(runs.runs) == len(results.results) == 1
     run = next(iter(runs.runs.values()))
     assert run.agent_revision == 9

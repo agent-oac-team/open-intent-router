@@ -39,6 +39,11 @@ Definition。
   Artifact 数量与 metadata 的上限）和 `principal_projection`。前者只能比部署级硬上限更严格；后者
   只可请求规范 claim（`roles`、`groups`、`entitlements`）或审核过的安全属性键，仍须同时由部署 policy
   和 Adapter descriptor 允许，不能借此传递 token、Header、凭据或完整 Principal attributes。
+  当 Runtime Adapter Binding 声明 `connector_ref` 时，Core 只把该逻辑引用、冻结的 Adapter key 和
+  已验证 Principal 交给部署注入的 Connector Resolver。Resolver 返回的 endpoint、凭据或短时 client
+  是单次调用值，单独交付给已经选中的 Adapter；它不能替换 Handling、Adapter 或候选/entitlement 结果。
+  缺失、越权、无效或不可用 Connector 在 Run 受理前以安全 `503` 拒绝。Run 的 Binding Snapshot 最多记录
+  逻辑 `connector_ref` 和安全 `connector_revision`，从不保存 endpoint、Header、Token 或 Secret。
 - `external_execution`：逻辑 `executor_ref` 与受限 `params`。Host External Executor 接受后，
   Runtime 创建受 Ticket 约束的 Delegated Run；Native Runtime 不把它伪装为本地 Invocation。
 - `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invoker。

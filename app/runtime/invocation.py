@@ -25,6 +25,7 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 from pydantic import ConfigDict, Field, StrictInt, StrictStr, ValidationError, model_validator
 
+from app.application import ResolvedConnector
 from app.core.errors import InvocationPreflightRejectedError
 from app.schemas.agents import (
     INVOCATION_PRINCIPAL_CLAIMS,
@@ -312,7 +313,7 @@ class RuntimeAdapterBinding:
 
 
 RuntimeAdapterExecutor = Callable[
-    [RuntimeAdapterBinding, AgentCallEnvelope],
+    [RuntimeAdapterBinding, ResolvedConnector | None, AgentCallEnvelope],
     Awaitable[RawInvocationOutcome],
 ]
 
@@ -384,13 +385,19 @@ class RuntimeAdapterExecution:
 
     binding: RuntimeAdapterBinding
     execute: RuntimeAdapterExecutor
+    connector: ResolvedConnector | None = None
     limits: InvocationLimits = field(default_factory=InvocationLimits)
     requires_knowledge_context: bool = False
     principal_claims: frozenset[InvocationPrincipalClaim] = frozenset()
     principal_attribute_keys: frozenset[str] = frozenset()
+    late_task_cleanup: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     async def invoke(self, envelope: AgentCallEnvelope) -> RawInvocationOutcome:
-        candidate = self.execute(self.binding, envelope)
+        candidate = self.execute(self.binding, self.connector, envelope)
         if not isawaitable(candidate):
             raise _InvalidRuntimeAdapterOutcome
         outcome = await candidate
@@ -418,7 +425,13 @@ class InvocationRuntime:
 
     def __init__(self, *, policy: InvocationRuntimePolicy | None = None) -> None:
         self._policy = policy or InvocationRuntimePolicy()
+        # A cancellation-defiant Adapter task must remain strongly owned until
+        # it completes.  Otherwise it can be garbage-collected before
+        # application shutdown drains it, leaving it to use a disposed Adapter
+        # or request-scoped Connector.  This is not a Connector cache: each
+        # task is removed, together with its cleanup hook, as soon as it ends.
         self._late_adapter_tasks: set[asyncio.Future[object]] = set()
+        self._late_adapter_cleanup_tasks: set[asyncio.Future[object]] = set()
 
     async def start(self) -> None:
         """Participate in the application lifecycle before Adapter use begins."""
@@ -433,11 +446,22 @@ class InvocationRuntime:
         operation.
         """
 
-        tasks = tuple(self._late_adapter_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        while self._late_adapter_tasks or self._late_adapter_cleanup_tasks:
+            tasks = tuple(self._late_adapter_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                # A completed Task's done callbacks may be queued behind the
+                # gather continuation. Remove this known-complete batch here
+                # as well, so shutdown cannot busy-loop before those callbacks
+                # get a chance to discard it.
+                self._late_adapter_tasks.difference_update(tasks)
+
+            cleanup_tasks = tuple(self._late_adapter_cleanup_tasks)
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                self._late_adapter_cleanup_tasks.difference_update(cleanup_tasks)
 
     def preflight(
         self,
@@ -587,7 +611,10 @@ class InvocationRuntime:
             outcome = await _await_runtime_outcome(
                 execution.invoke(envelope.model_copy(deep=True)),
                 timeout=remaining,
-                observe_late_task=self._observe_late_adapter_task,
+                observe_late_task=lambda task: self._observe_late_adapter_task(
+                    task,
+                    late_task_cleanup=execution.late_task_cleanup,
+                ),
             )
         except asyncio.CancelledError as exc:
             # An accepted execution must never leave its Run in ``running``.
@@ -752,13 +779,37 @@ class InvocationRuntime:
             )
         return result
 
-    def _observe_late_adapter_task(self, task: asyncio.Future[object]) -> None:
-        """Retain a cancellation-defiant Adapter task until it is drained."""
+    def _observe_late_adapter_task(
+        self,
+        task: asyncio.Future[object],
+        *,
+        late_task_cleanup: Callable[[], Awaitable[None]] | None,
+    ) -> None:
+        """Retain and drain one deadline-expired Adapter task and its lease."""
 
         self._late_adapter_tasks.add(task)
+        cleanup = late_task_cleanup() if late_task_cleanup is not None else None
 
         def consume(completed: asyncio.Future[object]) -> None:
             self._late_adapter_tasks.discard(completed)
+            try:
+                completed.result()
+            except (asyncio.CancelledError, Exception):
+                pass
+            finally:
+                if cleanup is not None:
+                    self._observe_late_adapter_cleanup(cleanup)
+
+        task.add_done_callback(consume)
+
+    def _observe_late_adapter_cleanup(self, cleanup: Awaitable[None]) -> None:
+        """Keep deferred request-resource release in the lifecycle drain set."""
+
+        task = asyncio.ensure_future(cleanup)
+        self._late_adapter_cleanup_tasks.add(task)
+
+        def consume(completed: asyncio.Future[object]) -> None:
+            self._late_adapter_cleanup_tasks.discard(completed)
             try:
                 completed.result()
             except (asyncio.CancelledError, Exception):

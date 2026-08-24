@@ -238,6 +238,16 @@ Direct Invoke 在 Binding、输入和受治理 Context 预检通过后才受理�
 已受理 Adapter 的取消异常同样收敛为安全失败，不将它表述为已停止的远端副作用。Direct Invoke
 没有调用方幂等承诺；重复 HTTP 请求始终创建新的 Run。
 
+若冻结的 Runtime Adapter Binding 含 `connector_ref`，Core 在创建 Run 前调用部署提供的窄
+Connector Resolver。该 Resolver 只能使用 deployment policy、已绑定 Native Principal 的 tenant/身份、
+冻结的 `adapter_key` 和逻辑 `connector_ref`；它不重新选择 Handling 或 Adapter。返回的 Resolved Connector
+可携带 endpoint、credentials 或短时 client，但作为请求级私有值与 Envelope 分开传给 Adapter，并在成功、
+预检拒绝、Adapter 失败、deadline 或取消后释放。缺失、越权、Adapter/ref/revision 不匹配或不可用时返回
+既有 `invocation_binding_unavailable` 的安全 `503`，不创建 Run、Result、Ticket 或远端调用；公开响应、
+Trace 和日志不输出 Connector 的 endpoint、Header、Token 或 Secret。
+Adapter 若吞掉 deadline 的取消，Core 会继续强持有它直至应用生命周期排空；为了不让该 Adapter 使用已关闭
+的私有 capability，Connector 的 release 在该迟到任务结束时完成，而不是在安全 deadline 响应返回时抢先关闭。
+
 预检会构造唯一的 Agent Call Envelope。它只含只读执行 ID、Definition `input_schema` 已声明并通过
 校验的输入、默认 `subject/tenant` Principal、三方门控后可选的规范 claim、安全 Context 定位事实、
 有界 Artifact reference、绝对 deadline，以及已存在的可信 Plan 幂等键。Token、Header、完整

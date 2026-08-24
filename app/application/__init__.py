@@ -1,6 +1,8 @@
 """Public application ports exposed to host composition roots and adapters."""
 
 from app.application.ports import (
+    ConnectorResolutionRequest,
+    ConnectorResolverApplicationPort,
     DelegatedRunApplicationPort,
     EventApplicationPort,
     ExecutionTraceApplicationPort,
@@ -17,12 +19,15 @@ from app.application.ports import (
     RegistrySnapshotSourceInput,
     RegistrySnapshotSourceMapper,
     RegistrySnapshotSourceState,
+    ResolvedConnector,
     RoutingApplicationPort,
     SnapshotRoutingApplicationPort,
     TurnApplicationPort,
 )
 
 __all__ = [
+    "ConnectorResolutionRequest",
+    "ConnectorResolverApplicationPort",
     "EventApplicationPort",
     "ExecutionTraceApplicationPort",
     "DelegatedRunApplicationPort",
@@ -39,6 +44,7 @@ __all__ = [
     "RegistrySnapshotSourceInput",
     "RegistrySnapshotSourceMapper",
     "RegistrySnapshotSourceState",
+    "ResolvedConnector",
     "RoutingApplicationPort",
     "SnapshotRoutingApplicationPort",
     "TurnApplicationPort",

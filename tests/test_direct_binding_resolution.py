@@ -209,7 +209,6 @@ def _invocation_definition(**updates: object) -> AgentDefinitionV2:
         "handling": {
             "kind": "invocation",
             "adapter_key": "test_adapter",
-            "connector_ref": "tenant_connector",
             "config": {"function": "execute"},
         },
     }
@@ -303,7 +302,8 @@ async def test_direct_v2_invocation_resolves_before_run_and_persists_safe_bindin
         "adapter_key": "test_adapter",
         "adapter_contract_version": _binding_version_fingerprint("adapter-contract-v1"),
         "adapter_implementation_version": _binding_version_fingerprint("adapter-implementation-v2"),
-        "connector_ref": "tenant_connector",
+        "connector_ref": None,
+        "connector_revision": None,
     }
     assert "function" not in run.binding_snapshot.model_dump_json()
     assert "endpoint" not in run.binding_snapshot.model_dump_json()
@@ -538,6 +538,44 @@ async def test_direct_invocation_uses_the_protocol_frozen_by_the_snapshot() -> N
     assert result.status == "completed"
     assert len(adapter.calls) == 1
     assert len(runs.runs) == len(results.results) == 1
+
+    await catalog.aclose()
+
+
+async def test_legacy_v2_binding_with_a_connector_fails_before_run_acceptance() -> None:
+    adapter = _DualProtocolAdapter()
+    catalog = await _catalog(adapter, invocation_runtime=False)
+    snapshot_runtime = RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog))
+    snapshot_runtime.load(
+        [
+            _invocation_definition(
+                handling={
+                    "kind": "invocation",
+                    "adapter_key": "test_adapter",
+                    "connector_ref": "tenant_connector",
+                    "config": {"function": "execute"},
+                }
+            )
+        ],
+        source="test",
+    )
+    runs = MemoryRunRepository()
+    results = MemoryResultRepository()
+    service = _service(
+        catalog=catalog,
+        snapshot_runtime=snapshot_runtime,
+        runs=runs,
+        results=results,
+    )
+
+    with pytest.raises(InvocationBindingUnavailableError) as exc_info:
+        await service.invoke(_request())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.details == {"reason_code": "connector_adapter_incompatible"}
+    assert adapter.calls == []
+    assert runs.runs == {}
+    assert results.results == []
 
     await catalog.aclose()
 

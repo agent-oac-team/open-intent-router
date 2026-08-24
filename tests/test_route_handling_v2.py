@@ -249,7 +249,6 @@ async def test_route_v2_invocation_reuses_exact_snapshot_binding_without_registr
                 handling={
                     "kind": "invocation",
                     "adapter_key": "v2_adapter",
-                    "connector_ref": "route_connector",
                     "config": {"function": "execute"},
                 },
             )
@@ -282,7 +281,6 @@ async def test_route_v2_invocation_reuses_exact_snapshot_binding_without_registr
     assert route.invocation.input == {"text": request.input.text}
     assert route.selected_binding("invoke-agent") is not None
     assert "v2_adapter" not in route.model_dump_json()
-    assert "route_connector" not in route.model_dump_json()
     assert registry.calls == 0
     assert llm.payload is not None
     model_candidate = llm.payload.candidates[0].model_dump()
@@ -295,7 +293,7 @@ async def test_route_v2_invocation_reuses_exact_snapshot_binding_without_registr
     assert result is not None and result.status == "completed"
     assert len(adapter.calls) == 1
     assert adapter.calls[0][0].revision == 4
-    assert adapter.calls[0][1].connector_ref == "route_connector"
+    assert adapter.calls[0][1].connector_ref is None
     assert "host_handling" not in adapter.calls[0][2].context
     assert len(runs.runs) == len(results.results) == 1
     assert registry.calls == 0

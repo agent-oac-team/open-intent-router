@@ -59,6 +59,7 @@ class _RuntimeOutcomeAdapter:
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        _connector: object,
         envelope: AgentCallEnvelope,
     ) -> object:
         self.calls.append((binding, envelope))
@@ -130,11 +131,12 @@ class _SessionScopeCheckingAdapter(_RuntimeOutcomeAdapter):
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        connector: object,
         envelope: AgentCallEnvelope,
     ) -> object:
         assert self.tracker is not None
         self.observed_active_scopes.append(self.tracker.active_scopes)
-        return await super().execute(binding, envelope)
+        return await super().execute(binding, connector, envelope)
 
 
 def _definition() -> AgentDefinitionV2:

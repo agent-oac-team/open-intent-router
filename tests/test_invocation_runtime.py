@@ -47,6 +47,7 @@ class _RecordingAdapter:
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        _connector: object,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         self.calls.append((binding, envelope))

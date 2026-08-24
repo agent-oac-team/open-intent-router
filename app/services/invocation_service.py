@@ -290,8 +290,9 @@ class InvocationService:
         resolved: ResolvedInvocationBinding,
         invocation: AgentInvocation,
     ) -> AgentInvocationResult:
+        """Perform local input checks, then own one request Connector scope."""
+
         definition = resolved.definition
-        binding_snapshot = resolved.persistence_snapshot
         runtime_execution = resolved.runtime_execution
         if runtime_execution is not None:
             invocation = invocation.model_copy(
@@ -307,6 +308,30 @@ class InvocationService:
                     )
                 }
             )
+
+        binding_resolver = self.binding_resolver
+        if binding_resolver is None:
+            raise InvocationBindingUnavailableError(
+                "Invocation Binding is unavailable",
+                details={"reason_code": "binding_resolver_unavailable"},
+            )
+        # Connector resolution occurs after pure input validation but before
+        # Context assembly, Plan claim, Run creation, or Adapter dispatch. The
+        # resolver context owns cleanup across every later success/failure path.
+        async with binding_resolver.open_connector(resolved, principal=invocation.user) as bound:
+            return await self._invoke_connector_bound(binding=bound, invocation=invocation)
+
+    async def _invoke_connector_bound(
+        self,
+        *,
+        binding: ResolvedInvocationBinding,
+        invocation: AgentInvocation,
+    ) -> AgentInvocationResult:
+        """Execute one Binding whose optional Connector is already live."""
+
+        definition = binding.definition
+        binding_snapshot = binding.persistence_snapshot
+        runtime_execution = binding.runtime_execution
 
         def preflight(prepared_invocation: AgentInvocation) -> AgentCallEnvelope | None:
             if runtime_execution is None:
@@ -325,7 +350,7 @@ class InvocationService:
             envelope: AgentCallEnvelope | None,
         ) -> AgentInvocationResult:
             if runtime_execution is None:
-                return await self._invoke_with_claim_heartbeat(resolved.invoke, prepared_invocation)
+                return await self._invoke_with_claim_heartbeat(binding.invoke, prepared_invocation)
             if envelope is None:
                 raise InvocationError("Invocation Runtime preflight is unavailable")
 
@@ -351,7 +376,7 @@ class InvocationService:
         return await self._execute_accepted_invocation(
             definition,
             invocation,
-            invoker_type=resolved.adapter_key,
+            invoker_type=binding.adapter_key,
             agent_revision=definition.revision,
             handling_kind=definition.handling.kind,
             binding_snapshot=binding_snapshot,

@@ -88,8 +88,9 @@ class InvocationBindingSnapshot(StrictBaseModel):
     adapter_contract_version: str = Field(min_length=1, max_length=128)
     adapter_implementation_version: str = Field(min_length=1, max_length=128)
     connector_ref: str | None = None
+    connector_revision: str | None = None
 
-    @field_validator("adapter_key", "connector_ref")
+    @field_validator("adapter_key", "connector_ref", "connector_revision")
     @classmethod
     def require_logical_identifier(cls, value: str | None) -> str | None:
         if value is None:

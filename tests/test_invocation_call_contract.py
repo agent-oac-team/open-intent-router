@@ -57,6 +57,7 @@ class _RecordingAdapter:
     async def execute(
         self,
         _binding: RuntimeAdapterBinding,
+        _connector: object,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         self.calls.append(envelope)
@@ -72,6 +73,7 @@ class _CancellationIgnoringAdapter(_RecordingAdapter):
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        _connector: object,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         self.calls.append(envelope)
@@ -91,6 +93,7 @@ class _LifecycleTrackedLateAdapter(_RecordingAdapter):
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        _connector: object,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         self.calls.append(envelope)
@@ -113,6 +116,7 @@ class _DeadlineTamperingAdapter(_RecordingAdapter):
     async def execute(
         self,
         binding: RuntimeAdapterBinding,
+        _connector: object,
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         self.calls.append(envelope)

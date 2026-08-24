@@ -17,7 +17,11 @@ from app.api import (
     runtime,
     sessions,
 )
-from app.application import ExternalExecutorApplicationPort, RegistrySnapshotSourceMapper
+from app.application import (
+    ConnectorResolverApplicationPort,
+    ExternalExecutorApplicationPort,
+    RegistrySnapshotSourceMapper,
+)
 from app.core.config import Settings, get_settings
 from app.core.errors import ApplicationRuntimeUnavailable, register_error_handlers
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
@@ -83,6 +87,7 @@ def create_app(
     runtime_descriptors: Sequence[RuntimeAdapterDescriptor] | None = None,
     external_executor: ExternalExecutorApplicationPort | None = None,
     external_executor_factory: ExternalExecutorFactory | None = None,
+    connector_resolver: ConnectorResolverApplicationPort | None = None,
     registry_snapshot_mapper: RegistrySnapshotSourceMapper | None = None,
     application_composition_factory: ApplicationCompositionFactory | None = None,
     memory_runtime_policy: MemoryRuntimePolicy | None = None,
@@ -99,6 +104,7 @@ def create_app(
             (
                 external_executor is not None,
                 external_executor_factory is not None,
+                connector_resolver is not None,
                 memory_runtime_policy is not None,
                 memory_database_url is not None,
                 memory_collection is not None,
@@ -122,6 +128,7 @@ def create_app(
             settings=settings_snapshot,
             external_executor=external_executor,
             external_executor_factory=external_executor_factory,
+            connector_resolver=connector_resolver,
             memory_runtime_policy=runtime_policy,
             memory_data_settings=memory_settings,
             execution_ticket_secret=execution_ticket_secret,
