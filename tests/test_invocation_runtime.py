@@ -528,12 +528,11 @@ async def test_local_function_adapter_does_not_cache_a_failed_plan_execution() -
     )
     runtime = InvocationRuntime()
 
-    with pytest.raises(InvocationError, match="controlled local failure"):
-        await runtime.execute(
-            execution=execution,
-            invocation=invocation,
-            agent_id="bound-agent",
-        )
+    failed = await runtime.execute(
+        execution=execution,
+        invocation=invocation,
+        agent_id="bound-agent",
+    )
     recovered = await runtime.execute(
         execution=execution,
         invocation=invocation.model_copy(update={"run_id": "run-flaky-retry"}),
@@ -541,6 +540,9 @@ async def test_local_function_adapter_does_not_cache_a_failed_plan_execution() -
     )
 
     assert calls == 2
+    assert failed.status == "failed"
+    assert failed.error is not None
+    assert failed.error.code == "invocation_remote_failure"
     assert recovered.run_id == "run-flaky-retry"
     assert recovered.output == {"summary": "recovered"}
     assert adapter.completed_count == 1

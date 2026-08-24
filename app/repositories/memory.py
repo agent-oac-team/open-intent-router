@@ -183,6 +183,11 @@ class MemoryRunRepository:
     def __init__(self) -> None:
         self.runs: dict[str, AgentRun] = {}
         self.formation_published_order: dict[str, int] = {}
+        # Completion stores are short-lived application collaborators.  Keep
+        # the serialization primitive with the shared persistence state so
+        # two service instances using these repositories cannot both turn the
+        # same accepted Run into a terminal record.
+        self._invocation_completion_lock = asyncio.Lock()
 
     async def add_run(self, run: AgentRun) -> AgentRun:
         stored = AgentRun.model_validate(run.model_dump(mode="python"))

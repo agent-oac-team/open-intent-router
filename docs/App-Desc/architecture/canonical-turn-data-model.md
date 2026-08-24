@@ -66,6 +66,13 @@ invocation 使用两个短事务，外部 Agent 调用不持有数据库 transac
 2. Agent 调用在事务外执行。
 3. `complete_run` 更新终态 Run、插入 Result、完成 Turn 并插入唯一 Outbox。
 
+非 Canonical 的 direct-invoke 同样保持短写入边界，但不创建 Turn 或 Outbox：先短事务写入
+`running` Run，随后在事务外执行 Runtime Adapter，最后以一个短事务同时更新该 Run 并插入唯一
+Result。终态提交确认丢失时，Runtime 只能按同一 `run_id` 和完全一致的 Result 读回已提交记录；
+它不会再次调用 Adapter。direct-invoke 不提供调用方重放键，相同 HTTP 请求的再次调用仍创建新的
+Run/Result。Adapter 在已受理后抛出取消异常也投影为安全失败并走同一终态收口；该投影不声称
+远端副作用已经停止，后续控制能力只会在可验证时声明取消。
+
 Delegated Run 最终完成时，以下写入也必须处于同一 PostgreSQL 事务：
 
 1. 校验并更新 Run 终态。

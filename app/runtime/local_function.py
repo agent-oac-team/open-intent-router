@@ -15,7 +15,6 @@ from inspect import isawaitable, iscoroutinefunction
 from types import MappingProxyType
 from typing import Any
 
-from app.core.errors import InvocationError
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterDescriptor,
@@ -23,6 +22,7 @@ from app.runtime.catalog import (
 )
 from app.runtime.invocation import (
     AgentCallEnvelope,
+    RawInvocationFailure,
     RawInvocationOutcome,
     RuntimeAdapterBinding,
 )
@@ -129,15 +129,15 @@ class LocalFunctionRuntimeAdapter:
         envelope: AgentCallEnvelope,
     ) -> RawInvocationOutcome:
         if not self._active or self._closed:
-            raise InvocationError("Local Function Runtime Adapter is unavailable")
+            return _unavailable_outcome()
         function_name = binding.config.get("function")
         if not isinstance(function_name, str) or not _FUNCTION_NAME_PATTERN.fullmatch(
             function_name
         ):
-            raise InvocationError("Local Function binding is invalid")
+            return _unavailable_outcome()
         function = self._functions.get(function_name)
         if function is None:
-            raise InvocationError("Local Function is unavailable")
+            return _unavailable_outcome()
         if envelope.idempotency_key is None:
             return await self._call(function, envelope)
         return await self._invoke_idempotent(
@@ -241,4 +241,12 @@ def _normalize_outcome(value: Any) -> RawInvocationOutcome:
         return value
     if isinstance(value, Mapping):
         return RawInvocationOutcome(output=deepcopy(dict(value)))
-    raise InvocationError("Local Function returned an invalid raw outcome")
+    return RawInvocationOutcome(
+        failure=RawInvocationFailure.for_category("invalid_response", retryable=False)
+    )
+
+
+def _unavailable_outcome() -> RawInvocationOutcome:
+    return RawInvocationOutcome(
+        failure=RawInvocationFailure.for_category("unavailable", retryable=True)
+    )

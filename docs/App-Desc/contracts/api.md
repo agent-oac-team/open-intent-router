@@ -231,6 +231,13 @@ Runtime 不会按旧 `type` 选择 `mock`、`http` 或 `local_function` Invoker�
 猜测为外部委派。`ui_handoff` 与 `external_execution` 由路由或 Plan 返回 Host 协作动作，不是
 direct-invoke 目标。
 
+Direct Invoke 在 Binding、输入和受治理 Context 预检通过后才受理：它先短事务创建 `running` Run，
+在事务外调用 Runtime Adapter，再短事务原子写入终态 Run 和唯一 Result。Adapter 的已受理失败以
+`AgentInvocationResult` 的稳定安全错误码返回；Binding 或必需依赖在受理前不可用仍使用既有错误
+信封且不创建 Run。提交确认丢失时 Runtime 仅回读完全匹配的 Run/Result，不会自动重调 Adapter。
+已受理 Adapter 的取消异常同样收敛为安全失败，不将它表述为已停止的远端副作用。Direct Invoke
+没有调用方幂等承诺；重复 HTTP 请求始终创建新的 Run。
+
 如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，v2 Runtime Adapter 通常会沿用该
 上下文字段；但 `controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、
 Source Scope 和 trace 匹配的短时单次 Handle，不能由调用方正文绕过。

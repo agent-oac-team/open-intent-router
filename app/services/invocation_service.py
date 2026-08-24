@@ -13,6 +13,8 @@ from app.core.errors import (
     InvocationError,
 )
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
+from app.repositories.interfaces import InvocationCompletionStore
+from app.repositories.invocation_completion import build_invocation_completion_store
 from app.runtime.invocation import InvocationRuntime
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
 from app.schemas.agents import AgentDefinitionV2, AgentHandlingKind
@@ -63,6 +65,7 @@ class InvocationService:
         binding_resolver: BindingResolver | None = None,
         execution_traces: ExecutionTraceService | None = None,
         invocation_runtime: InvocationRuntime | None = None,
+        completion_store: InvocationCompletionStore | None = None,
     ) -> None:
         # The service no longer reads Native Registry records directly. Keep
         # this argument temporarily so host composition can be migrated
@@ -103,6 +106,10 @@ class InvocationService:
         # lifespan.  The local fallback keeps direct service construction a
         # usable test seam while never constructing an Adapter per request.
         self.invocation_runtime = invocation_runtime or InvocationRuntime()
+        self.completion_store = completion_store or build_invocation_completion_store(
+            run_repository=run_repository,
+            result_repository=result_repository,
+        )
 
     async def invoke(self, request: InvokeRequest) -> AgentInvocationResult:
         snapshot_runtime = self.snapshot_runtime
@@ -293,6 +300,10 @@ class InvocationService:
                         execution=runtime_execution,
                         invocation=runtime_invocation,
                         agent_id=definition.agent_id,
+                        output_schema=definition.output_schema.model_dump(
+                            mode="json",
+                            exclude_none=True,
+                        ),
                     )
 
                 return await self._invoke_with_claim_heartbeat(
@@ -387,17 +398,19 @@ class InvocationService:
                 update={"run_id": invocation.run_id, "agent_id": definition.agent_id}
             )
             result = _validate_output(definition, result)
-        except Exception as exc:
-            if isinstance(exc, InvocationError):
-                error = ErrorDetail(code=exc.code, message=exc.message, details=exc.details or {})
-            else:
-                error = ErrorDetail(code="invocation_failed", message=str(exc))
-            result = AgentInvocationResult(
-                run_id=invocation.run_id,
+        except asyncio.CancelledError as exc:
+            # Adapter cancellation is an accepted-execution failure.  It must
+            # still pass through the same atomic Run/Result completion path.
+            result = self.invocation_runtime.project_exception(
+                invocation=invocation,
                 agent_id=definition.agent_id,
-                status="failed",
-                message="Agent invocation failed.",
-                error=error,
+                exc=exc,
+            )
+        except Exception as exc:
+            result = self.invocation_runtime.project_exception(
+                invocation=invocation,
+                agent_id=definition.agent_id,
+                exc=exc,
             )
         latency_ms = int((time.perf_counter() - started) * 1000)
         result.usage.setdefault("latency_ms", latency_ms)
@@ -439,8 +452,10 @@ class InvocationService:
                 eligibility=self._formation_eligibility(request_suppressed),
             )
         else:
-            completed_run = await self.run_repository.update_run(completed_run)
-            stored_result = await self.result_repository.add_result(result_record)
+            completed_run, stored_result = await self.completion_store.complete(
+                run=completed_run,
+                result=result_record,
+            )
         await self._publish_run(
             completed_run,
             event_type=_run_event_type(result.status),
@@ -771,14 +786,13 @@ def _validate_output(
         return result
     try:
         validate_json_schema(instance=result.output, schema=schema)
-    except JsonSchemaValidationError as exc:
+    except JsonSchemaValidationError:
         return result.model_copy(
             update={
                 "status": "invalid_output",
                 "error": ErrorDetail(
                     code="invalid_output",
-                    message="Agent output does not match output_schema",
-                    details={"error": exc.message},
+                    message="Agent output does not match output schema.",
                 ),
             }
         )

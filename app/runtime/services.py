@@ -62,6 +62,10 @@ from app.repositories.external_execution_acceptances import (
     MemoryExternalExecutionAcceptanceStore,
 )
 from app.repositories.file_registry import FileRegistrySource
+from app.repositories.invocation_completion import (
+    DatabaseInvocationCompletionStore,
+    MemoryInvocationCompletionStore,
+)
 from app.repositories.memory import (
     MemoryAgentDefinitionRepository,
     MemoryEventRepository,
@@ -462,6 +466,14 @@ def build_application_container(
             outbox_repository=turn_outbox_repository,
         )
     )
+    invocation_completion_store = (
+        DatabaseInvocationCompletionStore(core_factory)
+        if is_database
+        else MemoryInvocationCompletionStore(
+            run_repository=repository_bundle["runs"],
+            result_repository=repository_bundle["results"],
+        )
+    )
     invocation_runtime = InvocationRuntime()
     invocation_service = InvocationService(
         registry=registry,
@@ -479,6 +491,7 @@ def build_application_container(
         binding_resolver=BindingResolver(catalog),
         execution_traces=execution_trace_service,
         invocation_runtime=invocation_runtime,
+        completion_store=invocation_completion_store,
     )
     plan_executor = PlanExecutor(
         plan_service=plan_service,

@@ -134,6 +134,17 @@ class ResultRepository(Protocol):
     async def mark_turn_captured(self, result_id: str) -> None: ...
 
 
+class InvocationCompletionStore(Protocol):
+    """Atomically finish an already accepted non-canonical Invocation."""
+
+    async def complete(
+        self,
+        *,
+        run: AgentRun,
+        result: AgentResult,
+    ) -> tuple[AgentRun, AgentResult]: ...
+
+
 class CanonicalInvocationStore(Protocol):
     async def start_run(
         self, run: AgentRun
