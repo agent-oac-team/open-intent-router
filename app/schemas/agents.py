@@ -3,7 +3,14 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 
-from pydantic import Field, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic import (
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from app.core.redaction import redact_value
 from app.schemas.agent_context import AgentContextSpec
@@ -18,6 +25,11 @@ from app.schemas.common import (
 
 _SYMBOLIC_REFERENCE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,127}$")
+# Runtime Call Envelopes use a slightly broader locator grammar than public
+# Agent IDs (for example, ``memory:record-1``).  Keeping the secret-aware
+# predicate here means every producer of a governed Adapter projection shares
+# the same boundary rather than open-coding a looser regex.
+_INVOCATION_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS = (
     re.compile(r"^AKIA[0-9A-Z]{16}$"),
     re.compile(r"^AIza[A-Za-z0-9_-]{35}$"),
@@ -29,6 +41,20 @@ _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS = (
     re.compile(r"^xoxb-[0-9A-Za-z-]{20,}$"),
 )
 _ADMIN_UNREDACTED_HANDLING_TEXT_FIELDS = frozenset({"kind"})
+INVOCATION_PRINCIPAL_CLAIMS = frozenset({"roles", "groups", "entitlements"})
+_INVOCATION_PRINCIPAL_ATTRIBUTE_SENSITIVE_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "cookie",
+    "credential",
+    "header",
+    "password",
+    "secret",
+    "signature",
+    "token",
+)
 
 
 def _decode_percent_encoding(value: str) -> str:
@@ -77,6 +103,47 @@ def is_safe_agent_identifier(value: object) -> bool:
     return (
         isinstance(value, str)
         and bool(_AGENT_IDENTIFIER_PATTERN.fullmatch(value))
+        and not any(
+            secret_pattern.fullmatch(value)
+            for secret_pattern in _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS
+        )
+    )
+
+
+def is_safe_invocation_reference(value: object) -> bool:
+    """Whether a value is a safe, non-secret Runtime locator.
+
+    This is intentionally suitable for governed Context locators and optional
+    Principal values, not just Agent IDs.  It rejects known credential shapes
+    even when they happen to satisfy the otherwise harmless identifier grammar.
+    """
+
+    return (
+        isinstance(value, str)
+        and bool(_INVOCATION_REFERENCE_PATTERN.fullmatch(value))
+        and not any(
+            secret_pattern.fullmatch(value)
+            for secret_pattern in _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS
+        )
+    )
+
+
+def is_safe_invocation_principal_attribute_key(value: object) -> bool:
+    """Whether a named Principal attribute can ever enter an Adapter envelope.
+
+    The triple gate for an extra attribute is deliberately unable to opt a raw
+    credential or Host request field into the contract.  A deployment that
+    needs a new identity fact should add a reviewed canonical claim instead.
+    """
+
+    if not isinstance(value, str):
+        return False
+    normalized = value.casefold().replace("-", "_")
+    return (
+        bool(_SYMBOLIC_REFERENCE_PATTERN.fullmatch(value))
+        and not any(
+            marker in normalized for marker in _INVOCATION_PRINCIPAL_ATTRIBUTE_SENSITIVE_MARKERS
+        )
         and not any(
             secret_pattern.fullmatch(value)
             for secret_pattern in _SECRET_LIKE_SYMBOLIC_REFERENCE_PATTERNS
@@ -200,6 +267,42 @@ class SafeHandlingConfiguration(StrictBaseModel):
         )
 
 
+class InvocationLimits(StrictBaseModel):
+    """Per-Definition ceilings that may only tighten Runtime deployment limits."""
+
+    max_input_bytes: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_context_bytes: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_message_chars: int | None = Field(default=None, ge=1, le=100_000)
+    max_output_bytes: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_artifact_count: int | None = Field(default=None, ge=0, le=1_000)
+    max_artifact_metadata_bytes: int | None = Field(default=None, ge=0, le=100_000)
+
+
+InvocationPrincipalClaim = Literal["roles", "groups", "entitlements"]
+
+
+class InvocationPrincipalProjectionSpec(StrictBaseModel):
+    """Definition-declared extra Principal facts for one Invocation Adapter."""
+
+    claims: list[InvocationPrincipalClaim] = Field(default_factory=list)
+    attribute_keys: list[str] = Field(default_factory=list)
+
+    @field_validator("attribute_keys")
+    @classmethod
+    def validate_attribute_keys(cls, values: list[str]) -> list[str]:
+        validated: list[str] = []
+        for value in values:
+            _validate_reference(
+                value,
+                label="invocation principal attribute key",
+                pattern=_SYMBOLIC_REFERENCE_PATTERN,
+            )
+            if not is_safe_invocation_principal_attribute_key(value):
+                raise ValueError("invocation principal attribute key is not safe")
+            validated.append(value)
+        return validated
+
+
 class InvocationHandling(StrictBaseModel):
     """The v2 declaration for an Agent handled by an Invocation Runtime Adapter."""
 
@@ -207,6 +310,10 @@ class InvocationHandling(StrictBaseModel):
     adapter_key: str = Field(min_length=1, max_length=64)
     connector_ref: str | None = Field(default=None, min_length=1, max_length=128)
     config: SafeHandlingConfiguration = Field(default_factory=SafeHandlingConfiguration)
+    limits: InvocationLimits = Field(default_factory=InvocationLimits)
+    principal_projection: InvocationPrincipalProjectionSpec = Field(
+        default_factory=InvocationPrincipalProjectionSpec
+    )
 
     @field_validator("adapter_key")
     @classmethod
@@ -227,6 +334,19 @@ class InvocationHandling(StrictBaseModel):
             label="connector_ref",
             pattern=_SYMBOLIC_REFERENCE_PATTERN,
         )
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_call_contract(self, handler):
+        """Keep an omitted optional call contract absent from existing v2 wire data."""
+
+        payload = handler(self)
+        if not isinstance(payload, dict):  # pragma: no cover - Pydantic serializer contract
+            return payload
+        if not self.limits.model_dump(mode="json", exclude_none=True):
+            payload.pop("limits", None)
+        if not self.principal_projection.claims and not self.principal_projection.attribute_keys:
+            payload.pop("principal_projection", None)
+        return payload
 
 
 class ExternalExecutionHandling(StrictBaseModel):

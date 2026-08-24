@@ -238,8 +238,22 @@ Direct Invoke 在 Binding、输入和受治理 Context 预检通过后才受理�
 已受理 Adapter 的取消异常同样收敛为安全失败，不将它表述为已停止的远端副作用。Direct Invoke
 没有调用方幂等承诺；重复 HTTP 请求始终创建新的 Run。
 
-如果请求输入中已经包含 `memory_context` 或 `knowledge_context`，v2 Runtime Adapter 通常会沿用该
-上下文字段；但 `controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、
+预检会构造唯一的 Agent Call Envelope。它只含只读执行 ID、Definition `input_schema` 已声明并通过
+校验的输入、默认 `subject/tenant` Principal、三方门控后可选的规范 claim、安全 Context 定位事实、
+有界 Artifact reference、绝对 deadline，以及已存在的可信 Plan 幂等键。Token、Header、完整
+Principal attributes、完整 Definition、内部 context / Trace / Route metadata、凭据和
+Memory/Knowledge 正文都不会传给 Adapter。所有调用都受部署级 `INVOCATION_*` 上限约束，Definition
+只能收紧；输入、Context、Artifact 或可确定为空的 required Context 的预检失败返回安全 `422` 且不创建
+Run；required Context Provider/受控 Handle 不可用时同样在受理前以稳定 `knowledge_unavailable` 失败。
+已受理后发现 message、structured output、Artifact 或 usage 非法/超限则收敛为
+`invocation_invalid_response`。Artifact 的 metadata 是闭合安全投影：仅 `size_bytes`、`content_type`
+和 `sha256`；title 只能是逻辑 locator。`artifact://`/`memory://` URI 是无 path 的 opaque locator，
+HTTPS URI 只能使用无 port/query/fragment/credentials 的安全 authority/path segments，不能传递正文、
+Header 或凭据。deadline 到达时 Core
+立即返回安全失败，即使 Adapter 吞掉取消并在后台迟到完成也不会延长该调用或覆盖终态。
+
+请求中的 `memory_context` 或 `knowledge_context` 只是 Core 组装受治理 Context 的候选；v2 Runtime
+Adapter 不会沿用其完整对象。`controlled_retrieval + required` 只接受与当前 tenant、principal、Agent、
 Source Scope 和 trace 匹配的短时单次 Handle，不能由调用方正文绕过。
 
 ## Memory

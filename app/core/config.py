@@ -102,7 +102,15 @@ class Settings(BaseSettings):
     context_output_reserve_tokens: int = 1200
     context_agent_token_budget: int = 3000
 
-    agent_http_timeout_seconds: float = 30.0
+    agent_http_timeout_seconds: float = Field(default=30.0, gt=0)
+    invocation_max_input_bytes: int = Field(default=32_768, ge=1, le=1_000_000)
+    invocation_max_context_bytes: int = Field(default=16_384, ge=1, le=1_000_000)
+    invocation_max_message_chars: int = Field(default=4_000, ge=1, le=100_000)
+    invocation_max_output_bytes: int = Field(default=32_768, ge=1, le=1_000_000)
+    invocation_max_artifact_count: int = Field(default=16, ge=0, le=1_000)
+    invocation_max_artifact_metadata_bytes: int = Field(default=2_048, ge=0, le=100_000)
+    invocation_allowed_principal_claims: str = ""
+    invocation_allowed_principal_attribute_keys: str = ""
     runtime_catalog_shutdown_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     runtime_catalog_health_timeout_seconds: float = Field(default=2.0, gt=0, le=60)
     application_cleanup_timeout_seconds: float = Field(default=5.0, gt=0, le=60)

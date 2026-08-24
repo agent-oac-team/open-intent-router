@@ -11,11 +11,12 @@ from app.core.errors import (
     AgentUnavailableError,
     InvocationBindingUnavailableError,
     InvocationError,
+    InvocationPreflightRejectedError,
 )
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.repositories.interfaces import InvocationCompletionStore
 from app.repositories.invocation_completion import build_invocation_completion_store
-from app.runtime.invocation import InvocationRuntime
+from app.runtime.invocation import AgentCallEnvelope, InvocationRuntime
 from app.schemas.agent_context import KnowledgeContext, MemoryContext
 from app.schemas.agents import AgentDefinitionV2, AgentHandlingKind
 from app.schemas.common import ErrorDetail
@@ -24,6 +25,7 @@ from app.schemas.invocation import AgentInvocation, AgentInvocationResult, Invok
 from app.schemas.logs import AgentResult, AgentRun, InvocationBindingSnapshot
 from app.schemas.routing import RouteRequest, RouteResponse
 from app.schemas.turns import FormationEligibilitySnapshot
+from app.services.agent_context_service import KnowledgeRequirementError
 from app.services.binding_resolution import BindingResolver, ResolvedInvocationBinding
 from app.services.execution_trace_service import ExecutionTraceService
 from app.services.memory_formation import formation_turn_id, request_prohibits_memory
@@ -129,6 +131,7 @@ class InvocationService:
             agent_id=request.agent_id,
             user=request.user,
             input=request.input,
+            artifact_refs=request.artifact_refs,
             context=_v2_direct_invocation_context(request.context),
             memory_context=request.memory_context or MemoryContext(),
             knowledge_context=request.knowledge_context or KnowledgeContext(),
@@ -259,6 +262,7 @@ class InvocationService:
             agent_id=preview.agent_id,
             user=route_request.user,
             input=preview.input,
+            artifact_refs=route_response.context.artifact_refs,
             context={
                 "route_reason": route_response.decision.reason,
                 **preview.metadata,
@@ -288,29 +292,61 @@ class InvocationService:
     ) -> AgentInvocationResult:
         definition = resolved.definition
         binding_snapshot = resolved.persistence_snapshot
-
-        async def execute(prepared_invocation: AgentInvocation) -> AgentInvocationResult:
-            runtime_execution = resolved.runtime_execution
-            if runtime_execution is not None:
-
-                async def invoke_runtime(
-                    runtime_invocation: AgentInvocation,
-                ) -> AgentInvocationResult:
-                    return await self.invocation_runtime.execute(
+        runtime_execution = resolved.runtime_execution
+        if runtime_execution is not None:
+            invocation = invocation.model_copy(
+                update={
+                    "input": self.invocation_runtime.preflight_input(
                         execution=runtime_execution,
-                        invocation=runtime_invocation,
-                        agent_id=definition.agent_id,
-                        output_schema=definition.output_schema.model_dump(
+                        invocation=invocation,
+                        input_schema=definition.input_schema.model_dump(
                             mode="json",
                             exclude_none=True,
                         ),
+                        reject_reserved_request_keys=True,
                     )
+                }
+            )
 
-                return await self._invoke_with_claim_heartbeat(
-                    invoke_runtime,
-                    prepared_invocation,
+        def preflight(prepared_invocation: AgentInvocation) -> AgentCallEnvelope | None:
+            if runtime_execution is None:
+                return None
+            return self.invocation_runtime.preflight(
+                execution=runtime_execution,
+                invocation=prepared_invocation,
+                input_schema=definition.input_schema.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+            )
+
+        async def execute(
+            prepared_invocation: AgentInvocation,
+            envelope: AgentCallEnvelope | None,
+        ) -> AgentInvocationResult:
+            if runtime_execution is None:
+                return await self._invoke_with_claim_heartbeat(resolved.invoke, prepared_invocation)
+            if envelope is None:
+                raise InvocationError("Invocation Runtime preflight is unavailable")
+
+            async def invoke_runtime(
+                runtime_invocation: AgentInvocation,
+            ) -> AgentInvocationResult:
+                return await self.invocation_runtime.execute_preflighted(
+                    execution=runtime_execution,
+                    envelope=envelope,
+                    invocation=runtime_invocation,
+                    agent_id=definition.agent_id,
+                    output_schema=definition.output_schema.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    ),
                 )
-            return await self._invoke_with_claim_heartbeat(resolved.invoke, prepared_invocation)
+
+            return await self._invoke_with_claim_heartbeat(
+                invoke_runtime,
+                prepared_invocation,
+            )
 
         return await self._execute_accepted_invocation(
             definition,
@@ -327,6 +363,7 @@ class InvocationService:
                 "adapter_implementation_version": binding_snapshot.adapter_implementation_version,
             },
             execute=execute,
+            preflight=preflight if runtime_execution is not None else None,
         )
 
     async def _execute_accepted_invocation(
@@ -335,13 +372,25 @@ class InvocationService:
         invocation: AgentInvocation,
         *,
         invoker_type: str,
-        execute: Callable[[AgentInvocation], Awaitable[AgentInvocationResult]],
+        execute: Callable[
+            [AgentInvocation, AgentCallEnvelope | None], Awaitable[AgentInvocationResult]
+        ],
         agent_revision: int,
         handling_kind: AgentHandlingKind,
         binding_snapshot: InvocationBindingSnapshot,
         binding_trace_facts: dict[str, object],
+        preflight: Callable[[AgentInvocation], AgentCallEnvelope | None] | None = None,
     ) -> AgentInvocationResult:
+        # Context assembly may read trusted state, but all Runtime rejections
+        # must occur before a canonical Plan Step is claimed or a Run exists.
         invocation = await self._with_agent_context(definition, invocation)
+        preflight_envelope = preflight(invocation) if preflight is not None else None
+        invocation = await self._claim_plan_execution(definition, invocation)
+        if preflight_envelope is not None:
+            preflight_envelope = self.invocation_runtime.attach_trusted_plan_idempotency(
+                preflight_envelope,
+                invocation,
+            )
         request_suppressed = request_prohibits_memory(invocation)
         canonical_managed = bool(invocation.context.get("_canonical_turn_managed"))
         if canonical_managed and self.canonical_invocation_store is None:
@@ -382,6 +431,7 @@ class InvocationService:
         if replay_result is not None:
             return _invocation_result_from_record(replay_result)
         await self._link_router_recall(invocation)
+        await self._record_agent_context_recall_usage(invocation)
         await self._record_binding_trace(
             invocation=invocation,
             run=run,
@@ -393,7 +443,7 @@ class InvocationService:
             suppressed=formation_suppressed,
         )
         try:
-            result = await execute(invocation)
+            result = await execute(invocation, preflight_envelope)
             result = result.model_copy(
                 update={"run_id": invocation.run_id, "agent_id": definition.agent_id}
             )
@@ -625,50 +675,7 @@ class InvocationService:
         definition: AgentDefinitionV2,
         invocation: AgentInvocation,
     ) -> AgentInvocation:
-        active_plan = None
-        plan_id = _context_str(invocation.context, "plan_id")
-        if plan_id:
-            if self.plan_service is None or not invocation.user.tenant_id:
-                raise InvocationError("Plan execution requires trusted ownership")
-            candidate = await self.plan_service.get_plan(
-                plan_id,
-                tenant_id=invocation.user.tenant_id,
-                user_id=invocation.user.id,
-            )
-            if candidate is None or candidate.status not in {"pending", "running", "blocked"}:
-                raise InvocationError("Plan is not active")
-            step = _current_plan_step(candidate)
-            if step is None or step.agent_id != definition.agent_id:
-                raise InvocationError("Agent does not match the canonical Plan step")
-            claim = await self.plan_service.claim_step(
-                candidate.plan_id,
-                step.step_id,
-                tenant_id=candidate.tenant_id,
-                user_id=candidate.user_id,
-                lease_seconds=self.plan_claim_lease_seconds,
-                publish=not request_prohibits_memory(invocation),
-            )
-            if claim is None:
-                raise InvocationError("Plan step is already executing")
-            active_plan, claim_id = claim
-            execution_key = await self.plan_service.get_execution_claim_key(
-                active_plan.plan_id,
-                claim_id=claim_id,
-            )
-            if execution_key is None:
-                raise InvocationError("Plan execution claim is unavailable")
-            invocation = invocation.model_copy(
-                update={
-                    "context": {
-                        **invocation.context,
-                        "plan_id": active_plan.plan_id,
-                        "step_id": step.step_id,
-                        "plan_status": active_plan.status,
-                        "plan_execution_claim_id": claim_id,
-                        "plan_execution_idempotency_key": execution_key,
-                    }
-                }
-            )
+        active_plan = await self._active_plan_for_invocation(definition, invocation)
         if not self.agent_context_service:
             return invocation
         input_values = dict(invocation.input or {})
@@ -679,32 +686,35 @@ class InvocationService:
         ):
             input_values["knowledge_context"] = invocation.knowledge_context.model_dump(mode="json")
         query = _query_text(input_values)
-        runtime = await self.agent_context_service.assemble(
-            agent=definition,
-            user=invocation.user,
-            session_id=invocation.session_id,
-            query=query,
-            invocation_input=input_values,
-            caller_type="agent",
-            caller_id=definition.agent_id,
-            purpose="agent_execution",
-            request_id=invocation.request_id,
-            run_id=invocation.run_id,
-            turn_id=(
-                formation_turn_id(
-                    tenant_id=invocation.user.tenant_id,
-                    user_id=invocation.user.id,
-                    session_id=invocation.session_id,
-                    request_id=invocation.request_id or invocation.run_id,
-                    run_id=invocation.run_id,
-                )
-                if invocation.user.tenant_id
-                else None
-            ),
-            active_plan=active_plan,
-            knowledge_context_handle=invocation.knowledge_context_handle,
-            knowledge_context_trace_id=invocation.knowledge_context_trace_id,
-        )
+        try:
+            runtime = await self.agent_context_service.assemble(
+                agent=definition,
+                user=invocation.user,
+                session_id=invocation.session_id,
+                query=query,
+                invocation_input=input_values,
+                caller_type="agent",
+                caller_id=definition.agent_id,
+                purpose="agent_execution",
+                request_id=invocation.request_id,
+                # The assembled Context is part of pre-acceptance validation.
+                # Do not create usage evidence until a Run has been accepted.
+                run_id=None,
+                turn_id=None,
+                active_plan=active_plan,
+                knowledge_context_handle=invocation.knowledge_context_handle,
+                knowledge_context_trace_id=invocation.knowledge_context_trace_id,
+            )
+        except KnowledgeRequirementError as exc:
+            # A known-empty required Context is a client-visible acceptance
+            # rejection.  An unavailable provider/controlled handle remains a
+            # stable dependency failure, but still occurs before Run/Plan
+            # acceptance and never exposes the provider's details.
+            if exc.code == "knowledge_not_found":
+                raise InvocationPreflightRejectedError(
+                    "invocation_required_context_missing"
+                ) from None
+            raise
         return invocation.model_copy(
             update={
                 "input": input_values,
@@ -712,6 +722,99 @@ class InvocationService:
                 "knowledge_context": runtime.knowledge_context,
                 "knowledge_context_handle": None,
                 "knowledge_context_trace_id": None,
+            }
+        )
+
+    async def _record_agent_context_recall_usage(self, invocation: AgentInvocation) -> None:
+        """Write Memory usage evidence only after the canonical Run exists."""
+
+        if self.agent_context_service is None or self.memory_service is None:
+            return
+        record_recall_usage = getattr(self.memory_service, "record_recall_usage", None)
+        if record_recall_usage is None or not invocation.user.tenant_id:
+            return
+        await record_recall_usage(
+            invocation.memory_context.items,
+            user_id=invocation.user.id,
+            tenant_id=invocation.user.tenant_id,
+            agent_id=invocation.agent_id,
+            consumer=f"agent:{invocation.agent_id}",
+            request_id=invocation.request_id,
+            session_id=invocation.session_id,
+            turn_id=formation_turn_id(
+                tenant_id=invocation.user.tenant_id,
+                user_id=invocation.user.id,
+                session_id=invocation.session_id,
+                request_id=invocation.request_id or invocation.run_id,
+                run_id=invocation.run_id,
+            ),
+            run_id=invocation.run_id,
+        )
+
+    async def _active_plan_for_invocation(
+        self,
+        definition: AgentDefinitionV2,
+        invocation: AgentInvocation,
+    ):
+        """Read and validate a Plan without changing its execution state."""
+
+        plan_id = _context_str(invocation.context, "plan_id")
+        if not plan_id:
+            return None
+        if self.plan_service is None or not invocation.user.tenant_id:
+            raise InvocationError("Plan execution requires trusted ownership")
+        candidate = await self.plan_service.get_plan(
+            plan_id,
+            tenant_id=invocation.user.tenant_id,
+            user_id=invocation.user.id,
+        )
+        if candidate is None or candidate.status not in {"pending", "running", "blocked"}:
+            raise InvocationError("Plan is not active")
+        step = _current_plan_step(candidate)
+        if step is None or step.agent_id != definition.agent_id:
+            raise InvocationError("Agent does not match the canonical Plan step")
+        return candidate
+
+    async def _claim_plan_execution(
+        self,
+        definition: AgentDefinitionV2,
+        invocation: AgentInvocation,
+    ) -> AgentInvocation:
+        """Claim the current Step only after all pre-acceptance checks pass."""
+
+        candidate = await self._active_plan_for_invocation(definition, invocation)
+        if candidate is None:
+            return invocation
+        step = _current_plan_step(candidate)
+        if step is None:
+            raise InvocationError("Plan has no executable Step")
+        claim = await self.plan_service.claim_step(
+            candidate.plan_id,
+            step.step_id,
+            tenant_id=candidate.tenant_id,
+            user_id=candidate.user_id,
+            lease_seconds=self.plan_claim_lease_seconds,
+            publish=not request_prohibits_memory(invocation),
+        )
+        if claim is None:
+            raise InvocationError("Plan step is already executing")
+        active_plan, claim_id = claim
+        execution_key = await self.plan_service.get_execution_claim_key(
+            active_plan.plan_id,
+            claim_id=claim_id,
+        )
+        if execution_key is None:
+            raise InvocationError("Plan execution claim is unavailable")
+        return invocation.model_copy(
+            update={
+                "context": {
+                    **invocation.context,
+                    "plan_id": active_plan.plan_id,
+                    "step_id": step.step_id,
+                    "plan_status": active_plan.status,
+                    "plan_execution_claim_id": claim_id,
+                    "plan_execution_idempotency_key": execution_key,
+                }
             }
         )
 

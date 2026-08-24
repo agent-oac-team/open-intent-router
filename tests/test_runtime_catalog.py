@@ -161,6 +161,34 @@ async def test_catalog_rejects_duplicate_or_invalid_descriptors_before_activatio
             context,
             shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
         )
+    with pytest.raises(RuntimeCatalogValidationError):
+        await RuntimeCatalog.activate(
+            [
+                replace(
+                    descriptor("unsafe-principal", events),
+                    capability=RuntimeAdapterCapability(
+                        invocation=True,
+                        accepted_principal_claims=frozenset({"unsupported"}),
+                    ),
+                )
+            ],
+            context,
+            shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+    with pytest.raises(RuntimeCatalogValidationError):
+        await RuntimeCatalog.activate(
+            [
+                replace(
+                    descriptor("credential-principal", events),
+                    capability=RuntimeAdapterCapability(
+                        invocation=True,
+                        accepted_principal_attribute_keys=frozenset({"token"}),
+                    ),
+                )
+            ],
+            context,
+            shutdown_timeout_seconds=RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS,
+        )
 
     assert events == []
 

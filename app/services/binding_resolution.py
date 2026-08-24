@@ -156,6 +156,18 @@ class BindingResolver:
                         config=requirement.config,
                     ),
                     execute=cast(RuntimeAdapterExecutor, runtime_execute),
+                    limits=handling.limits,
+                    requires_knowledge_context=(
+                        definition.context.knowledge.requirement == "required"
+                    ),
+                    principal_claims=(
+                        frozenset(handling.principal_projection.claims)
+                        & descriptor.capability.accepted_principal_claims
+                    ),
+                    principal_attribute_keys=(
+                        frozenset(handling.principal_projection.attribute_keys)
+                        & descriptor.capability.accepted_principal_attribute_keys
+                    ),
                 ),
             )
         if requirement.execution_protocol != "legacy_v2":

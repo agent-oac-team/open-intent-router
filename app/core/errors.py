@@ -67,6 +67,16 @@ class InvocationError(AppError):
     code = "invocation_error"
 
 
+class InvocationPreflightRejectedError(InvocationError):
+    """A safe Direct Invocation rejection before a Run is accepted."""
+
+    status_code = 422
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__("Invocation could not be accepted.")
+        self.code = reason_code
+
+
 class DirectInvocationUnsupportedError(AppError):
     """A Direct Invoke target uses a non-Invocation Handling branch."""
 

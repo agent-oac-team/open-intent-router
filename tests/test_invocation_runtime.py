@@ -134,14 +134,47 @@ async def test_runtime_binds_public_identity_without_exposing_definition_to_adap
             },
             "input": {
                 "text": "run local function",
+                "declared": "allowed by the input schema",
+                "headers": {"authorization": "Bearer must-not-reach-adapter"},
                 "memory_context": {"items": [{"content": "memory-secret"}]},
                 "knowledge_context": {"items": [{"content": "knowledge-secret"}]},
+                "definition": {"connector_ref": "must-not-reach-adapter"},
+            },
+            "artifact_refs": [
+                {
+                    "artifact_id": "artifact-runtime-1",
+                    "type": "document",
+                    "uri": "artifact://runtime-1",
+                    "metadata": {"size_bytes": 42},
+                }
+            ],
+            "memory_context": {
+                "status": "ok",
+                "items": [
+                    {
+                        "memory_id": "memory-runtime-1",
+                        "scope": "stable_fact",
+                        "content": "memory-secret",
+                    }
+                ],
+            },
+            "knowledge_context": {
+                "status": "ok",
+                "items": [
+                    {
+                        "item_id": "knowledge-runtime-1",
+                        "source_id": "source-runtime-1",
+                        "content": "knowledge-secret",
+                    }
+                ],
             },
             "context": {
                 "plan_id": "plan-runtime-1",
                 "step_id": "step-runtime-1",
                 "plan_execution_claim_id": "claim-runtime-1",
                 "plan_execution_idempotency_key": "plan-execution-1",
+                "route_reason": "must-not-reach-adapter",
+                "trace_id": "must-not-reach-adapter",
             },
         }
     )
@@ -156,6 +189,14 @@ async def test_runtime_binds_public_identity_without_exposing_definition_to_adap
         ),
         invocation=invocation,
         agent_id="bound-agent",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "declared": {"type": "string"},
+                "definition": {"type": "object"},
+            },
+        },
     )
 
     assert result.model_dump() == {
@@ -172,14 +213,37 @@ async def test_runtime_binds_public_identity_without_exposing_definition_to_adap
     binding, envelope = adapter.calls[0]
     assert binding.adapter_key == "local_function"
     assert dict(binding.config) == {"function": "echo"}
-    assert envelope.model_dump() == {
+    envelope_data = envelope.model_dump(exclude_none=True)
+    assert envelope_data.pop("deadline_at") == envelope.deadline_at
+    assert envelope_data == {
         "execution_id": "run-runtime-1",
         "request_id": "request-runtime-1",
         "session_id": "session-runtime-1",
         "principal": {"subject": "operator-1", "tenant_id": "tenant-1"},
-        "input": {"text": "run local function"},
+        "input": {
+            "text": "run local function",
+            "declared": "allowed by the input schema",
+        },
+        "context": {
+            "memory": [{"memory_id": "memory-runtime-1", "scope": "stable_fact"}],
+            "knowledge": [
+                {
+                    "item_id": "knowledge-runtime-1",
+                    "source_id": "source-runtime-1",
+                }
+            ],
+        },
+        "artifact_refs": [
+            {
+                "artifact_id": "artifact-runtime-1",
+                "type": "document",
+                "uri": "artifact://runtime-1",
+                "metadata": {"size_bytes": 42},
+            }
+        ],
         "idempotency_key": "plan-execution-1",
     }
+    assert envelope.deadline_at is not None
     assert not hasattr(envelope, "agent_id")
     assert "must-not-reach-adapter" not in envelope.model_dump_json()
     assert "memory-secret" not in envelope.model_dump_json()

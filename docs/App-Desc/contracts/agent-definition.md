@@ -35,7 +35,10 @@ Definition。
 
 - `invocation`：`adapter_key`，可选 `connector_ref`，以及 `config` 中的符号操作引用和受限调优。
   Runtime Catalog 在构建 Snapshot 时解析并校验该 Binding；缺失或不兼容时隔离 Definition，而不是
-  回退到旧 Invoker 类型。
+  回退到旧 Invoker 类型。它可选声明 `limits`（输入、Context、message、structured output、
+  Artifact 数量与 metadata 的上限）和 `principal_projection`。前者只能比部署级硬上限更严格；后者
+  只可请求规范 claim（`roles`、`groups`、`entitlements`）或审核过的安全属性键，仍须同时由部署 policy
+  和 Adapter descriptor 允许，不能借此传递 token、Header、凭据或完整 Principal attributes。
 - `external_execution`：逻辑 `executor_ref` 与受限 `params`。Host External Executor 接受后，
   Runtime 创建受 Ticket 约束的 Delegated Run；Native Runtime 不把它伪装为本地 Invocation。
 - `ui_handoff`：内部绝对 `route` 与受限 `params`。它产生 Host 协作动作，不会进入 Invoker。
@@ -98,7 +101,12 @@ context:
 - `controlled_retrieval`：固定工作流节点按预设模板调用 Provider，不允许模型自由决定；
   配置输入兼容短名 `controlled`，保存和输出时统一为 `controlled_retrieval`。
 
-`memory_context` 固定包含 `summary`、`items`、`status` 和截断信息；`knowledge_context` 额外包含 `citations` 和 `source_ids`。低代码 Bot 可以只读取 summary，复杂 Agent 可以读取 items 和 citations。
+`memory_context` 固定包含 `summary`、`items`、`status` 和截断信息；`knowledge_context` 额外包含 `citations` 和 `source_ids`。它们是 Core 的受治理组装结构，不是 Runtime Adapter 的自由 wire payload。
+
+上述 Context 只存在于 Core 的受治理 Invocation 组装阶段。Runtime Adapter 实际收到的 Agent Call
+Envelope 只含内容无关的定位事实：Memory 的 `memory_id/scope`，以及 Knowledge 的
+`item_id/source_id`。summary、正文、citation、title、URI、metadata 和 Trace 都不会跨越 Adapter
+边界；Adapter 不能把 Context 当作自由的 Memory / Knowledge 数据读取通道。
 
 Knowledge Requirement 支持 `optional|required`，默认 `optional`。`disabled + required`
 是非法配置；`prefetch + required` 只有在 Provider 返回至少一条治理后可用 Item 时才允许

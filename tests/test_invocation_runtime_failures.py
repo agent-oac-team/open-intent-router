@@ -27,6 +27,7 @@ from app.runtime.invocation import (
     RuntimeAdapterBinding,
 )
 from app.schemas.agents import AgentDefinitionV2
+from app.schemas.common import ArtifactRef
 from app.schemas.invocation import InvokeRequest
 from app.schemas.logs import AgentResult, AgentRun
 from app.services.binding_resolution import BindingResolver
@@ -309,6 +310,78 @@ async def test_malformed_raw_usage_cannot_leak_credentials_to_an_accepted_result
         RawInvocationOutcome.model_construct(
             output={"summary": "unused"},
             usage={"authorization": secret, "diagnostic": secret},
+        )
+    )
+    runs = MemoryRunRepository()
+    results = MemoryResultRepository()
+    catalog, service = await _runtime_service(adapter=adapter, runs=runs, results=results)
+
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        result = await service.invoke(_request())
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.code == "invocation_invalid_response"
+    assert not emitted
+    persisted = "\n".join(
+        [
+            result.model_dump_json(),
+            (await runs.get_run(result.run_id)).model_dump_json(),
+            results.results[0].model_dump_json(),
+        ]
+    )
+    assert secret not in persisted
+
+    await catalog.aclose()
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"input_tokens": "3"},
+        {"input_tokens": 1_000_000_001},
+    ],
+)
+async def test_untrusted_or_unbounded_usage_becomes_one_safe_invalid_response(
+    usage: dict[str, object],
+) -> None:
+    adapter = _RuntimeOutcomeAdapter(
+        RawInvocationOutcome.model_construct(
+            output={"summary": "unused"},
+            usage=usage,
+        )
+    )
+    runs = MemoryRunRepository()
+    results = MemoryResultRepository()
+    catalog, service = await _runtime_service(adapter=adapter, runs=runs, results=results)
+
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        result = await service.invoke(_request())
+
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error.code == "invocation_invalid_response"
+    assert not emitted
+    assert len(runs.runs) == len(results.results) == 1
+
+    await catalog.aclose()
+
+
+async def test_untrusted_artifact_child_model_becomes_one_safe_invalid_response() -> None:
+    secret = "artifact-child-secret-marker"
+    adapter = _RuntimeOutcomeAdapter(
+        RawInvocationOutcome.model_construct(
+            output={"summary": "unused"},
+            artifact_refs=[
+                ArtifactRef.model_construct(
+                    artifact_id=42,
+                    type="document",
+                    uri=f"data:text/plain,{secret}",
+                    metadata={"body": secret},
+                )
+            ],
         )
     )
     runs = MemoryRunRepository()

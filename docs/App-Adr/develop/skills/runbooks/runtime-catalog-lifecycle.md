@@ -53,6 +53,44 @@ Runtime 的停止和每个唯一受管数据库目标的 dispose；某一步失�
 `runtime_required_adapter_unhealthy` 或 `runtime_required_adapter_missing`。修改上述配置均需
 滚动重启；不支持请求期热更新。
 
+## Invocation Call Envelope 配额
+
+每个 Runtime Adapter 调用在受理前由进程级 Invocation Runtime 生成唯一的 Agent Call Envelope。
+`AGENT_HTTP_TIMEOUT_SECONDS`（默认 `30`，必须大于 `0`）是 Envelope 的绝对 deadline，也是 Core
+等待本地 Runtime Adapter 的最大时间；调用方和 Definition 不能把它延长。deadline 到达时 Core
+立即将已受理调用收敛为安全 deadline failure，并取消/观察仍在运行的 Adapter task；Adapter 即使错误地
+吞掉取消也不能延长 HTTP/Core 等待时间，且这不表示远端副作用已被取消。以下 `INVOCATION_*`
+变量是部署硬上限，所有值在启动时由 Settings 校验，修改后必须滚动重启：
+
+| 变量 | 默认值 | 约束 |
+| --- | ---: | --- |
+| `INVOCATION_MAX_INPUT_BYTES` | `32768` | 已声明业务输入的 UTF-8 JSON 字节数 |
+| `INVOCATION_MAX_CONTEXT_BYTES` | `16384` | Core 受治理 Memory/Knowledge Context 的总字节数 |
+| `INVOCATION_MAX_MESSAGE_CHARS` | `4000` | Adapter 成功消息字符数 |
+| `INVOCATION_MAX_OUTPUT_BYTES` | `32768` | Adapter structured output 的 UTF-8 JSON 字节数 |
+| `INVOCATION_MAX_ARTIFACT_COUNT` | `16` | 输入或输出 Artifact reference 数量 |
+| `INVOCATION_MAX_ARTIFACT_METADATA_BYTES` | `2048` | 每个 Artifact metadata 的 UTF-8 JSON 字节数 |
+
+Definition 的 `handling.limits` 只能把这些上限收紧。输入、Context、Artifact 或可确定为空的 required
+Context 的预检失败返回安全 `422`，不创建 Run；required Context Provider/受控 Handle 不可用时同样在
+受理前以稳定的 `knowledge_unavailable` 失败，不创建 Run。调用受理后发现 Adapter 的 message、output、
+Artifact 或 usage 越界/非法，固定投影为 `invocation_invalid_response`。
+
+Artifact 只能是 `artifact://`、`memory://` 或 `https://` 的安全逻辑 locator：前两者只允许 opaque
+authority、没有 path；HTTPS 只允许无 port/query/fragment/credentials 的安全 authority/path segments。标题
+必须是安全逻辑 locator，metadata 只允许 `size_bytes`、`content_type` 和 `sha256`。它们不是正文、Header
+或任意文本的旁路。
+
+默认 Envelope Principal 只有 `subject` 与 `tenant`。如确有必要，
+`INVOCATION_ALLOWED_PRINCIPAL_CLAIMS` 和 `INVOCATION_ALLOWED_PRINCIPAL_ATTRIBUTE_KEYS` 可分别填写
+逗号分隔的规范 claim 或安全属性键；每项还必须由当前 Definition 请求、由 Adapter descriptor 声明接受。
+不要配置 token、authorization、header、credential、secret 或 password 类字段：它们被 Core 拒绝，
+不会成为例外通道；`api_key`、`bearer`、`cookie` 和 `signature` 等等价字段同样不能配置。
+
+Invocation Runtime 作为 Application Runtime 的受管后台组件，在 Catalog dispose 前取消并 drain 已越过
+调用 deadline 的 Adapter task。Adapter 必须协作响应取消；一直吞掉取消会使受管 cleanup 在既有应用
+cleanup deadline 内失败，而不会被静默遗忘或以迟到成功覆盖已完成的 Run。
+
 ## 部署与验收
 
 1. 在部署环境设置 `RUNTIME_CATALOG_SHUTDOWN_TIMEOUT_SECONDS`、

@@ -15,6 +15,10 @@ from jsonschema import Draft202012Validator, SchemaError
 
 from app.core.config import Settings
 from app.core.errors import RuntimeCatalogUnavailableError
+from app.schemas.agents import (
+    INVOCATION_PRINCIPAL_CLAIMS,
+    is_safe_invocation_principal_attribute_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,8 @@ class RuntimeAdapterCapability:
     cancellation: bool = False
     v2_invocation: bool = False
     invocation_runtime: bool = False
+    accepted_principal_claims: frozenset[str] = frozenset()
+    accepted_principal_attribute_keys: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,6 +463,22 @@ def _validate_descriptors(
         if descriptor.capability.invocation_runtime and not descriptor.capability.v2_invocation:
             raise RuntimeCatalogValidationError(
                 "Runtime Adapter Invocation Runtime capability requires v2 invocation"
+            )
+        if not isinstance(descriptor.capability.accepted_principal_claims, frozenset) or not all(
+            isinstance(claim, str) and claim in INVOCATION_PRINCIPAL_CLAIMS
+            for claim in descriptor.capability.accepted_principal_claims
+        ):
+            raise RuntimeCatalogValidationError(
+                "Runtime Adapter accepted principal claims are invalid"
+            )
+        if not isinstance(
+            descriptor.capability.accepted_principal_attribute_keys, frozenset
+        ) or not all(
+            is_safe_invocation_principal_attribute_key(key)
+            for key in descriptor.capability.accepted_principal_attribute_keys
+        ):
+            raise RuntimeCatalogValidationError(
+                "Runtime Adapter accepted principal attribute keys are invalid"
             )
         if not callable(descriptor.factory):
             raise RuntimeCatalogValidationError("Runtime Adapter factory is required")

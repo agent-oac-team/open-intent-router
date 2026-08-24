@@ -62,9 +62,13 @@ Snapshot 重新形成 Candidate Set 并比较这两个事实；不兼容时保�
 Route-only Turn 完成时，Turn 终态与 `turn.completed` Outbox 在同一事务提交。Canonical
 invocation 使用两个短事务，外部 Agent 调用不持有数据库 transaction：
 
-1. `start_run` 插入预生成 Run，并按 owner/state version 把 Turn 更新为 `running`、关联 Run。
-2. Agent 调用在事务外执行。
-3. `complete_run` 更新终态 Run、插入 Result、完成 Turn 并插入唯一 Outbox。
+1. 先在 Core 内构造并校验 Agent Call Envelope：只投影允许的输入、身份、Context reference、
+   Artifact reference 与 deadline。输入/Context/Artifact 上限或 required Context 不满足时不创建 Run、
+   不 claim Plan Step，也不调用 Adapter；预检通过后才 claim Step 并把可信 Plan 幂等事实附入同一
+   Envelope。
+2. `start_run` 插入预生成 Run，并按 owner/state version 把 Turn 更新为 `running`、关联 Run。
+3. Agent 调用在事务外执行；已受理的输出越界或非法时映射为安全 `invalid_response` 终态。
+4. `complete_run` 更新终态 Run、插入 Result、完成 Turn 并插入唯一 Outbox。
 
 非 Canonical 的 direct-invoke 同样保持短写入边界，但不创建 Turn 或 Outbox：先短事务写入
 `running` Run，随后在事务外执行 Runtime Adapter，最后以一个短事务同时更新该 Run 并插入唯一

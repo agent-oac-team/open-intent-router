@@ -94,7 +94,7 @@ from app.repositories.turn_route_completion import (
 from app.repositories.turns import DatabaseTurnRepository, MemoryTurnRepository
 from app.runtime.application import ApplicationComposition, ApplicationContainer
 from app.runtime.catalog import RuntimeCatalog
-from app.runtime.invocation import InvocationRuntime
+from app.runtime.invocation import InvocationRuntime, InvocationRuntimePolicy
 from app.services.agent_context_service import AgentContextAssemblyService
 from app.services.agent_event_service import NativeAgentEventService
 from app.services.binding_resolution import BindingResolver
@@ -474,7 +474,7 @@ def build_application_container(
             result_repository=repository_bundle["results"],
         )
     )
-    invocation_runtime = InvocationRuntime()
+    invocation_runtime = InvocationRuntime(policy=InvocationRuntimePolicy.from_settings(settings))
     invocation_service = InvocationService(
         registry=registry,
         run_repository=repository_bundle["runs"],
@@ -595,7 +595,14 @@ def build_application_container(
         runtime_catalog=catalog,
         registry_snapshot_runtime=snapshot_runtime,
         services=services,
-        _background_runtimes=(formation_runtime, maintenance_runtime, timeout_runtime),
+        # InvocationRuntime is lifecycle-owned as well: it drains any Adapter
+        # task that outlived its per-call deadline before Catalog disposal.
+        _background_runtimes=(
+            formation_runtime,
+            maintenance_runtime,
+            timeout_runtime,
+            invocation_runtime,
+        ),
     )
 
 
