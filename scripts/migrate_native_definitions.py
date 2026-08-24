@@ -9,8 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
+from app.core.config import Settings
+from app.db.managed import ManagedDatabase
 from app.services.native_definition_migration import (
     NativeDefinitionMigrationError,
     NativeDefinitionMigrationService,
@@ -71,12 +71,12 @@ def _source_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 async def _main(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
-    engine = create_async_engine(args.database_url, future=True)
-    service = NativeDefinitionMigrationService(
-        async_sessionmaker(engine, expire_on_commit=False),
-        target_capabilities=_target_capabilities(args),
-    )
-    try:
+    settings = Settings(storage_backend="database", database_url=args.database_url)
+    async with ManagedDatabase.from_settings(settings) as database:
+        service = NativeDefinitionMigrationService(
+            database.session_factory,
+            target_capabilities=_target_capabilities(args),
+        )
         if args.command == "prepare":
             await service.prepare(
                 source=args.source,
@@ -103,8 +103,6 @@ async def _main(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
             "report": result.report.to_safe_payload(),
             "snapshot": _snapshot_payload(result.snapshot) if result.snapshot else None,
         }
-    finally:
-        await engine.dispose()
 
 
 def _target_capabilities(

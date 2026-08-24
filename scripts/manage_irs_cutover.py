@@ -12,7 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import inspect, text
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.core.config import Settings
+from app.db.managed import ManagedDatabase
 
 ACTIVE_STATUSES = ("pending", "running", "blocked")
 
@@ -86,20 +89,22 @@ async def run(args: argparse.Namespace) -> dict:
     database_url = args.database_url or os.getenv("IRS_DATABASE_URL")
     if not database_url:
         raise RuntimeError("IRS_DATABASE_URL or --database-url is required")
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.connect() as connection:
+    settings = Settings(storage_backend="database", database_url=database_url)
+    async with ManagedDatabase.from_settings(settings) as database:
+        factory = database.session_factory
+        async with factory() as session:
+            connection = await session.connection()
             before = await inventory(connection)
         terminated_steps = 0
         if args.mode == "terminate":
             if not args.confirm_terminate_irs_runtime:
                 raise RuntimeError("Termination requires --confirm-terminate-irs-runtime")
-            async with engine.begin() as connection:
+            async with factory() as session, session.begin():
+                connection = await session.connection()
                 terminated_steps = await terminate(connection)
-        async with engine.connect() as connection:
+        async with factory() as session:
+            connection = await session.connection()
             after = await inventory(connection)
-    finally:
-        await engine.dispose()
 
     drained = all(
         after[key] == 0

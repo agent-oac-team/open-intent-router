@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseRunRepository
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunMaintenanceStore,
@@ -15,6 +14,7 @@ from app.repositories.delegated_runs import (
 from app.repositories.memory import MemoryEventRepository, MemoryRunRepository
 from app.repositories.turn_outbox import MemoryTurnOutboxRepository
 from app.repositories.turns import MemoryTurnRepository
+from app.runtime.application import ApplicationComposition
 from app.schemas.delegated_runs import (
     DelegatedRunOrphanResponse,
     DelegatedRunOverdueQuery,
@@ -34,6 +34,7 @@ from app.services.turn_service import TurnService
 async def test_overdue_query_uses_deadline_only_and_batches_deterministically(
     backend: str,
     tmp_path,
+    managed_database,
 ) -> None:
     now = datetime.now(UTC)
     if backend == "memory":
@@ -49,8 +50,8 @@ async def test_overdue_query_uses_deadline_only_and_batches_deterministically(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'overdue-query.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         runs = DatabaseRunRepository(factory)
         store = DatabaseDelegatedRunMaintenanceStore(factory)
     values = [
@@ -171,7 +172,9 @@ async def test_timeout_runtime_skips_terminal_race_and_stops_cleanly() -> None:
     assert runtime.running is False
 
 
-def test_fastapi_lifespan_starts_and_awaits_timeout_runtime(monkeypatch) -> None:
+def test_fastapi_lifespan_starts_and_awaits_timeout_runtime() -> None:
+    from dataclasses import replace
+
     from app import main as main_module
 
     calls: list[str] = []
@@ -183,13 +186,26 @@ def test_fastapi_lifespan_starts_and_awaits_timeout_runtime(monkeypatch) -> None
         async def stop(self):
             calls.append("stop")
 
-    monkeypatch.setattr(
-        main_module,
-        "build_delegated_run_timeout_runtime",
-        lambda: LifecycleProbe(),
-    )
+    settings = Settings(storage_backend="memory", registry_backend="file")
 
-    with TestClient(main_module.create_app()) as client:
+    def container_builder(catalog, databases):
+        container = main_module._build_minimal_container(
+            settings=settings,
+            catalog=catalog,
+            databases=databases,
+            external_executor=None,
+        )
+        return replace(container, _background_runtimes=(LifecycleProbe(),))
+
+    with TestClient(
+        main_module.create_app(
+            settings=settings,
+            application_composition_factory=lambda _settings: ApplicationComposition(
+                container_builder=container_builder,
+                required_database_targets=frozenset(),
+            ),
+        )
+    ) as client:
         assert client.get("/health").status_code == 200
         assert calls == ["start"]
 

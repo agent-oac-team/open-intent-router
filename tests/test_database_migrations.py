@@ -8,9 +8,6 @@ from app.core.config import Settings
 from app.db.models import CanonicalTurnModel, MemoryFormationJobModel, TurnOutboxModel
 from app.db.session import (
     _context_owner_column_definitions,
-    create_all_tables,
-    create_engine,
-    create_session_factory,
 )
 from app.repositories.context_stores import DatabaseMemoryItemRepository
 from app.repositories.json_utils import dumps
@@ -132,16 +129,18 @@ def test_legacy_runtime_datetime_columns_use_postgresql_type() -> None:
         assert sqlite[column] == "DATETIME"
 
 
-async def test_create_all_tables_builds_canonical_turn_and_outbox_constraints(tmp_path) -> None:
+async def test_schema_initialization_builds_canonical_turn_and_outbox_constraints(
+    tmp_path, managed_database
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'canonical-turn.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
 
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        schema = await conn.run_sync(_canonical_turn_schema_snapshot)
-    await engine.dispose()
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session:
+        connection = await session.connection()
+        schema = await connection.run_sync(_canonical_turn_schema_snapshot)
 
     assert schema["turn_columns"] >= {
         "turn_id",
@@ -197,12 +196,14 @@ def _canonical_turn_schema_snapshot(sync_conn) -> dict:
     }
 
 
-async def test_create_all_tables_adds_agent_context_column_to_existing_database(tmp_path) -> None:
+async def test_schema_initialization_adds_agent_context_column_to_existing_database(
+    tmp_path, managed_database
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 CREATE TABLE agent_definitions (
@@ -216,43 +217,43 @@ async def test_create_all_tables_adds_agent_context_column_to_existing_database(
                 """
             )
         )
-    await engine.dispose()
 
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        columns = await conn.run_sync(
+    async with session_factory() as session:
+        connection = await session.connection()
+        columns = await connection.run_sync(
             lambda sync_conn: {
                 column["name"] for column in inspect(sync_conn).get_columns("agent_definitions")
             }
         )
-    await engine.dispose()
     assert {"context_text", "schema_version", "handling_text"} <= columns
 
 
-async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp_path) -> None:
+async def test_schema_initialization_adds_delegated_run_columns_to_legacy_tables(
+    tmp_path, managed_database
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-delegated.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE TABLE agent_runs (run_id VARCHAR(128) PRIMARY KEY)"))
-        await conn.execute(text("CREATE TABLE agent_results (result_id VARCHAR(128) PRIMARY KEY)"))
-        await conn.execute(text("CREATE TABLE agent_events (event_id VARCHAR(128) PRIMARY KEY)"))
-    await engine.dispose()
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(text("CREATE TABLE agent_runs (run_id VARCHAR(128) PRIMARY KEY)"))
+        await session.execute(
+            text("CREATE TABLE agent_results (result_id VARCHAR(128) PRIMARY KEY)")
+        )
+        await session.execute(text("CREATE TABLE agent_events (event_id VARCHAR(128) PRIMARY KEY)"))
 
-    await create_all_tables(settings)
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        schema = await conn.run_sync(
+    async with session_factory() as session:
+        connection = await session.connection()
+        schema = await connection.run_sync(
             lambda sync_conn: {
                 table: {column["name"] for column in inspect(sync_conn).get_columns(table)}
                 for table in ("agent_runs", "agent_results", "agent_events")
             }
         )
-    await engine.dispose()
 
     assert schema["agent_runs"] >= {
         "turn_id",
@@ -273,14 +274,15 @@ async def test_create_all_tables_adds_delegated_run_columns_to_legacy_tables(tmp
     assert schema["agent_events"] >= {"turn_id", "sequence", "run_state_version"}
 
 
-async def test_create_all_tables_adds_scoped_canonical_ticket_fence_to_legacy_database(
+async def test_schema_initialization_adds_scoped_canonical_ticket_fence_to_legacy_database(
     tmp_path,
+    managed_database,
 ) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-tickets.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 CREATE TABLE execution_tickets (
@@ -292,14 +294,13 @@ async def test_create_all_tables_adds_scoped_canonical_ticket_fence_to_legacy_da
                 """
             )
         )
-    await engine.dispose()
 
-    await create_all_tables(settings)
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        schema = await conn.run_sync(
+    async with session_factory() as session:
+        connection = await session.connection()
+        schema = await connection.run_sync(
             lambda sync_conn: {
                 "columns": {
                     column["name"] for column in inspect(sync_conn).get_columns("execution_tickets")
@@ -310,18 +311,19 @@ async def test_create_all_tables_adds_scoped_canonical_ticket_fence_to_legacy_da
                 },
             }
         )
-    await engine.dispose()
 
     assert "canonical_reuse" in schema["columns"]
     assert schema["indexes"]["uq_execution_tickets_reusable_active_run_purpose"]["unique"]
 
 
-async def test_create_all_tables_adds_v2_plan_binding_columns_to_legacy_steps(tmp_path) -> None:
+async def test_schema_initialization_adds_v2_plan_binding_columns_to_legacy_steps(
+    tmp_path, managed_database
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-plan-steps.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 CREATE TABLE plan_steps (
@@ -339,7 +341,7 @@ async def test_create_all_tables_adds_v2_plan_binding_columns_to_legacy_steps(tm
                 """
             )
         )
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 INSERT INTO plan_steps (
@@ -353,20 +355,19 @@ async def test_create_all_tables_adds_v2_plan_binding_columns_to_legacy_steps(tm
                 """
             )
         )
-    await engine.dispose()
 
-    await create_all_tables(settings)
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        columns = await conn.run_sync(
+    async with session_factory() as session, session.begin():
+        connection = await session.connection()
+        columns = await connection.run_sync(
             lambda sync_conn: {
                 column["name"] for column in inspect(sync_conn).get_columns("plan_steps")
             }
         )
         repaired = (
-            await conn.execute(
+            await session.execute(
                 text(
                     """
                     SELECT agent_revision, binding_requirement_text
@@ -377,7 +378,7 @@ async def test_create_all_tables_adds_v2_plan_binding_columns_to_legacy_steps(tm
             )
         ).one()
         with pytest.raises(IntegrityError):
-            await conn.execute(
+            await session.execute(
                 text(
                     """
                     INSERT INTO plan_steps (
@@ -391,13 +392,14 @@ async def test_create_all_tables_adds_v2_plan_binding_columns_to_legacy_steps(tm
                     """
                 )
             )
-    await engine.dispose()
 
     assert {"agent_revision", "binding_requirement_text"} <= columns
     assert repaired == (None, None)
 
 
-async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp_path) -> None:
+async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(
+    tmp_path, managed_database
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy-decision-events.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
     job_id = "legacy_resolution_job"
@@ -415,9 +417,9 @@ async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp
         candidate_hash="sha256:legacy-pending",
         formation_job_id=job_id,
     )
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 CREATE TABLE memory_events (
@@ -447,7 +449,7 @@ async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp
             "job_id": job_id,
             "scope": "stable_fact",
         }
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 INSERT INTO memory_events (
@@ -465,7 +467,7 @@ async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp
                 "payload": dumps({"operation": operation.model_dump(mode="json")}),
             },
         )
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 INSERT INTO memory_events (
@@ -479,11 +481,9 @@ async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp
             ),
             {**common, "payload": dumps({"decision_id": decision_id, "action": "confirm"})},
         )
-    await engine.dispose()
 
-    await create_all_tables(settings)
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    await managed_database.initialize_schema(settings)
     await DatabaseMemoryFormationTurnJobRepository(session_factory).add_job(
         MemoryFormationJob(
             job_id=job_id,
@@ -508,11 +508,11 @@ async def test_memory_event_decision_id_backfill_is_idempotent_and_effective(tmp
     assert len(resolved) == 1
 
 
-async def test_database_context_repositories_round_trip(tmp_path) -> None:
+async def test_database_context_repositories_round_trip(tmp_path, managed_database) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'context.db'}"
     settings = Settings(storage_backend="database", database_url=database_url)
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     memory_repository = DatabaseMemoryItemRepository(session_factory)
 
     memory = await memory_repository.add(
@@ -550,15 +550,16 @@ async def test_database_context_repositories_round_trip(tmp_path) -> None:
     assert events[0].event_type == "memory_written"
 
 
-async def test_memory_formation_schema_and_uniqueness(tmp_path) -> None:
+async def test_memory_formation_schema_and_uniqueness(tmp_path, managed_database) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation.db'}",
     )
-    await create_all_tables(settings)
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        schema = await conn.run_sync(
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session:
+        connection = await session.connection()
+        schema = await connection.run_sync(
             lambda sync_conn: {
                 "tables": set(inspect(sync_conn).get_table_names()),
                 "memory_columns": {
@@ -570,7 +571,6 @@ async def test_memory_formation_schema_and_uniqueness(tmp_path) -> None:
                 },
             }
         )
-    await engine.dispose()
 
     assert {
         "memory_revisions",
@@ -587,7 +587,6 @@ async def test_memory_formation_schema_and_uniqueness(tmp_path) -> None:
     } <= schema["memory_columns"]
     assert "idx_memory_formation_jobs_claim" in schema["job_indexes"]
 
-    session_factory = create_session_factory(settings)
     values = {
         "trigger": "idle",
         "status": "pending",
@@ -611,14 +610,15 @@ async def test_memory_formation_schema_and_uniqueness(tmp_path) -> None:
 
 async def test_legacy_global_formation_request_constraint_becomes_owner_scoped(
     tmp_path,
+    managed_database,
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'legacy-formation-turns.db'}",
     )
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 CREATE TABLE memory_formation_turns (
@@ -644,7 +644,7 @@ async def test_legacy_global_formation_request_constraint_becomes_owner_scoped(
                 """
             )
         )
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 INSERT INTO memory_formation_turns (
@@ -657,14 +657,12 @@ async def test_legacy_global_formation_request_constraint_becomes_owner_scoped(
                 """
             )
         )
-    await engine.dispose()
 
-    await create_all_tables(settings)
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 INSERT INTO memory_formation_turns (
@@ -679,11 +677,11 @@ async def test_legacy_global_formation_request_constraint_becomes_owner_scoped(
                 """
             )
         )
-        count = await conn.scalar(text("SELECT count(*) FROM memory_formation_turns"))
-        constraints = await conn.run_sync(
+        count = await session.scalar(text("SELECT count(*) FROM memory_formation_turns"))
+        connection = await session.connection()
+        constraints = await connection.run_sync(
             lambda sync_conn: inspect(sync_conn).get_unique_constraints("memory_formation_turns")
         )
-    await engine.dispose()
 
     assert count == 2
     assert any(
@@ -692,14 +690,16 @@ async def test_legacy_global_formation_request_constraint_becomes_owner_scoped(
     )
 
 
-async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) -> None:
+async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'legacy-memory.db'}",
     )
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.execute(
+    session_factory = await managed_database.session_factory(settings)
+    async with session_factory() as session, session.begin():
+        await session.execute(
             text(
                 """
                 CREATE TABLE memory_items (
@@ -717,7 +717,7 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
                 """
             )
         )
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 INSERT INTO memory_items VALUES (
@@ -728,7 +728,7 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
                 """
             )
         )
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 CREATE TABLE plans (
@@ -740,7 +740,7 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
                 """
             )
         )
-        await conn.execute(
+        await session.execute(
             text(
                 """
                 INSERT INTO plans VALUES (
@@ -749,16 +749,14 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
                 """
             )
         )
-    await engine.dispose()
 
-    await create_all_tables(settings)
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
+    await managed_database.initialize_schema(settings)
 
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
+    async with session_factory() as session:
         memory = (
             (
-                await conn.execute(
+                await session.execute(
                     text(
                         "SELECT memory_id, memory_key, current_revision_id, lifecycle_status, "
                         "index_status, metadata_text FROM memory_items"
@@ -770,7 +768,7 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
         )
         revisions = (
             (
-                await conn.execute(
+                await session.execute(
                     text(
                         "SELECT revision_id, memory_id, revision_no, content "
                         "FROM memory_revisions WHERE memory_id = 'mem_legacy'"
@@ -780,8 +778,7 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
             .mappings()
             .all()
         )
-        plan_count = await conn.scalar(text("SELECT count(*) FROM plans"))
-    await engine.dispose()
+        plan_count = await session.scalar(text("SELECT count(*) FROM plans"))
 
     assert memory["memory_id"] == "mem_legacy"
     assert memory["memory_key"] == "legacy:t1:mem_legacy"
@@ -794,10 +791,9 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
     assert revisions[0]["content"] == "prefers concise answers"
     assert plan_count == 0
 
-    engine = create_engine(settings)
     with pytest.raises(IntegrityError):
-        async with engine.begin() as conn:
-            await conn.execute(
+        async with session_factory() as session, session.begin():
+            await session.execute(
                 text(
                     """
                     INSERT INTO plans (
@@ -810,4 +806,3 @@ async def test_legacy_memory_backfill_and_plan_cleanup_are_idempotent(tmp_path) 
                     """
                 )
             )
-    await engine.dispose()

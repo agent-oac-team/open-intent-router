@@ -6,7 +6,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.db.models import AgentResultModel, AgentRunModel, CanonicalTurnModel, TurnOutboxModel
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabasePlanRepository, DatabaseRunRepository
 from app.repositories.turn_transactions import (
     DatabaseTurnTransactionCoordinator,
@@ -49,13 +48,13 @@ def _bound_plan(suffix: str) -> Plan:
     )
 
 
-async def _fixture(tmp_path, suffix: str, *, with_plan: bool = False):
+async def _fixture(tmp_path, suffix: str, managed_database, *, with_plan: bool = False):
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / f'turn-transaction-{suffix}.db'}",
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     turns = TurnService(DatabaseTurnRepository(factory))
     plan = (
         await PlanService(DatabasePlanRepository(factory)).save_plan(_bound_plan(suffix))
@@ -173,8 +172,10 @@ async def _fixture(tmp_path, suffix: str, *, with_plan: bool = False):
     )
 
 
-async def test_turn_completion_commits_run_result_turn_and_outbox_atomically(tmp_path) -> None:
-    _settings, factory, bundle = await _fixture(tmp_path, "success")
+async def test_turn_completion_commits_run_result_turn_and_outbox_atomically(
+    tmp_path, managed_database
+) -> None:
+    _settings, factory, bundle = await _fixture(tmp_path, "success", managed_database)
 
     await DatabaseTurnTransactionCoordinator(factory).complete(bundle)
 
@@ -189,8 +190,12 @@ async def test_turn_completion_commits_run_result_turn_and_outbox_atomically(tmp
     assert outbox and outbox.status == "pending"
 
 
-async def test_turn_completion_rolls_back_all_writes_when_outbox_fails(tmp_path) -> None:
-    _settings, factory, bundle = await _fixture(tmp_path, "rollback", with_plan=True)
+async def test_turn_completion_rolls_back_all_writes_when_outbox_fails(
+    tmp_path, managed_database
+) -> None:
+    _settings, factory, bundle = await _fixture(
+        tmp_path, "rollback", managed_database, with_plan=True
+    )
     async with factory() as session:
         session.add(
             TurnOutboxModel(
@@ -244,14 +249,17 @@ async def test_turn_completion_rolls_back_all_writes_when_outbox_fails(tmp_path)
 
 async def test_turn_completion_preserves_plan_binding_across_restart_and_unknown_commit_replay(
     tmp_path,
+    managed_database,
 ) -> None:
-    settings, factory, bundle = await _fixture(tmp_path, "bound-success", with_plan=True)
+    settings, factory, bundle = await _fixture(
+        tmp_path, "bound-success", managed_database, with_plan=True
+    )
     assert bundle.plan is not None
 
     await DatabaseTurnTransactionCoordinator(factory).complete(bundle)
 
     # A fresh repository simulates a worker restart after a successful commit.
-    restarted_factory = create_session_factory(settings)
+    restarted_factory = await managed_database.session_factory(settings)
     restarted_plans = PlanService(DatabasePlanRepository(restarted_factory))
     restored = await restarted_plans.get_plan(
         bundle.plan.plan_id,
@@ -289,8 +297,12 @@ async def test_turn_completion_preserves_plan_binding_across_restart_and_unknown
     assert len(outboxes) == 1
 
 
-async def test_turn_completion_rejects_a_stale_concurrent_plan_bundle(tmp_path) -> None:
-    settings, factory, bundle = await _fixture(tmp_path, "bound-conflict", with_plan=True)
+async def test_turn_completion_rejects_a_stale_concurrent_plan_bundle(
+    tmp_path, managed_database
+) -> None:
+    settings, factory, bundle = await _fixture(
+        tmp_path, "bound-conflict", managed_database, with_plan=True
+    )
     assert bundle.plan is not None
     competing = TurnCompletionBundle(
         run=bundle.run,
@@ -310,9 +322,9 @@ async def test_turn_completion_rejects_a_stale_concurrent_plan_bundle(tmp_path) 
     # overwrite the frozen Step or append its competing outbox event.
     await DatabaseTurnTransactionCoordinator(factory).complete(bundle)
     with pytest.raises(TurnTransactionConflict):
-        await DatabaseTurnTransactionCoordinator(create_session_factory(settings)).complete(
-            competing
-        )
+        await DatabaseTurnTransactionCoordinator(
+            await managed_database.session_factory(settings)
+        ).complete(competing)
 
     restored = await PlanService(DatabasePlanRepository(factory)).get_plan(
         bundle.plan.plan_id,

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 from sqlalchemy import inspect, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio.session import AsyncSessionTransaction
 
 import app.services.native_definition_migration as native_definition_migration
@@ -20,7 +21,6 @@ from app.db.models import (
     PlanModel,
     PlanStepModel,
 )
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseAgentDefinitionRepository, DatabaseRunRepository
 from app.repositories.json_utils import loads
 from app.schemas.agents import AccessPolicy, AgentDefinition, InvocationSpec
@@ -30,6 +30,7 @@ from app.services.native_definition_migration import (
     NativeDefinitionMigrationService,
     NativeDefinitionMigrationTargetCapabilities,
 )
+from tests.support.database import raw_engine_scope
 
 
 def _legacy_agent(
@@ -62,13 +63,13 @@ def _legacy_agent(
 
 
 @pytest.fixture
-async def database_migration(tmp_path):
+async def database_migration(tmp_path, managed_database):
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'native-definition-migration.db'}",
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     return factory, NativeDefinitionMigrationService(
         factory,
         target_capabilities=_target_capabilities(),
@@ -249,21 +250,20 @@ async def test_prepare_enforces_database_native_write_and_new_execution_fence(
 async def test_file_prepare_installs_only_gate_support_and_does_not_create_registry_source(
     tmp_path,
 ) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'gate-only.db'}")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    migration = NativeDefinitionMigrationService(factory)
+    async with raw_engine_scope(f"sqlite+aiosqlite:///{tmp_path / 'gate-only.db'}") as engine:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        migration = NativeDefinitionMigrationService(factory)
 
-    await migration.prepare(
-        source="file",
-        native_writes_frozen=True,
-        new_execution_frozen=True,
-    )
-
-    async with engine.connect() as connection:
-        tables = await connection.run_sync(
-            lambda sync_connection: inspect(sync_connection).get_table_names()
+        await migration.prepare(
+            source="file",
+            native_writes_frozen=True,
+            new_execution_frozen=True,
         )
-    await engine.dispose()
+
+        async with engine.connect() as connection:
+            tables = await connection.run_sync(
+                lambda sync_connection: inspect(sync_connection).get_table_names()
+            )
     assert "native_definition_migration_preparations" in tables
     assert "native_definition_migration_snapshots" in tables
     assert "agent_definitions" not in tables
@@ -1482,6 +1482,7 @@ async def test_file_rollback_validates_private_snapshot_before_writing_source(
 
 async def test_cli_returns_only_safe_dry_run_evidence_for_invalid_source(
     database_migration,
+    tmp_path,
 ) -> None:
     factory, _migration = database_migration
     secret_marker = "cli-secret-marker"
@@ -1489,7 +1490,7 @@ async def test_cli_returns_only_safe_dry_run_evidence_for_invalid_source(
         factory,
         _legacy_agent(config={"headers": {"authorization": secret_marker}}),
     )
-    database_url = str(factory.kw["bind"].url)
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'native-definition-migration.db'}"
     root = Path(__file__).resolve().parents[1]
     command_prefix = [
         sys.executable,
@@ -1497,6 +1498,11 @@ async def test_cli_returns_only_safe_dry_run_evidence_for_invalid_source(
         "--database-url",
         database_url,
     ]
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(value for value in (str(root), existing_pythonpath) if value),
+    }
 
     prepared = subprocess.run(
         [
@@ -1510,6 +1516,7 @@ async def test_cli_returns_only_safe_dry_run_evidence_for_invalid_source(
         cwd=root,
         capture_output=True,
         check=False,
+        env=environment,
         text=True,
     )
     dry_run = subprocess.run(
@@ -1517,6 +1524,7 @@ async def test_cli_returns_only_safe_dry_run_evidence_for_invalid_source(
         cwd=root,
         capture_output=True,
         check=False,
+        env=environment,
         text=True,
     )
 
@@ -1563,6 +1571,11 @@ async def test_cli_uses_target_capability_manifest_for_a_valid_binding(
         "--database-url",
         database_url,
     ]
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(value for value in (str(root), existing_pythonpath) if value),
+    }
 
     prepared = subprocess.run(
         [
@@ -1576,6 +1589,7 @@ async def test_cli_uses_target_capability_manifest_for_a_valid_binding(
         cwd=root,
         capture_output=True,
         check=False,
+        env=environment,
         text=True,
     )
     dry_run = subprocess.run(
@@ -1590,6 +1604,7 @@ async def test_cli_uses_target_capability_manifest_for_a_valid_binding(
         cwd=root,
         capture_output=True,
         check=False,
+        env=environment,
         text=True,
     )
 

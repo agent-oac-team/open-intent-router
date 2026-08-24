@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main as main_module
 from app.application import RegistrySnapshotQuarantineInput, RegistrySnapshotSourceInput
 from app.core.config import Settings
-from app.core.errors import RegistryUnavailableError
-from app.dependencies import get_registry_service
+from app.core.errors import ApplicationStartupError, RegistryUnavailableError
+from app.db.managed import ManagedDatabase
 from app.main import create_app
+from app.runtime.application import ApplicationComposition, ApplicationContainer
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterContext,
@@ -88,29 +88,17 @@ def _ui_definition(*, revision: int = 1) -> AgentDefinitionV2:
     )
 
 
-class _BackgroundRuntime:
-    async def start(self) -> None:
-        return None
+def _container_composition_factory(registry):
+    def build(catalog, _databases) -> ApplicationContainer:
+        return ApplicationContainer(
+            registry=registry,
+            runtime_catalog=catalog,
+            registry_snapshot_runtime=RegistrySnapshotRuntime(RegistrySnapshotBuilder(catalog)),
+        )
 
-    async def stop(self) -> None:
-        return None
-
-
-def _stub_background_runtimes(monkeypatch) -> None:
-    monkeypatch.setattr(
-        main_module,
-        "build_memory_formation_runtime",
-        lambda: _BackgroundRuntime(),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "build_memory_maintenance_runtime",
-        lambda: _BackgroundRuntime(),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "build_delegated_run_timeout_runtime",
-        lambda: _BackgroundRuntime(),
+    return lambda _settings: ApplicationComposition(
+        container_builder=build,
+        required_database_targets=frozenset(),
     )
 
 
@@ -179,7 +167,7 @@ async def test_required_adapter_health_failure_makes_runtime_unready() -> None:
 
     assert report.status == "error"
     assert report.runtime_status == "error"
-    assert report.reason_code == "runtime_required_adapter_unhealthy"
+    assert report.reason_code == "runtime_catalog_unavailable"
 
     await catalog_runtime.stop()
 
@@ -193,7 +181,7 @@ async def test_missing_required_adapter_makes_runtime_unready_without_exposing_i
     report = await readiness.refresh()
 
     assert report.status == "error"
-    assert report.reason_code == "runtime_required_adapter_missing"
+    assert report.reason_code == "runtime_catalog_unavailable"
     assert "missing_adapter" not in str(report)
 
     await catalog_runtime.stop()
@@ -286,9 +274,7 @@ def test_public_snapshot_catalog_has_no_binding_or_admin_diagnostics() -> None:
     assert "/summary" not in str(payload)
 
 
-def test_health_is_probe_free_and_ready_inventory_are_safe(monkeypatch) -> None:
-    _stub_background_runtimes(monkeypatch)
-
+def test_health_is_probe_free_and_ready_inventory_are_safe() -> None:
     class RegistryProbe:
         calls = 0
 
@@ -297,7 +283,6 @@ def test_health_is_probe_free_and_ready_inventory_are_safe(monkeypatch) -> None:
             return RegistryState(status="ok", active_source="file")
 
     registry = RegistryProbe()
-    monkeypatch.setattr(main_module, "get_registry_service", lambda: registry)
     probe = HealthProbe()
 
     def snapshot_mapper(_state: RegistryState) -> RegistrySnapshotSourceInput:
@@ -320,6 +305,7 @@ def test_health_is_probe_free_and_ready_inventory_are_safe(monkeypatch) -> None:
     app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", probe)],
         registry_snapshot_mapper=snapshot_mapper,
+        application_composition_factory=_container_composition_factory(registry),
     )
 
     with TestClient(app) as client:
@@ -386,94 +372,91 @@ def test_health_is_probe_free_and_ready_inventory_are_safe(monkeypatch) -> None:
     assert "other-secret-marker" not in serialized
 
 
-def test_primary_registry_and_core_startup_failures_are_safe_readiness_errors(monkeypatch) -> None:
-    _stub_background_runtimes(monkeypatch)
-
+def test_primary_registry_and_core_startup_failures_abort_with_safe_errors(monkeypatch) -> None:
     class BrokenRegistry:
         async def load(self):
             raise RuntimeError("postgresql://user:password@private.example/registry")
 
-    monkeypatch.setattr(main_module, "get_registry_service", lambda: BrokenRegistry())
-    registry_app = create_app(runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())])
-    with TestClient(registry_app) as client:
-        registry_ready = client.get("/ready")
+    registry_app = create_app(
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
+        application_composition_factory=_container_composition_factory(BrokenRegistry()),
+    )
+    with pytest.raises(ApplicationStartupError) as registry_error:
+        with TestClient(registry_app):
+            pass
 
-    assert registry_ready.status_code == 503
-    assert registry_ready.json() == {
-        "status": "error",
-        "runtime_status": "error",
-        "runtime_reason": "primary_registry_unavailable",
-    }
+    assert str(registry_error.value) == "application_startup_failed"
 
-    async def broken_tables(_settings) -> None:
+    async def broken_schema(self) -> None:
         raise RuntimeError("database password=private")
 
-    monkeypatch.setattr(main_module, "create_all_tables", broken_tables)
-    monkeypatch.setattr(
-        main_module,
-        "get_settings",
-        lambda: Settings(storage_backend="database", registry_backend="file"),
+    monkeypatch.setattr(ManagedDatabase, "initialize_schema", broken_schema)
+    core_app = create_app(
+        settings=Settings(
+            storage_backend="database",
+            database_url="sqlite+aiosqlite:///:memory:",
+            registry_backend="file",
+            memory_mode="off",
+        ),
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
     )
-    core_app = create_app(runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())])
-    with TestClient(core_app) as client:
-        core_ready = client.get("/ready")
+    with pytest.raises(ApplicationStartupError) as core_error:
+        with TestClient(core_app):
+            pass
 
-    assert core_ready.status_code == 503
-    assert core_ready.json() == {
-        "status": "error",
-        "runtime_status": "error",
-        "runtime_reason": "core_initialization_failed",
-    }
+    assert str(core_error.value) == "application_startup_failed"
 
 
 def test_startup_failure_logs_never_include_secret_markers(monkeypatch, caplog) -> None:
-    _stub_background_runtimes(monkeypatch)
     marker = "postgresql://operator:secret-marker@private.example/runtime"
 
-    monkeypatch.setattr(
-        main_module, "get_registry_service", lambda: (_ for _ in ()).throw(RuntimeError(marker))
-    )
-    registry_app = create_app(runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())])
-    with caplog.at_level(logging.WARNING):
-        with TestClient(registry_app) as client:
-            assert client.get("/ready").status_code == 503
+    class BrokenRegistry:
+        async def load(self):
+            raise RuntimeError(marker)
 
-    assert "primary_registry_construction_failed" in caplog.text
+    registry_app = create_app(
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
+        application_composition_factory=_container_composition_factory(BrokenRegistry()),
+    )
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ApplicationStartupError):
+            with TestClient(registry_app):
+                pass
+
+    assert "primary_registry_initialization_failed" in caplog.text
     assert marker not in caplog.text
 
     caplog.clear()
 
-    async def broken_tables(_settings) -> None:
+    async def broken_schema(self) -> None:
         raise RuntimeError(marker)
 
-    monkeypatch.setattr(main_module, "create_all_tables", broken_tables)
-    monkeypatch.setattr(
-        main_module,
-        "get_settings",
-        lambda: Settings(storage_backend="database", registry_backend="file"),
+    monkeypatch.setattr(ManagedDatabase, "initialize_schema", broken_schema)
+    core_app = create_app(
+        settings=Settings(
+            storage_backend="database",
+            database_url="sqlite+aiosqlite:///:memory:",
+            registry_backend="file",
+            memory_mode="off",
+        ),
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
     )
-    core_app = create_app(runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())])
     with caplog.at_level(logging.WARNING):
-        with TestClient(core_app) as client:
-            assert client.get("/ready").status_code == 503
+        with pytest.raises(ApplicationStartupError):
+            with TestClient(core_app):
+                pass
 
-    assert "core_runtime_initialization_failed" in caplog.text
     assert marker not in caplog.text
 
 
-def test_required_adapter_policy_is_applied_during_lifespan(monkeypatch) -> None:
-    _stub_background_runtimes(monkeypatch)
-    monkeypatch.setattr(
-        main_module,
-        "get_settings",
-        lambda: Settings(
+def test_required_adapter_policy_is_applied_during_lifespan() -> None:
+    app = create_app(
+        settings=Settings(
             storage_backend="memory",
             registry_backend="file",
             runtime_required_adapter_keys="optional_adapter",
         ),
-    )
-    app = create_app(
-        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe(healthy=False))]
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe(healthy=False))],
     )
 
     with TestClient(app) as client:
@@ -483,13 +466,11 @@ def test_required_adapter_policy_is_applied_during_lifespan(monkeypatch) -> None
     assert readiness.json() == {
         "status": "error",
         "runtime_status": "error",
-        "runtime_reason": "runtime_required_adapter_unhealthy",
+        "runtime_reason": "runtime_catalog_unavailable",
     }
 
 
-def test_failed_admin_registry_reload_updates_cached_readiness(monkeypatch) -> None:
-    _stub_background_runtimes(monkeypatch)
-
+def test_failed_admin_registry_reload_updates_cached_readiness() -> None:
     class ReloadingRegistry:
         async def load(self) -> RegistryState:
             return RegistryState(status="ok", active_source="file")
@@ -498,9 +479,10 @@ def test_failed_admin_registry_reload_updates_cached_readiness(monkeypatch) -> N
             raise RegistryUnavailableError("Registry unavailable")
 
     registry = ReloadingRegistry()
-    monkeypatch.setattr(main_module, "get_registry_service", lambda: registry)
-    app = create_app(runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())])
-    app.dependency_overrides[get_registry_service] = lambda: registry
+    app = create_app(
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
+        application_composition_factory=_container_composition_factory(registry),
+    )
 
     with TestClient(app) as client:
         reload_response = client.post("/api/v1/admin/registry/reload")
@@ -515,9 +497,7 @@ def test_failed_admin_registry_reload_updates_cached_readiness(monkeypatch) -> N
     }
 
 
-def test_admin_registry_reload_replaces_the_composed_live_snapshot(monkeypatch) -> None:
-    _stub_background_runtimes(monkeypatch)
-
+def test_admin_registry_reload_replaces_the_composed_live_snapshot() -> None:
     class ReloadingRegistry:
         revision = 1
 
@@ -542,12 +522,11 @@ def test_admin_registry_reload_replaces_the_composed_live_snapshot(monkeypatch) 
         )
 
     registry = ReloadingRegistry()
-    monkeypatch.setattr(main_module, "get_registry_service", lambda: registry)
     app = create_app(
         runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
         registry_snapshot_mapper=snapshot_mapper,
+        application_composition_factory=_container_composition_factory(registry),
     )
-    app.dependency_overrides[get_registry_service] = lambda: registry
 
     with TestClient(app) as client:
         initial_inventory = client.get("/api/v1/admin/runtime/inventory")
@@ -561,9 +540,7 @@ def test_admin_registry_reload_replaces_the_composed_live_snapshot(monkeypatch) 
     assert replacement_inventory.json()["definitions"][0]["revision"] == 2
 
 
-def test_native_registry_crud_refreshes_the_process_snapshot_after_each_write(monkeypatch) -> None:
-    _stub_background_runtimes(monkeypatch)
-
+def test_native_registry_crud_refreshes_the_process_snapshot_after_each_write() -> None:
     class MutableRegistry:
         def __init__(self) -> None:
             self.agents = {}
@@ -596,9 +573,10 @@ def test_native_registry_crud_refreshes_the_process_snapshot_after_each_write(mo
             return self.agents.pop(agent_id, None) is not None
 
     registry = MutableRegistry()
-    monkeypatch.setattr(main_module, "get_registry_service", lambda: registry)
-    app = create_app(runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())])
-    app.dependency_overrides[get_registry_service] = lambda: registry
+    app = create_app(
+        runtime_descriptors=[_descriptor("optional_adapter", HealthProbe())],
+        application_composition_factory=_container_composition_factory(registry),
+    )
     payload = {
         "agent_id": "native-agent",
         "name": "Native Agent",

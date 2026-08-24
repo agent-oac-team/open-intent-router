@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.memory_index_operations import MemoryIndexOutboxRepository
@@ -57,7 +56,9 @@ def _item(
     )
 
 
-def test_authenticated_user_memory_api_returns_only_current_principal_product_fields() -> None:
+def test_authenticated_user_memory_api_returns_only_current_principal_product_fields(
+    non_lifespan_test_client,
+) -> None:
     repository = MemoryItemRepository()
 
     async def seed() -> None:
@@ -105,7 +106,7 @@ def test_authenticated_user_memory_api_returns_only_current_principal_product_fi
     app.include_router(router)
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     response = client.get("/api/v1/user-memories?page=1")
 
@@ -155,7 +156,9 @@ def test_authenticated_user_memory_api_returns_only_current_principal_product_fi
     assert client.get("/api/v1/user-memories?memory_type=task_memory").status_code == 422
 
 
-def test_user_memory_api_rejects_non_user_host_credentials() -> None:
+def test_user_memory_api_rejects_non_user_host_credentials(
+    non_lifespan_test_client,
+) -> None:
     class MemoryPort:
         async def list_user_memories(self, **_kwargs):
             raise AssertionError("non-user credential reached personal memory service")
@@ -189,12 +192,14 @@ def test_user_memory_api_rejects_non_user_host_credentials() -> None:
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
 
-    response = TestClient(app).get("/api/v1/user-memories")
+    response = non_lifespan_test_client(app).get("/api/v1/user-memories")
 
     assert response.status_code == 403
 
 
-def test_authenticated_user_delete_api_accepts_opaque_target_and_product_response() -> None:
+def test_authenticated_user_delete_api_accepts_opaque_target_and_product_response(
+    non_lifespan_test_client,
+) -> None:
     repository = MemoryItemRepository()
     asyncio.run(repository.add(_item("mine-delete")))
     service = _service(repository)
@@ -239,7 +244,7 @@ def test_authenticated_user_delete_api_accepts_opaque_target_and_product_respons
     app.include_router(router)
     app.dependency_overrides[get_oac_adapter_application_ports] = lambda: ports
     app.dependency_overrides[get_trusted_host_identity] = lambda: identity
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     listed = client.get("/api/v1/user-memories").json()["items"][0]
     request = {
         "idempotency_key": "remove-mine-delete-v1",

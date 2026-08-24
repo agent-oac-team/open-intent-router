@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabasePlanRepository
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunMaintenanceStore,
@@ -35,7 +34,7 @@ from app.services.turn_service import TurnService
 
 
 @pytest.fixture(params=["memory", "database"])
-async def maintenance(request, tmp_path):
+async def maintenance(request, tmp_path, managed_database):
     now = datetime.now(UTC)
     if request.param == "memory":
         runs = MemoryRunRepository()
@@ -67,8 +66,8 @@ async def maintenance(request, tmp_path):
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'delegated-maintenance.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         turns_repo = DatabaseTurnRepository(factory)
         plans = DatabasePlanRepository(factory)
         store = DatabaseDelegatedRunMaintenanceStore(factory)

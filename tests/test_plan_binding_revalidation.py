@@ -10,7 +10,6 @@ from app.core.errors import (
     InvocationBindingUnavailableError,
     PlanBindingUnavailableError,
 )
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabasePlanRepository
 from app.repositories.memory import (
     MemoryPlanRepository,
@@ -1685,13 +1684,15 @@ async def test_plan_control_rejects_broken_v2_adapter_before_creating_a_turn() -
     await catalog.aclose()
 
 
-async def test_database_plan_repository_round_trips_hidden_v2_binding_requirement(tmp_path) -> None:
+async def test_database_plan_repository_round_trips_hidden_v2_binding_requirement(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'plan-bindings.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabasePlanRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabasePlanRepository(await managed_database.session_factory(settings))
     plan_service = PlanService(repository)
     definition = _definition()
     plan = Plan(

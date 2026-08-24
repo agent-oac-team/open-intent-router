@@ -4,12 +4,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.main import create_app
 from app.repositories.memory_formation import (
     DatabaseMemoryFormationTurnJobRepository,
     MemoryFormationTurnJobRepository,
 )
+from app.runtime.application import ApplicationComposition
 from app.schemas.memory import MemoryFormationJobStatus, MemoryFormationTurn
 from app.services.memory_formation import (
     FormationIdleSweeper,
@@ -19,15 +19,6 @@ from app.services.memory_formation import (
     structured_event_idempotency_key,
 )
 from app.services.memory_maintenance import MemoryMaintenanceRuntime
-
-_TEST_ENGINES = []
-
-
-@pytest.fixture(autouse=True)
-async def _dispose_test_engines():
-    yield
-    while _TEST_ENGINES:
-        await _TEST_ENGINES.pop().dispose()
 
 
 def _settings(**updates) -> Settings:
@@ -63,24 +54,24 @@ def _turn(index: int, *, completed_at: datetime | None = None) -> MemoryFormatio
     )
 
 
-async def _repository(backend: str, tmp_path):
+async def _repository(backend: str, tmp_path, managed_database=None):
     if backend == "memory":
         return MemoryFormationTurnJobRepository()
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / f'trigger-{backend}.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
-    _TEST_ENGINES.append(session_factory.kw["bind"])
+    assert managed_database is not None
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     return DatabaseMemoryFormationTurnJobRepository(session_factory)
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_coordinator_freezes_five_turns_resets_idle_and_starts_next_range(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
-    repository = await _repository(backend, tmp_path)
+    repository = await _repository(backend, tmp_path, managed_database)
     settings = _settings(storage_backend=backend)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     for index in range(1, 5):
@@ -105,8 +96,10 @@ async def test_coordinator_freezes_five_turns_resets_idle_and_starts_next_range(
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_idle_sweeper_recovers_persisted_deadline_after_restart(backend, tmp_path) -> None:
-    repository = await _repository(backend, tmp_path)
+async def test_idle_sweeper_recovers_persisted_deadline_after_restart(
+    backend, tmp_path, managed_database
+) -> None:
+    repository = await _repository(backend, tmp_path, managed_database)
     settings = _settings(storage_backend=backend)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     for index in range(1, 4):
@@ -123,9 +116,9 @@ async def test_idle_sweeper_recovers_persisted_deadline_after_restart(backend, t
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_late_out_of_order_turn_does_not_move_idle_deadline_backward(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
-    repository = await _repository(backend, tmp_path)
+    repository = await _repository(backend, tmp_path, managed_database)
     settings = _settings(storage_backend=backend)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     later = datetime(2026, 7, 13, 1, tzinfo=UTC)
@@ -138,8 +131,10 @@ async def test_late_out_of_order_turn_does_not_move_idle_deadline_backward(
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_fifth_turn_and_idle_race_create_only_one_executable_job(backend, tmp_path) -> None:
-    repository = await _repository(backend, tmp_path)
+async def test_fifth_turn_and_idle_race_create_only_one_executable_job(
+    backend, tmp_path, managed_database
+) -> None:
+    repository = await _repository(backend, tmp_path, managed_database)
     settings = _settings(storage_backend=backend)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     for index in range(1, 5):
@@ -160,8 +155,10 @@ async def test_fifth_turn_and_idle_race_create_only_one_executable_job(backend, 
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_new_turn_during_claimed_job_starts_next_range(backend, tmp_path) -> None:
-    repository = await _repository(backend, tmp_path)
+async def test_new_turn_during_claimed_job_starts_next_range(
+    backend, tmp_path, managed_database
+) -> None:
+    repository = await _repository(backend, tmp_path, managed_database)
     settings = _settings(storage_backend=backend)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     job = None
@@ -189,8 +186,8 @@ async def test_new_turn_during_claimed_job_starts_next_range(backend, tmp_path) 
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_duplicate_turn_capture_is_idempotent(backend, tmp_path) -> None:
-    repository = await _repository(backend, tmp_path)
+async def test_duplicate_turn_capture_is_idempotent(backend, tmp_path, managed_database) -> None:
+    repository = await _repository(backend, tmp_path, managed_database)
     settings = _settings(storage_backend=backend)
     coordinator = FormationTriggerCoordinator(settings=settings, repository=repository)
     first, second = await asyncio.gather(
@@ -206,8 +203,10 @@ async def test_duplicate_turn_capture_is_idempotent(backend, tmp_path) -> None:
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_same_request_id_is_isolated_by_tenant_user_and_session(backend, tmp_path) -> None:
-    repository = await _repository(backend, tmp_path)
+async def test_same_request_id_is_isolated_by_tenant_user_and_session(
+    backend, tmp_path, managed_database
+) -> None:
+    repository = await _repository(backend, tmp_path, managed_database)
     first = _turn(1).model_copy(update={"request_id": "shared-request"})
     second = _turn(2).model_copy(
         update={
@@ -239,15 +238,15 @@ async def test_same_request_id_is_isolated_by_tenant_user_and_session(backend, t
 
 async def test_two_database_repository_instances_share_sqlite_session_coordination(
     tmp_path,
+    managed_database,
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'shared-coordination.db'}",
     )
-    await create_all_tables(settings)
-    first_factory = create_session_factory(settings)
-    second_factory = create_session_factory(settings)
-    _TEST_ENGINES.extend([first_factory.kw["bind"], second_factory.kw["bind"]])
+    await managed_database.initialize_schema(settings)
+    first_factory = await managed_database.session_factory(settings)
+    second_factory = await managed_database.session_factory(settings)
     first_repository = DatabaseMemoryFormationTurnJobRepository(first_factory)
     second_repository = DatabaseMemoryFormationTurnJobRepository(second_factory)
     runtime_settings = _settings(storage_backend="database")
@@ -575,7 +574,9 @@ async def test_reconciler_runs_when_idle_sweeper_is_disabled() -> None:
     assert reconciler.calls >= 2
 
 
-async def test_application_lifespan_starts_and_stops_formation_runtime(monkeypatch) -> None:
+async def test_application_lifespan_starts_and_stops_formation_runtime() -> None:
+    from dataclasses import replace
+
     calls = []
 
     class FakeRuntime:
@@ -585,9 +586,26 @@ async def test_application_lifespan_starts_and_stops_formation_runtime(monkeypat
         async def stop(self) -> None:
             calls.append("stop")
 
-    monkeypatch.setattr("app.main.build_memory_formation_runtime", lambda **kwargs: FakeRuntime())
-    monkeypatch.setattr("app.main.build_memory_maintenance_runtime", lambda **kwargs: FakeRuntime())
-    app = create_app()
+    from app import main as main_module
+
+    settings = Settings(storage_backend="memory", registry_backend="file")
+
+    def container_builder(catalog, databases):
+        container = main_module._build_minimal_container(
+            settings=settings,
+            catalog=catalog,
+            databases=databases,
+            external_executor=None,
+        )
+        return replace(container, _background_runtimes=(FakeRuntime(), FakeRuntime()))
+
+    app = create_app(
+        settings=settings,
+        application_composition_factory=lambda _settings: ApplicationComposition(
+            container_builder=container_builder,
+            required_database_targets=frozenset(),
+        ),
+    )
 
     async with app.router.lifespan_context(app):
         assert calls == ["start", "start"]

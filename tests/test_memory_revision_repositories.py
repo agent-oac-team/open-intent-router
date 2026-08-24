@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository, MemoryItemRepository
 from app.repositories.memory_revisions import (
     DatabaseMemoryRevisionLedgerRepository,
@@ -92,13 +91,15 @@ async def test_in_memory_revision_history_cannot_be_mutated_through_returned_obj
     assert items.items["mem_1"].structured_value == {"nested": {"language": "zh"}}
 
 
-async def test_database_revision_sequence_concurrency_and_tenant_isolation(tmp_path) -> None:
+async def test_database_revision_sequence_concurrency_and_tenant_isolation(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'memory-revisions.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     await items.add(_item())
     revisions = DatabaseMemoryRevisionLedgerRepository(session_factory)
@@ -136,7 +137,7 @@ async def test_database_revision_sequence_concurrency_and_tenant_isolation(tmp_p
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_revision_repository_rejects_same_tenant_cross_subject_access(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
     if backend == "memory":
         items = MemoryItemRepository()
@@ -146,8 +147,8 @@ async def test_revision_repository_rejects_same_tenant_cross_subject_access(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'revision-owner.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         items = DatabaseMemoryItemRepository(session_factory)
         revisions = DatabaseMemoryRevisionLedgerRepository(session_factory)
     await items.add(_item())

@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.delegated_runs import (
     DatabaseDelegatedRunFailureStore,
     DatabaseDelegatedRunStartStore,
@@ -21,7 +20,7 @@ from app.services.turn_service import TurnService
 
 
 @pytest.fixture(params=["memory", "database"])
-async def delegated_failure(request, tmp_path):
+async def delegated_failure(request, tmp_path, managed_database):
     if request.param == "memory":
         runs = MemoryRunRepository()
         events = MemoryEventRepository()
@@ -43,8 +42,8 @@ async def delegated_failure(request, tmp_path):
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'delegated-failure.db'}",
         )
-        await create_all_tables(settings)
-        factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        factory = await managed_database.session_factory(settings)
         turns_repo = DatabaseTurnRepository(factory)
         service = DelegatedRunService(
             DatabaseDelegatedRunStartStore(factory),

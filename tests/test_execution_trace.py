@@ -4,7 +4,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_engine, create_session_factory
 from app.repositories.context_stores import MemoryItemRepository
 from app.repositories.execution_traces import (
     DatabaseExecutionTraceRepository,
@@ -21,6 +20,7 @@ from app.schemas.execution_traces import (
 from app.schemas.memory import MemoryIndexOperation, MemoryItem
 from app.schemas.turns import CanonicalTurn, TurnSemanticResponse, TurnStatus, TurnUserInput
 from app.services.execution_trace_service import ExecutionTraceConflict, ExecutionTraceService
+from tests.support.database import raw_engine_scope
 
 
 class _LegacyMemoryExecutionTraceRepository(MemoryExecutionTraceRepository):
@@ -223,14 +223,16 @@ async def test_trace_repository_revalidates_copied_drafts_before_writing() -> No
         await service.record(invalid)
 
 
-async def test_database_trace_writer_uses_one_ordered_idempotent_event_table(tmp_path) -> None:
+async def test_database_trace_writer_uses_one_ordered_idempotent_event_table(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'trace.db'}",
     )
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
     service = ExecutionTraceService(
-        DatabaseExecutionTraceRepository(create_session_factory(settings))
+        DatabaseExecutionTraceRepository(await managed_database.session_factory(settings))
     )
 
     first = await service.record(_agent_progress())
@@ -251,14 +253,11 @@ async def test_database_trace_writer_uses_one_ordered_idempotent_event_table(tmp
     assert replay.event.event_offset == 1
     assert [event.event_offset for event in snapshot.events] == [1, 2]
 
-    engine = create_engine(settings)
-    try:
+    async with raw_engine_scope(settings.database_url) as engine:
         async with engine.begin() as connection:
             tables = await connection.run_sync(
                 lambda sync_connection: sync_connection.dialect.get_table_names(sync_connection)
             )
-    finally:
-        await engine.dispose()
     assert "execution_trace_events" in tables
 
 

@@ -5,7 +5,6 @@ from sqlalchemy import select
 
 from app.core.config import Settings
 from app.db.models import CanonicalTurnModel, MemoryEventModel, TurnOutboxModel
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseResultRepository, DatabaseRunRepository
 from app.repositories.json_utils import loads
 from app.repositories.turns import DatabaseTurnRepository
@@ -75,13 +74,13 @@ async def _seed_orphan(
         )
 
 
-async def test_orphan_scan_classifies_without_exposing_content(tmp_path) -> None:
+async def test_orphan_scan_classifies_without_exposing_content(tmp_path, managed_database) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'orphan-scan.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     turns = DatabaseTurnRepository(session_factory)
     runs = DatabaseRunRepository(session_factory)
     results = DatabaseResultRepository(session_factory)
@@ -131,13 +130,13 @@ async def test_orphan_scan_classifies_without_exposing_content(tmp_path) -> None
     assert "result-secret" not in serialized
 
 
-async def test_orphan_repair_is_scoped_atomic_and_idempotent(tmp_path) -> None:
+async def test_orphan_repair_is_scoped_atomic_and_idempotent(tmp_path, managed_database) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'orphan-repair.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     turns = DatabaseTurnRepository(session_factory)
     runs = DatabaseRunRepository(session_factory)
     results = DatabaseResultRepository(session_factory)

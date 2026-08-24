@@ -7,13 +7,17 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 from dotenv import dotenv_values
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 RUNTIME_TABLES = (
     "canonical_turns",
@@ -28,20 +32,26 @@ RUNTIME_TABLES = (
 
 
 async def table_counts(database_url: str) -> dict[str, int]:
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.connect() as connection:
+    from app.core.config import Settings
+    from app.db.managed import ManagedDatabase
+
+    settings = Settings(storage_backend="database", database_url=database_url)
+    async with ManagedDatabase.from_settings(settings) as database:
+        async with database.session_factory() as session:
             return {
                 table: int(
-                    (await connection.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar_one()
+                    (await session.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar_one()
                 )
                 for table in RUNTIME_TABLES
             }
-    finally:
-        await engine.dispose()
 
 
-async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: str) -> dict:
+async def run_rehearsal(
+    *,
+    primary_database_url: str,
+    rehearsal_database_url: str,
+    services=None,
+) -> dict:
     primary_before = await table_counts(primary_database_url)
 
     os.environ.update(
@@ -57,15 +67,15 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
         }
     )
 
-    from app.core.config import get_settings
-    from app.db.session import create_all_tables
-    from app.dependencies import (
-        get_delegated_run_service,
-        get_memory_service,
-        get_plan_service,
-        get_turn_repository,
-        get_turn_service,
+    from app.core.config import Settings
+    from app.db.managed import build_managed_database_targets
+    from app.runtime.application import ApplicationRuntime
+    from app.runtime.catalog import (
+        RuntimeAdapterContext,
+        RuntimeCatalogRuntime,
+        build_default_runtime_descriptors,
     )
+    from app.runtime.services import build_application_container
     from app.schemas.common import UserContext
     from app.schemas.delegated_runs import (
         DelegatedRunCompleteCommand,
@@ -76,9 +86,34 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
     from app.schemas.plans import Plan, PlanStep
     from app.schemas.turns import TurnUserInput
 
-    get_settings.cache_clear()
-    settings = get_settings()
-    await create_all_tables(settings)
+    settings = Settings()
+    if services is None:
+        runtime = ApplicationRuntime(
+            settings=settings,
+            runtime_catalog=RuntimeCatalogRuntime(
+                descriptors=build_default_runtime_descriptors(),
+                context=RuntimeAdapterContext(settings=settings),
+                shutdown_timeout_seconds=settings.runtime_catalog_shutdown_timeout_seconds,
+                health_check_timeout_seconds=settings.runtime_catalog_health_timeout_seconds,
+                required_adapter_keys=settings.runtime_required_adapter_key_set,
+            ),
+            database_factory=lambda: build_managed_database_targets(settings),
+            container_builder=lambda catalog, databases: build_application_container(
+                settings=settings,
+                catalog=catalog,
+                databases=databases,
+            ),
+        )
+        async with runtime as view:
+            container = view.require_container()
+            if container.services is None:
+                raise RuntimeError("Application Runtime did not provide services")
+            return await run_rehearsal(
+                primary_database_url=primary_database_url,
+                rehearsal_database_url=rehearsal_database_url,
+                services=container.services,
+            )
+
     rehearsal_before = await table_counts(rehearsal_database_url)
 
     suffix = uuid4().hex
@@ -87,7 +122,7 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
     session_id = f"rehearsal-session-{suffix}"
     request_id = f"rehearsal-request-{suffix}"
 
-    plan_service = get_plan_service()
+    plan_service = services.plan_service
     plan = await plan_service.save_plan(
         Plan(
             plan_id=f"rehearsal-plan-{suffix}",
@@ -108,7 +143,7 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
     await plan_service.confirm(plan.plan_id, tenant_id=tenant_id, user_id=user_id, publish=False)
     await plan_service.cancel(plan.plan_id, tenant_id=tenant_id, user_id=user_id, publish=False)
 
-    turn_service = get_turn_service()
+    turn_service = services.turn_service
     started_turn = await turn_service.start_turn(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -117,7 +152,7 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
         source="state_rehearsal",
         user_input=TurnUserInput(text="complete the isolated rehearsal"),
     )
-    runs = get_delegated_run_service()
+    runs = services.delegated_run_service
     started_run = await runs.start(
         DelegatedRunStartCommand(
             tenant_id=tenant_id,
@@ -159,13 +194,13 @@ async def run_rehearsal(*, primary_database_url: str, rehearsal_database_url: st
             occurred_at=datetime.now(UTC),
         )
     )
-    turn = await get_turn_repository().get(
+    turn = await services.turn_repository.get(
         started_turn.turn.turn_id,
         tenant_id=tenant_id,
         user_id=user_id,
     )
 
-    memory_service = get_memory_service()
+    memory_service = services.memory_service
     memory_decisions = await memory_service.write_candidates(
         candidates=[
             MemoryWriteCandidate(

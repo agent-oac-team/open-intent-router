@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.config import Settings
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.database import DatabaseRunRepository
 from app.repositories.execution_tickets import (
     DatabaseExecutionTicketStore,
@@ -22,7 +21,7 @@ from app.services.execution_ticket_service import ExecutionTicketError, Executio
 
 
 @pytest.fixture(params=["memory", "database"])
-async def tickets(request, tmp_path):
+async def tickets(request, tmp_path, managed_database):
     if request.param == "memory":
         store = MemoryExecutionTicketStore()
     else:
@@ -30,8 +29,8 @@ async def tickets(request, tmp_path):
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'tickets.db'}",
         )
-        await create_all_tables(settings)
-        store = DatabaseExecutionTicketStore(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        store = DatabaseExecutionTicketStore(await managed_database.session_factory(settings))
     return ExecutionTicketService(store, secret="ticket-secret")
 
 
@@ -181,13 +180,15 @@ async def test_same_owner_cannot_replace_the_active_lease(tickets) -> None:
     assert stored.lease_expires_at == first.record.lease_expires_at
 
 
-async def test_database_claim_is_atomic_across_service_instances(tmp_path) -> None:
+async def test_database_claim_is_atomic_across_service_instances(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'concurrent-tickets.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     issuer = ExecutionTicketService(
         DatabaseExecutionTicketStore(session_factory), secret="ticket-secret"
     )
@@ -247,14 +248,14 @@ async def test_database_claim_is_atomic_across_service_instances(tmp_path) -> No
 
 
 async def test_database_retry_ticket_is_one_shared_bearer_across_service_instances(
-    tmp_path,
+    tmp_path, managed_database
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'concurrent-retry-tickets.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     run = _run()
     await DatabaseRunRepository(session_factory).add_run(
         AgentRun(
@@ -321,14 +322,14 @@ async def test_database_retry_ticket_is_one_shared_bearer_across_service_instanc
 
 
 async def test_database_issue_failure_fence_blocks_late_ticket_issue_for_the_same_run(
-    tmp_path,
+    tmp_path, managed_database
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'failed-retry-ticket.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     run = _run()
     await DatabaseRunRepository(session_factory).add_run(
         AgentRun(
@@ -375,14 +376,14 @@ async def test_database_issue_failure_fence_blocks_late_ticket_issue_for_the_sam
 
 @pytest.mark.parametrize("finalizer", ["release", "consume", "progress"])
 async def test_database_stale_worker_cannot_finalize_a_reclaimed_ticket(
-    tmp_path, finalizer
+    tmp_path, finalizer, managed_database
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / f'stale-{finalizer}.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     issuer = ExecutionTicketService(
         DatabaseExecutionTicketStore(session_factory), secret="ticket-secret"
     )

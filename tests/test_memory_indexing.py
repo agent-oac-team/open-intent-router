@@ -4,7 +4,6 @@ from sqlalchemy import delete, select
 
 from app.core.config import Settings
 from app.db.models import MemoryIndexOperationModel, MemoryItemModel, MemoryRevisionModel
-from app.db.session import create_all_tables, create_session_factory
 from app.repositories.context_stores import DatabaseMemoryItemRepository, MemoryItemRepository
 from app.repositories.execution_traces import MemoryExecutionTraceRepository
 from app.repositories.memory_formation import MemoryFormationTurnJobRepository
@@ -989,7 +988,9 @@ async def test_failed_repair_compensation_is_durable_and_recovers_after_restart(
     )
 
 
-async def test_database_failed_compensation_recovers_after_process_restart(tmp_path) -> None:
+async def test_database_failed_compensation_recovers_after_process_restart(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'compensation-restart.db'}",
@@ -997,8 +998,8 @@ async def test_database_failed_compensation_recovers_after_process_restart(tmp_p
         memory_formation_model_timeout_seconds=1,
         memory_formation_lease_seconds=10,
     )
-    await create_all_tables(settings)
-    first_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    first_factory = await managed_database.session_factory(settings)
     repository = LosingCasDatabaseRepository(first_factory)
     outbox = DatabaseMemoryIndexOutboxRepository(first_factory)
     store = DatabaseMemoryLifecycleStore(first_factory)
@@ -1022,9 +1023,9 @@ async def test_database_failed_compensation_recovers_after_process_restart(tmp_p
     )
     failed = await repair.run_tenant(tenant_id="t1")
     assert failed.compensation_retry_count == 1
-    await first_factory.kw["bind"].dispose()
+    await managed_database.aclose()
 
-    second_factory = create_session_factory(settings)
+    second_factory = await managed_database.session_factory(settings)
     restarted_repository = DatabaseMemoryItemRepository(second_factory)
     restarted_outbox = DatabaseMemoryIndexOutboxRepository(second_factory)
     restarted_store = DatabaseMemoryLifecycleStore(second_factory)
@@ -1048,7 +1049,7 @@ async def test_database_failed_compensation_recovers_after_process_restart(tmp_p
         assert recovered.operation.last_error_metadata["repair_compensation"] is True
         assert client.records == {}
     finally:
-        await second_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
 async def test_repository_fallback_reports_degraded_for_index_and_repair() -> None:
@@ -1072,7 +1073,9 @@ async def test_repository_fallback_reports_degraded_for_index_and_repair() -> No
     assert repair.error_code == "repository_fallback"
 
 
-async def test_database_worker_persists_mapping_and_completes_hard_delete(tmp_path) -> None:
+async def test_database_worker_persists_mapping_and_completes_hard_delete(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'index-worker.db'}",
@@ -1080,8 +1083,8 @@ async def test_database_worker_persists_mapping_and_completes_hard_delete(tmp_pa
         memory_formation_model_timeout_seconds=1,
         memory_formation_lease_seconds=10,
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     repository = DatabaseMemoryItemRepository(session_factory)
     outbox = DatabaseMemoryIndexOutboxRepository(session_factory)
     store = DatabaseMemoryLifecycleStore(session_factory)
@@ -1119,11 +1122,12 @@ async def test_database_worker_persists_mapping_and_completes_hard_delete(tmp_pa
         )
         assert tombstone.payload["provider_status"] == "success"
     finally:
-        await session_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
 async def test_database_explicit_write_commits_revision_and_outbox_before_provider(
     tmp_path,
+    managed_database,
 ) -> None:
     settings = Settings(
         storage_backend="database",
@@ -1132,8 +1136,8 @@ async def test_database_explicit_write_commits_revision_and_outbox_before_provid
         memory_formation_model_timeout_seconds=1,
         memory_formation_lease_seconds=10,
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     repository = DatabaseMemoryItemRepository(session_factory)
     client = IndexFakeMem0()
     service = MemoryService(
@@ -1173,7 +1177,7 @@ async def test_database_explicit_write_commits_revision_and_outbox_before_provid
         assert operation.external_memory_id == decisions[0].metadata["mem0_memory_id"]
         assert len(client.add_calls) == 1
     finally:
-        await session_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
 class IndexFakeMem0:

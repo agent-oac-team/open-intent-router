@@ -4,13 +4,11 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import text
 
 from app.core.config import Settings, get_settings
 from app.core.security import memory_identity_signature
-from app.db.session import create_all_tables, create_session_factory
 from app.dependencies import (
     get_memory_management_service,
     get_memory_observability_service,
@@ -915,14 +913,16 @@ async def test_pending_add_concurrent_confirmation_creates_one_revision() -> Non
     )
 
 
-async def test_database_pending_add_concurrent_conflict_has_one_terminal_state(tmp_path) -> None:
+async def test_database_pending_add_concurrent_conflict_has_one_terminal_state(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'add-resolution-concurrent.db'}",
         memory_mode="on",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
     job = await formation.add_job(
@@ -1357,16 +1357,17 @@ async def test_hard_deleted_memory_replays_completed_delete_without_current_item
 
 async def test_database_hard_delete_replay_survives_restart_with_omitted_precondition(
     tmp_path,
+    managed_database,
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'completed-delete-replay.db'}",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
+    await managed_database.initialize_schema(settings)
     memory = MemoryService(
         settings=settings,
-        repository=DatabaseMemoryItemRepository(create_session_factory(settings)),
+        repository=DatabaseMemoryItemRepository(await managed_database.session_factory(settings)),
     )
     memory.index_worker.adapter = _CompletingIndexAdapter()
     added = await _add_current(memory)
@@ -1408,7 +1409,7 @@ async def test_database_hard_delete_replay_survives_restart_with_omitted_precond
 
     restarted = MemoryService(
         settings=settings,
-        repository=DatabaseMemoryItemRepository(create_session_factory(settings)),
+        repository=DatabaseMemoryItemRepository(await managed_database.session_factory(settings)),
     )
     replay = await MemoryManagementService(memory_service=restarted).request_delete(
         memory_id=added.item.memory_id,
@@ -1780,7 +1781,9 @@ async def test_health_and_metrics_are_content_free() -> None:
     assert "must never become a metric label" not in metrics.model_dump_json()
 
 
-async def test_memory_management_api_requires_identity_and_hides_cross_user_target() -> None:
+async def test_memory_management_api_requires_identity_and_hides_cross_user_target(
+    non_lifespan_test_client,
+) -> None:
     _, memory, _, observability, management = _services()
     added = await _add_current(memory)
     settings = Settings(
@@ -1791,9 +1794,10 @@ async def test_memory_management_api_requires_identity_and_hides_cross_user_targ
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_service] = lambda: memory
     app.dependency_overrides[get_memory_management_service] = lambda: management
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     payload = {
         "idempotency_key": "api-delete-1",
         "reason": "remove",
@@ -1830,7 +1834,7 @@ async def test_memory_management_api_requires_identity_and_hides_cross_user_targ
     assert allowed.json()["status"] == "pending"
 
 
-async def test_debug_and_admin_api_authorization_boundaries() -> None:
+async def test_debug_and_admin_api_authorization_boundaries(non_lifespan_test_client) -> None:
     _, memory, _, observability, management = _services()
     await _add_current(memory)
     settings = Settings(
@@ -1841,9 +1845,10 @@ async def test_debug_and_admin_api_authorization_boundaries() -> None:
     )
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_memory_service] = lambda: memory
     app.dependency_overrides[get_memory_management_service] = lambda: management
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     assert client.get("/api/v1/memories/debug").status_code == 401
     denied = client.get(
         "/api/v1/memories/debug?user_id=u2&tenant_id=t1",
@@ -1880,7 +1885,7 @@ async def test_debug_and_admin_api_authorization_boundaries() -> None:
     assert metrics.status_code == 200
 
 
-def test_local_debug_requires_tenant_for_formation_filters() -> None:
+def test_local_debug_requires_tenant_for_formation_filters(non_lifespan_test_client) -> None:
     _, memory, _, observability, management = _services()
     settings = Settings(app_env="local", storage_backend="memory")
     app = create_app()
@@ -1888,7 +1893,7 @@ def test_local_debug_requires_tenant_for_formation_filters() -> None:
     app.dependency_overrides[get_memory_service] = lambda: memory
     app.dependency_overrides[get_memory_management_service] = lambda: management
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     for name in (
         "memory_id",
@@ -1907,7 +1912,9 @@ def test_local_debug_requires_tenant_for_formation_filters() -> None:
         )
 
 
-async def test_admin_cross_subject_delete_requires_token_and_records_actor_reason() -> None:
+async def test_admin_cross_subject_delete_requires_token_and_records_actor_reason(
+    non_lifespan_test_client,
+) -> None:
     items, _, _, observability, management = _services()
     await items.add(
         MemoryItem(
@@ -1934,7 +1941,7 @@ async def test_admin_cross_subject_delete_requires_token_and_records_actor_reaso
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_memory_management_service] = lambda: management
     app.dependency_overrides[get_memory_observability_service] = lambda: observability
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     payload = {
         "tenant_id": "t2",
         "user_id": "u2",
@@ -1954,14 +1961,16 @@ async def test_admin_cross_subject_delete_requires_token_and_records_actor_reaso
     assert audit.payload["admin"] is True
 
 
-async def test_database_health_uses_aggregates_without_loading_event_ledger(tmp_path) -> None:
+async def test_database_health_uses_aggregates_without_loading_event_ledger(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'health-aggregate.db'}",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     await items.add_event(
         MemoryEvent(
@@ -1994,14 +2003,16 @@ async def test_database_health_uses_aggregates_without_loading_event_ledger(tmp_
     assert not any("memory_events" in statement for statement in statements)
 
 
-async def test_database_metrics_are_full_aggregates_beyond_snapshot_limit(tmp_path) -> None:
+async def test_database_metrics_are_full_aggregates_beyond_snapshot_limit(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'metrics-aggregate.db'}",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     async with session_factory() as session:
         await session.execute(
             text(
@@ -2097,14 +2108,16 @@ async def test_database_metrics_are_full_aggregates_beyond_snapshot_limit(tmp_pa
     assert not any("limit 10000" in statement for statement in statements)
 
 
-async def test_database_association_filters_hydrate_job_level_pending_decision(tmp_path) -> None:
+async def test_database_association_filters_hydrate_job_level_pending_decision(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'job-decision-association.db'}",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     memory = MemoryService(settings=settings, repository=items)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
@@ -2201,14 +2214,16 @@ async def test_database_association_filters_hydrate_job_level_pending_decision(t
     ).formation_traces == []
 
 
-async def test_database_pending_resolution_and_trace_survive_service_restart(tmp_path) -> None:
+async def test_database_pending_resolution_and_trace_survive_service_restart(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'management-restart.db'}",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     memory = MemoryService(settings=settings, repository=items)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
@@ -2253,10 +2268,14 @@ async def test_database_pending_resolution_and_trace_survive_service_restart(tmp
         )
     )
 
-    restarted_items = DatabaseMemoryItemRepository(create_session_factory(settings))
+    restarted_items = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
     restarted_memory = MemoryService(settings=settings, repository=restarted_items)
-    restarted_formation = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
-    traces = DatabaseMemoryFormationTraceRepository(create_session_factory(settings))
+    restarted_formation = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
+    traces = DatabaseMemoryFormationTraceRepository(
+        await managed_database.session_factory(settings)
+    )
     management = MemoryManagementService(memory_service=restarted_memory)
     observability = MemoryObservabilityService(
         settings=settings,
@@ -2331,14 +2350,16 @@ async def test_database_pending_resolution_and_trace_survive_service_restart(tmp
     assert await traces.list_traces(tenant_id="t2", memory_id=added.item.memory_id) == []
 
 
-async def test_database_pending_delete_recovers_after_claim_only_restart(tmp_path) -> None:
+async def test_database_pending_delete_recovers_after_claim_only_restart(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'delete-resolution-crash.db'}",
         memory_mode="observe",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     memory = MemoryService(settings=settings, repository=items)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
@@ -2390,10 +2411,14 @@ async def test_database_pending_delete_recovers_after_claim_only_restart(tmp_pat
     else:
         raise AssertionError("completion crash must escape the management call")
 
-    restarted_items = DatabaseMemoryItemRepository(create_session_factory(settings))
+    restarted_items = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
     restarted_memory = MemoryService(settings=settings, repository=restarted_items)
-    restarted_formation = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
-    traces = DatabaseMemoryFormationTraceRepository(create_session_factory(settings))
+    restarted_formation = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
+    traces = DatabaseMemoryFormationTraceRepository(
+        await managed_database.session_factory(settings)
+    )
     observability = MemoryObservabilityService(
         settings=settings,
         memory_service=restarted_memory,
@@ -2437,14 +2462,16 @@ async def test_database_pending_delete_recovers_after_claim_only_restart(tmp_pat
     assert len([event for event in events if event.event_type == "memory_pending_confirm"]) == 1
 
 
-async def test_database_pending_add_recovers_after_completion_event_crash(tmp_path) -> None:
+async def test_database_pending_add_recovers_after_completion_event_crash(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'add-resolution-crash.db'}",
         memory_mode="on",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     items = DatabaseMemoryItemRepository(session_factory)
     formation = DatabaseMemoryFormationTurnJobRepository(session_factory)
     job = await formation.add_job(
@@ -2496,8 +2523,10 @@ async def test_database_pending_add_recovers_after_completion_event_crash(tmp_pa
             expected_revision_id=None,
         )
 
-    restarted_items = DatabaseMemoryItemRepository(create_session_factory(settings))
-    restarted_formation = DatabaseMemoryFormationTurnJobRepository(create_session_factory(settings))
+    restarted_items = DatabaseMemoryItemRepository(await managed_database.session_factory(settings))
+    restarted_formation = DatabaseMemoryFormationTurnJobRepository(
+        await managed_database.session_factory(settings)
+    )
     restarted_memory = MemoryService(
         settings=settings,
         repository=restarted_items,
@@ -2526,7 +2555,7 @@ async def test_database_pending_add_recovers_after_completion_event_crash(tmp_pa
     assert active[0].memory_id == recovered.memory_id
     assert active[0].current_revision_id
     revisions = await DatabaseMemoryRevisionLedgerRepository(
-        create_session_factory(settings)
+        await managed_database.session_factory(settings)
     ).list_for_memory(
         recovered.memory_id,
         tenant_id="t1",

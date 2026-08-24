@@ -28,13 +28,17 @@ Run、Plan 和 Session 的 Native 读写都以 Principal 的 `(tenant, subject)`
 ## 健康检查
 
 - `GET /health`：仅表示服务进程存活；不触发 Registry、Runtime Adapter 或外部依赖探测。
-- `GET /ready`：服务就绪检查。Runtime Catalog 与 Primary Registry 都在应用 lifespan 中构建；
-  受信 source mapper 在 lifespan、Admin Registry reload 或已提交的受信 Registry 写入后，在同一
-  source-refresh fence 内原子加载/替换当前 Snapshot。请求仅刷新已激活 Adapter 的有界健康观察，
-  不重载 Registry。Catalog、Core、Primary Registry
-  或部署标记为 required 的 Adapter 失败时返回 `503`，失败响应固定为
+- `GET /ready`：服务就绪检查。每次应用 lifespan 都创建新的单次 Application Runtime，先构建
+  Runtime Catalog，再建立 Primary Registry 和所需的受管数据库目标。受信 source mapper 在
+  lifespan、Admin Registry reload 或已提交的受信 Registry 写入后，在同一 source-refresh fence
+  内原子加载/替换当前 Snapshot。请求仅刷新已激活 Adapter 的有界健康观察与每个唯一受管数据库的
+  有界 probe，不重载 Registry 或创建数据库资源。Catalog 激活失败时应用只发布降级 View，不创建
+  Database、Container 或后台 Runtime，`/health` 仍为 `200`，`/ready` 返回
+  `runtime_catalog_unavailable`。完整运行态中数据库 probe 的短暂失败返回
+  `database_unavailable`，View 未发布或已关闭返回 `application_runtime_unavailable`。Catalog、
+  Primary Registry 或部署标记为 required 的 Adapter 失败同样返回 `503`，失败响应固定为
   `{ "status": "error", "runtime_status": "error", "runtime_reason": "..." }`。响应不暴露
-  Adapter 配置、endpoint、凭据或原始异常。可选 Adapter 失败时返回 `200` 和
+  Adapter 配置、endpoint、数据库 URL、凭据或原始异常。可选 Adapter 失败时返回 `200` 和
   `{ "status": "degraded", "runtime_status": "degraded", "reason_code":
   "runtime_adapter_unhealthy", "impacted_definition_count": n }`；只有依赖该 Adapter 的 v2
   Definition 会被当前 Snapshot 隔离。

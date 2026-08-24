@@ -6,7 +6,6 @@ from sqlalchemy import text
 
 from app.core.config import Settings
 from app.core.memory_runtime import build_memory_runtime_policy
-from app.db.session import create_all_tables, create_engine, create_session_factory
 from app.dependencies import (
     _memory_data_settings,
     get_structured_formation_publisher,
@@ -218,13 +217,15 @@ async def test_outbox_consumer_honors_persisted_suppression_after_mode_changes()
     assert events.events[0].payload["reason_code"] == "formation_mode_off"
 
 
-async def test_database_route_completion_writes_turn_and_outbox_atomically(tmp_path) -> None:
+async def test_database_route_completion_writes_turn_and_outbox_atomically(
+    tmp_path, managed_database
+) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'route-outbox.db'}",
     )
-    await create_all_tables(settings)
-    factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    factory = await managed_database.session_factory(settings)
     turns = DatabaseTurnRepository(factory)
     service = TurnService(
         turns,
@@ -314,7 +315,9 @@ def test_production_composition_does_not_publish_isolated_runtime_records() -> N
     assert shadow.effective_formation_mode == "off"
 
 
-async def test_state_rehearsal_starts_with_empty_isolated_memory_domain(tmp_path) -> None:
+async def test_state_rehearsal_starts_with_empty_isolated_memory_domain(
+    tmp_path, managed_database
+) -> None:
     main_path = tmp_path / "main.db"
     rehearsal_path = tmp_path / "rehearsal.db"
     settings = Settings(
@@ -328,11 +331,11 @@ async def test_state_rehearsal_starts_with_empty_isolated_memory_domain(tmp_path
         collection="oir_memory_vectors_rehearsal",
     )
 
-    await create_all_tables(memory_settings)
-    engine = create_engine(memory_settings)
-    async with engine.connect() as connection:
+    await managed_database.initialize_schema(memory_settings)
+    factory = await managed_database.session_factory(memory_settings)
+    async with factory() as session:
         counts = {
-            table: await connection.scalar(text(f"SELECT count(*) FROM {table}"))
+            table: await session.scalar(text(f"SELECT count(*) FROM {table}"))
             for table in (
                 "memory_items",
                 "memory_events",
@@ -340,7 +343,6 @@ async def test_state_rehearsal_starts_with_empty_isolated_memory_domain(tmp_path
                 "memory_formation_jobs",
             )
         }
-    await engine.dispose()
 
     assert counts == {table: 0 for table in counts}
     assert rehearsal_path.exists()

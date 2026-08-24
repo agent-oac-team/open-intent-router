@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
 from app.core.security import memory_identity_signature
-from app.db.session import create_all_tables, create_session_factory
 from app.dependencies import get_plan_executor, get_plan_service
 from app.main import create_app
 from app.repositories.database import DatabasePlanRepository
@@ -155,7 +154,7 @@ class _OwnedPlanExecutor:
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_plan_repository_requires_owner_for_reads_and_preserves_owner(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
     if backend == "memory":
         repository = MemoryPlanRepository()
@@ -164,8 +163,8 @@ async def test_plan_repository_requires_owner_for_reads_and_preserves_owner(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'plans-owned.db'}",
         )
-        await create_all_tables(settings)
-        repository = DatabasePlanRepository(create_session_factory(settings))
+        await managed_database.initialize_schema(settings)
+        repository = DatabasePlanRepository(await managed_database.session_factory(settings))
     original = _plan()
     await repository.save(original)
     original.user_id = "mutated-original"
@@ -184,14 +183,14 @@ async def test_plan_repository_requires_owner_for_reads_and_preserves_owner(
 
 
 async def test_database_terminal_plan_round_trip_preserves_empty_current_step_and_event_cursor(
-    tmp_path,
+    tmp_path, managed_database
 ) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'terminal-plan.db'}",
     )
-    await create_all_tables(settings)
-    repository = DatabasePlanRepository(create_session_factory(settings))
+    await managed_database.initialize_schema(settings)
+    repository = DatabasePlanRepository(await managed_database.session_factory(settings))
     service = PlanService(repository)
     stored = await service.save_plan(
         _plan(
@@ -218,13 +217,13 @@ async def test_database_terminal_plan_round_trip_preserves_empty_current_step_an
     assert loaded.state_version == 1
 
 
-async def test_database_plan_step_claim_is_atomic(tmp_path) -> None:
+async def test_database_plan_step_claim_is_atomic(tmp_path, managed_database) -> None:
     settings = Settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'plan-claim.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     service = PlanService(DatabasePlanRepository(session_factory))
     await service.save_plan(_plan())
 
@@ -236,23 +235,21 @@ async def test_database_plan_step_claim_is_atomic(tmp_path) -> None:
     assert sum(claim is not None for claim in claims) == 1
     loaded = await service.get_plan("plan_1", tenant_id="t1", user_id="u1")
     assert loaded and loaded.steps[0].status == "running"
-    await session_factory.kw["bind"].dispose()
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_plan_claim_completion_respects_concurrent_block_and_can_be_reclaimed(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
     if backend == "memory":
         repository = MemoryPlanRepository()
-        session_factory = None
     else:
         settings = Settings(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'claim-version.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         repository = DatabasePlanRepository(session_factory)
     service = PlanService(repository)
     await service.save_plan(_plan())
@@ -287,24 +284,21 @@ async def test_plan_claim_completion_respects_concurrent_block_and_can_be_reclai
     resumed = await service.claim_step("plan_1", "step_1", tenant_id="t1", user_id="u1")
     assert resumed is not None
     assert resumed[0].status == "running" and resumed[0].steps[0].status == "running"
-    if session_factory is not None:
-        await session_factory.kw["bind"].dispose()
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
 async def test_plan_claim_completion_consumes_result_after_concurrent_progress(
-    backend, tmp_path
+    backend, tmp_path, managed_database
 ) -> None:
     if backend == "memory":
         repository = MemoryPlanRepository()
-        session_factory = None
     else:
         settings = Settings(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'claim-progress.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         repository = DatabasePlanRepository(session_factory)
     service = PlanService(repository)
     await service.save_plan(_plan())
@@ -335,22 +329,21 @@ async def test_plan_claim_completion_consumes_result_after_concurrent_progress(
     )
     assert finished is not None and finished.status == "completed"
     assert finished.current_step_id is None
-    if session_factory is not None:
-        await session_factory.kw["bind"].dispose()
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_expired_claim_reuses_execution_idempotency_key(backend, tmp_path) -> None:
+async def test_expired_claim_reuses_execution_idempotency_key(
+    backend, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         repository = MemoryPlanRepository()
-        session_factory = None
     else:
         settings = Settings(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'claim-idempotency.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         repository = DatabasePlanRepository(session_factory)
     service = PlanService(repository)
     await service.save_plan(_plan())
@@ -383,5 +376,3 @@ async def test_expired_claim_reuses_execution_idempotency_key(backend, tmp_path)
         now=datetime.now(UTC),
     )
     assert renewed
-    if session_factory is not None:
-        await session_factory.kw["bind"].dispose()

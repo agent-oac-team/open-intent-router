@@ -3,15 +3,11 @@ from pathlib import Path
 
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
-from app.core.config import Settings
 from app.db.models import (
-    Base,
     NativeDefinitionMigrationPreparationModel,
     NativeDefinitionMigrationSnapshotModel,
 )
@@ -25,26 +21,6 @@ def _ensure_sqlite_parent(database_url: str) -> None:
     if path_text in {":memory:", ""}:
         return
     Path(path_text).parent.mkdir(parents=True, exist_ok=True)
-
-
-def create_engine(settings: Settings) -> AsyncEngine:
-    _ensure_sqlite_parent(settings.database_url)
-    engine_options = {"future": True}
-    if not settings.database_url.startswith("sqlite+aiosqlite:"):
-        engine_options["pool_pre_ping"] = True
-    return create_async_engine(settings.database_url, **engine_options)
-
-
-def create_session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(create_engine(settings), expire_on_commit=False)
-
-
-async def create_all_tables(settings: Settings) -> None:
-    engine = create_engine(settings)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_ensure_compatible_columns)
-    await engine.dispose()
 
 
 async def ensure_native_definition_migration_schema(

@@ -1,8 +1,6 @@
 import pytest
-from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
-from app.db.session import create_all_tables, create_session_factory
 from app.dependencies import (
     get_chat_history_service,
     get_invocation_service,
@@ -39,7 +37,9 @@ from tests.fakes.native_principal import native_principal_headers
 _PRINCIPAL_SECRET = "native-resource-test-secret"
 
 
-async def test_native_run_read_is_owner_scoped_without_admin_bypass() -> None:
+async def test_native_run_read_is_owner_scoped_without_admin_bypass(
+    non_lifespan_test_client,
+) -> None:
     runs = MemoryRunRepository()
     await runs.add_run(
         AgentRun(
@@ -58,7 +58,7 @@ async def test_native_run_read_is_owner_scoped_without_admin_bypass() -> None:
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_repository_bundle] = lambda: {"runs": runs}
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     owner = client.get("/api/v1/runs/run-owned", headers=_headers())
     other_user = client.get(
@@ -84,7 +84,9 @@ async def test_native_run_read_is_owner_scoped_without_admin_bypass() -> None:
     assert missing_identity.status_code == 401
 
 
-async def test_native_session_messages_use_principal_owner_and_hide_foreign_history() -> None:
+async def test_native_session_messages_use_principal_owner_and_hide_foreign_history(
+    non_lifespan_test_client,
+) -> None:
     messages = MemoryMessageRepository()
     history = ChatHistoryService(messages, host_limit=20, agent_limit=12)
     await history.record(
@@ -104,7 +106,7 @@ async def test_native_session_messages_use_principal_owner_and_hide_foreign_hist
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_chat_history_service] = lambda: history
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     owner = client.get(
         "/api/v1/sessions/session-owned/messages?user_id=user-2&tenant_id=tenant-2",
@@ -154,7 +156,9 @@ async def test_native_session_messages_use_principal_owner_and_hide_foreign_hist
     )
 
 
-async def test_native_plan_access_uses_principal_and_rejects_body_owner_conflict() -> None:
+async def test_native_plan_access_uses_principal_and_rejects_body_owner_conflict(
+    non_lifespan_test_client,
+) -> None:
     plans = PlanService(MemoryPlanRepository())
     await plans.save_plan(
         Plan(
@@ -180,7 +184,7 @@ async def test_native_plan_access_uses_principal_and_rejects_body_owner_conflict
     )
     app.dependency_overrides[get_plan_service] = lambda: plans
     app.dependency_overrides[get_plan_executor] = lambda: executor
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     owner = client.get("/api/v1/plans/plan-owned", headers=_headers())
     other = client.get(
@@ -207,7 +211,9 @@ async def test_native_plan_access_uses_principal_and_rejects_body_owner_conflict
     assert executor.calls == 0
 
 
-async def test_public_agent_catalog_stays_public_but_available_agents_use_principal() -> None:
+async def test_public_agent_catalog_stays_public_but_available_agents_use_principal(
+    non_lifespan_test_client,
+) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
         AgentDefinition.model_validate(
@@ -232,7 +238,7 @@ async def test_public_agent_catalog_stays_public_but_available_agents_use_princi
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_registry_service] = lambda: registry
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     body = {
         "user": {
             "id": "user-1",
@@ -263,7 +269,9 @@ async def test_public_agent_catalog_stays_public_but_available_agents_use_princi
     assert forged_operator.json()["available_agents"] == []
 
 
-async def test_direct_invoke_filters_before_execution_side_effects() -> None:
+async def test_direct_invoke_filters_before_execution_side_effects(
+    non_lifespan_test_client,
+) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
         AgentDefinition.model_validate(
@@ -299,7 +307,7 @@ async def test_direct_invoke_filters_before_execution_side_effects() -> None:
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_invocation_service] = lambda: invocation
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     body = {
         "session_id": "session-1",
         "agent_id": "operator-agent",
@@ -330,7 +338,9 @@ async def test_direct_invoke_filters_before_execution_side_effects() -> None:
     assert invoker.calls == 1
 
 
-async def test_plan_request_preflights_one_candidate_set_before_any_invocation() -> None:
+async def test_plan_request_preflights_one_candidate_set_before_any_invocation(
+    non_lifespan_test_client,
+) -> None:
     definitions = MemoryAgentDefinitionRepository()
     for agent_id, role in (("first-agent", "operator"), ("revoked-agent", "admin")):
         await definitions.upsert(
@@ -396,7 +406,7 @@ async def test_plan_request_preflights_one_candidate_set_before_any_invocation()
         native_principal_secret=_PRINCIPAL_SECRET,
     )
     app.dependency_overrides[get_plan_executor] = lambda: executor
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
 
     response = client.post(
         "/api/v1/plans/plan-preflight/execute",
@@ -417,7 +427,9 @@ async def test_plan_request_preflights_one_candidate_set_before_any_invocation()
     assert stored == original
 
 
-async def test_route_and_invoke_consumes_the_route_candidate_set_once() -> None:
+async def test_route_and_invoke_consumes_the_route_candidate_set_once(
+    non_lifespan_test_client,
+) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
         AgentDefinition.model_validate(
@@ -458,7 +470,7 @@ async def test_route_and_invoke_consumes_the_route_candidate_set_once() -> None:
     app.dependency_overrides[get_router_service] = lambda: router
     app.dependency_overrides[get_invocation_service] = lambda: invocation
 
-    response = TestClient(app).post(
+    response = non_lifespan_test_client(app).post(
         "/api/v1/route-and-invoke",
         headers=_headers(roles=["operator"]),
         json={
@@ -475,7 +487,9 @@ async def test_route_and_invoke_consumes_the_route_candidate_set_once() -> None:
     assert invoker.calls == 1
 
 
-async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set() -> None:
+async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set(
+    non_lifespan_test_client,
+) -> None:
     definitions = MemoryAgentDefinitionRepository()
     await definitions.upsert(
         AgentDefinition.model_validate(
@@ -533,7 +547,7 @@ async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set() -> N
     )
     app.dependency_overrides[get_plan_service] = lambda: plans
     app.dependency_overrides[get_plan_executor] = lambda: executor
-    client = TestClient(app)
+    client = non_lifespan_test_client(app)
     user = {"id": "user-1", "attributes": {"tenant_id": "tenant-1"}}
 
     confirmed = client.post(
@@ -563,8 +577,9 @@ async def test_each_plan_request_forms_and_reuses_one_fresh_candidate_set() -> N
 
 
 @pytest.mark.parametrize("backend", ["memory", "database"])
-async def test_run_repository_owner_query_is_consistent(backend: str, tmp_path) -> None:
-    engine = None
+async def test_run_repository_owner_query_is_consistent(
+    backend: str, tmp_path, managed_database
+) -> None:
     if backend == "memory":
         runs = MemoryRunRepository()
     else:
@@ -572,9 +587,8 @@ async def test_run_repository_owner_query_is_consistent(backend: str, tmp_path) 
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'owned-run.db'}",
         )
-        await create_all_tables(settings)
-        session_factory = create_session_factory(settings)
-        engine = session_factory.kw["bind"]
+        await managed_database.initialize_schema(settings)
+        session_factory = await managed_database.session_factory(settings)
         runs = DatabaseRunRepository(session_factory)
     await runs.add_run(
         AgentRun(
@@ -591,8 +605,6 @@ async def test_run_repository_owner_query_is_consistent(backend: str, tmp_path) 
     assert await runs.get_owned_run("run-contract", tenant_id="tenant-1", user_id="user-1")
     assert await runs.get_owned_run("run-contract", tenant_id="tenant-1", user_id="user-2") is None
     assert await runs.get_owned_run("run-contract", tenant_id="tenant-2", user_id="user-1") is None
-    if engine is not None:
-        await engine.dispose()
 
 
 def _headers(

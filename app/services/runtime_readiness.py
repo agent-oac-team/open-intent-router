@@ -173,13 +173,11 @@ class RuntimeReadinessRuntime:
         catalog_status = self._runtime_catalog.status
         catalog_health = self._runtime_catalog.health
         if catalog_status.status != "ready":
-            return self._error(
-                catalog_status.reason_code or "runtime_catalog_not_ready",
-            )
+            return self._error("runtime_catalog_unavailable")
         if self._core_failed:
             return self._error("core_initialization_failed")
         if catalog_health.status == "error":
-            return self._error(catalog_health.reason_code or "runtime_catalog_unavailable")
+            return self._error("runtime_catalog_unavailable")
         if not self._primary_registry_initialized or self._primary_registry_status == "error":
             return self._error("primary_registry_unavailable")
 

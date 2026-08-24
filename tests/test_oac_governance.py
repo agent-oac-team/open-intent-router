@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import Settings
 from app.schemas.routing import RouteRequest
@@ -24,6 +24,7 @@ from host_apps.oac.config import (
     build_oac_host_profile,
     memory_execution_plane_for_shadow,
 )
+from tests.support.database import raw_engine_scope
 
 
 def test_all_adapter_methods_have_one_static_operation_class() -> None:
@@ -76,32 +77,31 @@ def test_oac_shadow_mode_maps_to_core_execution_plane(shadow, execution_plane) -
 
 
 async def test_shadow_replay_persists_route_coverage(tmp_path) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'shadow.db'}")
-    await create_shadow_tables(engine)
-    repository = DatabaseShadowRepository(async_sessionmaker(engine, expire_on_commit=False))
-    runner = ShadowReplayRunner(repository=repository)
-    dataset = {
-        "dataset_id": "dataset-v1",
-        "version": "v1",
-        "samples": [
-            {
-                "sample_id": "route-1",
-                "kind": "route",
-                "method": "POST",
-                "path": "/api/v1/central/route",
-                "side_effect_free": True,
-                "irs_result": _route_result(),
-                "oir_result": _route_result(),
-            },
-        ],
-    }
-    report = await runner.run(
-        dataset,
-        operation_resolver=lambda sample: classify_operation(sample["method"], sample["path"]),
-        oir_executor=lambda sample: _result(sample["oir_result"]),
-    )
-    snapshot = await repository.snapshot("dataset-v1")
-    await engine.dispose()
+    async with raw_engine_scope(f"sqlite+aiosqlite:///{tmp_path / 'shadow.db'}") as engine:
+        await create_shadow_tables(engine)
+        repository = DatabaseShadowRepository(async_sessionmaker(engine, expire_on_commit=False))
+        runner = ShadowReplayRunner(repository=repository)
+        dataset = {
+            "dataset_id": "dataset-v1",
+            "version": "v1",
+            "samples": [
+                {
+                    "sample_id": "route-1",
+                    "kind": "route",
+                    "method": "POST",
+                    "path": "/api/v1/central/route",
+                    "side_effect_free": True,
+                    "irs_result": _route_result(),
+                    "oir_result": _route_result(),
+                },
+            ],
+        }
+        report = await runner.run(
+            dataset,
+            operation_resolver=lambda sample: classify_operation(sample["method"], sample["path"]),
+            oir_executor=lambda sample: _result(sample["oir_result"]),
+        )
+        snapshot = await repository.snapshot("dataset-v1")
 
     assert report["coverage"] == 1.0
     assert report["blocking_diff_count"] == 0

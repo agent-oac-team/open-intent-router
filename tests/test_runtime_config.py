@@ -1,12 +1,17 @@
 from fastapi.testclient import TestClient
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings
 from app.core.memory_runtime import build_memory_runtime_policy
-from app.dependencies import get_memory_runtime_policy, get_registry_service
+from app.dependencies import get_registry_service
 from app.main import create_app
 from app.repositories.memory import MemoryAgentDefinitionRepository
 from app.schemas.agents import AgentDefinition
 from app.services.registry_service import AgentRegistryService
+
+
+def _runtime_config_response(app):
+    with TestClient(app) as client:
+        return client.get("/api/v1/runtime/config")
 
 
 def test_runtime_config_exposes_safe_status() -> None:
@@ -29,18 +34,13 @@ def test_runtime_config_exposes_safe_status() -> None:
         memory_formation_policy_version="formation-policy-test",
     )
     repository = MemoryAgentDefinitionRepository()
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[get_memory_runtime_policy] = lambda: build_memory_runtime_policy(
-        "observe"
-    )
+    app = create_app(settings=settings)
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=repository,
     )
 
-    client = TestClient(app)
-    response = client.get("/api/v1/runtime/config")
+    response = _runtime_config_response(app)
 
     assert response.status_code == 200
     body = response.json()
@@ -80,12 +80,10 @@ async def test_runtime_config_reports_registry_agent_count(settings, summarizer_
     await repository.upsert(AgentDefinition.model_validate(summarizer_agent.model_dump()))
     registry = AgentRegistryService(settings=settings, repository=repository)
     await registry.load()
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
+    app = create_app(settings=settings)
     app.dependency_overrides[get_registry_service] = lambda: registry
 
-    client = TestClient(app)
-    response = client.get("/api/v1/runtime/config")
+    response = _runtime_config_response(app)
 
     assert response.status_code == 200
     body = response.json()
@@ -98,17 +96,16 @@ async def test_runtime_config_reports_registry_agent_count(settings, summarizer_
 
 def test_runtime_config_reports_effective_decision_shadow_worker_states() -> None:
     settings = Settings(storage_backend="memory", memory_mode="on")
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
-    app.dependency_overrides[get_memory_runtime_policy] = lambda: build_memory_runtime_policy(
-        "on", execution_plane="decision_shadow"
+    app = create_app(
+        settings=settings,
+        memory_runtime_policy=build_memory_runtime_policy("on", execution_plane="decision_shadow"),
     )
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=MemoryAgentDefinitionRepository(),
     )
 
-    response = TestClient(app).get("/api/v1/runtime/config")
+    response = _runtime_config_response(app)
 
     assert response.status_code == 200
     body = response.json()
@@ -127,15 +124,13 @@ def test_runtime_config_reports_local_dev_write_mode() -> None:
         registry_backend="database",
     )
     repository = MemoryAgentDefinitionRepository()
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
+    app = create_app(settings=settings)
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=repository,
     )
 
-    client = TestClient(app)
-    response = client.get("/api/v1/runtime/config")
+    response = _runtime_config_response(app)
 
     assert response.status_code == 200
     body = response.json()
@@ -152,13 +147,12 @@ def test_runtime_config_redacts_connection_credentials() -> None:
         memory_milvus_uri="https://milvus-user:milvus-pass@milvus.test:19530/db?token=secret",
     )
     repository = MemoryAgentDefinitionRepository()
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
+    app = create_app(settings=settings)
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=repository,
     )
-    response = TestClient(app).get("/api/v1/runtime/config")
+    response = _runtime_config_response(app)
     assert response.status_code == 200
     body = response.json()
     assert body["router_llm_base_url"] == "https://example.test/v1"
@@ -181,14 +175,13 @@ def test_runtime_config_exposes_effective_memory_infrastructure_sources() -> Non
         memory_embedding_model="memory-embedding-v2",
         memory_embedding_dims=1536,
     )
-    app = create_app()
-    app.dependency_overrides[get_settings] = lambda: settings
+    app = create_app(settings=settings)
     app.dependency_overrides[get_registry_service] = lambda: AgentRegistryService(
         settings=settings,
         repository=MemoryAgentDefinitionRepository(),
     )
 
-    response = TestClient(app).get("/api/v1/runtime/config")
+    response = _runtime_config_response(app)
 
     assert response.status_code == 200
     body = response.json()

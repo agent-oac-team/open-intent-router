@@ -7,8 +7,9 @@ from fastapi.testclient import TestClient
 
 from app import main as main_module
 from app.core.config import Settings
-from app.core.errors import RuntimeCatalogUnavailableError
+from app.core.errors import ApplicationStartupError, RuntimeCatalogUnavailableError
 from app.main import create_app
+from app.runtime.application import ApplicationComposition
 from app.runtime.catalog import (
     RuntimeAdapterCapability,
     RuntimeAdapterContext,
@@ -29,14 +30,6 @@ class LifecycleProbe:
     key: str
     events: list[str]
     healthy: bool = True
-
-
-class BackgroundRuntimeProbe:
-    async def start(self) -> None:
-        return None
-
-    async def stop(self) -> None:
-        return None
 
 
 @dataclass
@@ -368,30 +361,12 @@ async def test_catalog_rejects_synchronous_health_checks_before_activation() -> 
     assert events == []
 
 
-def _stub_background_runtimes(monkeypatch) -> None:
-    monkeypatch.setattr(
-        main_module,
-        "build_memory_formation_runtime",
-        lambda: BackgroundRuntimeProbe(),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "build_memory_maintenance_runtime",
-        lambda: BackgroundRuntimeProbe(),
-    )
-    monkeypatch.setattr(
-        main_module,
-        "build_delegated_run_timeout_runtime",
-        lambda: BackgroundRuntimeProbe(),
-    )
-
-
-def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure(
-    monkeypatch,
-) -> None:
-    _stub_background_runtimes(monkeypatch)
+def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure() -> None:
     successful_events: list[str] = []
-    app = create_app(runtime_descriptors=[descriptor("test", successful_events)])
+    app = create_app(
+        settings=Settings(storage_backend="memory", registry_backend="file"),
+        runtime_descriptors=[descriptor("test", successful_events)],
+    )
 
     with TestClient(app) as client:
         runtime = app.state.runtime_catalog_runtime
@@ -410,7 +385,8 @@ def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure
 
     failed_events: list[str] = []
     failed_app = create_app(
-        runtime_descriptors=[descriptor("broken", failed_events, healthy=False)]
+        settings=Settings(storage_backend="memory", registry_backend="file"),
+        runtime_descriptors=[descriptor("broken", failed_events, healthy=False)],
     )
     with TestClient(failed_app) as client:
         assert client.get("/health").json() == {"status": "ok"}
@@ -434,13 +410,13 @@ def test_lifespan_constructs_catalog_once_and_surfaces_only_safe_startup_failure
     ]
 
 
-def test_lifespan_turns_malformed_descriptors_into_safe_readiness_and_documents_it(
-    monkeypatch,
-) -> None:
-    _stub_background_runtimes(monkeypatch)
+def test_lifespan_turns_malformed_descriptors_into_safe_readiness_and_documents_it() -> None:
     events: list[str] = []
     malformed = replace(descriptor("malformed", events), capability=None)
-    app = create_app(runtime_descriptors=[malformed])
+    app = create_app(
+        settings=Settings(storage_backend="memory", registry_backend="file"),
+        runtime_descriptors=[malformed],
+    )
 
     ready_operation = app.openapi()["paths"]["/ready"]["get"]
     assert ready_operation["responses"]["200"]["content"]["application/json"]["schema"] == {
@@ -458,12 +434,12 @@ def test_lifespan_turns_malformed_descriptors_into_safe_readiness_and_documents_
     assert ready.json() == {
         "status": "error",
         "runtime_status": "error",
-        "runtime_reason": "runtime_catalog_activation_failed",
+        "runtime_reason": "runtime_catalog_unavailable",
     }
     assert events == []
 
 
-def test_lifespan_rolls_back_catalog_when_a_later_runtime_start_fails(monkeypatch) -> None:
+def test_lifespan_rolls_back_catalog_when_a_later_runtime_start_fails() -> None:
     catalog_events: list[str] = []
     background_events: list[str] = []
     formation_runtime = TrackedBackgroundRuntime("formation", background_events)
@@ -472,34 +448,37 @@ def test_lifespan_rolls_back_catalog_when_a_later_runtime_start_fails(monkeypatc
     )
     timeout_runtime = TrackedBackgroundRuntime("timeout", background_events)
 
-    async def create_tables(_settings) -> None:
-        return None
+    settings = Settings(storage_backend="memory", registry_backend="file")
 
-    monkeypatch.setattr(main_module, "create_all_tables", create_tables)
-    monkeypatch.setattr(
-        main_module,
-        "build_memory_formation_runtime",
-        lambda: formation_runtime,
-    )
-    monkeypatch.setattr(
-        main_module,
-        "build_memory_maintenance_runtime",
-        lambda: maintenance_runtime,
-    )
-    monkeypatch.setattr(
-        main_module,
-        "build_delegated_run_timeout_runtime",
-        lambda: timeout_runtime,
-    )
-    app = create_app(runtime_descriptors=[descriptor("test", catalog_events)])
+    def container_builder(catalog, databases):
+        container = main_module._build_minimal_container(
+            settings=settings,
+            catalog=catalog,
+            databases=databases,
+            external_executor=None,
+        )
+        return replace(
+            container,
+            _background_runtimes=(formation_runtime, maintenance_runtime, timeout_runtime),
+        )
 
-    with pytest.raises(RuntimeError, match="maintenance startup failed"):
+    app = create_app(
+        settings=settings,
+        runtime_descriptors=[descriptor("test", catalog_events)],
+        application_composition_factory=lambda _settings: ApplicationComposition(
+            container_builder=container_builder,
+            required_database_targets=frozenset(),
+        ),
+    )
+
+    with pytest.raises(ApplicationStartupError, match="application_startup_failed"):
         with TestClient(app):
             pass
 
     assert background_events == [
         "start:formation",
         "start:maintenance",
+        "stop:maintenance",
         "stop:formation",
     ]
     assert catalog_events == ["activate:test", "health:test", "dispose:test"]

@@ -1,5 +1,4 @@
 import pytest
-from fastapi.testclient import TestClient
 
 from app.main import create_app as create_oir_app
 from host_apps.oac.main import create_app as create_oac_host_app
@@ -26,15 +25,19 @@ RETIRED_KNOWLEDGE_PATHS = (
 
 
 @pytest.mark.parametrize(("method", "path"), RETIRED_KNOWLEDGE_PATHS)
-def test_oir_does_not_expose_knowledge_http(method: str, path: str) -> None:
-    response = TestClient(create_oir_app()).request(method, path, json={})
+def test_oir_does_not_expose_knowledge_http(
+    method: str, path: str, non_lifespan_test_client
+) -> None:
+    response = non_lifespan_test_client(create_oir_app()).request(method, path, json={})
 
     assert response.status_code == 404
 
 
 @pytest.mark.parametrize(("method", "path"), RETIRED_KNOWLEDGE_PATHS)
-def test_oac_host_does_not_proxy_or_fallback_knowledge_http(method: str, path: str) -> None:
-    response = TestClient(create_oac_host_app()).request(method, path, json={})
+def test_oac_host_does_not_proxy_or_fallback_knowledge_http(
+    method: str, path: str, non_lifespan_test_client
+) -> None:
+    response = non_lifespan_test_client(create_oac_host_app()).request(method, path, json={})
 
     assert response.status_code == 404
 

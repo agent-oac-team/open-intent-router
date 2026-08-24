@@ -1,5 +1,4 @@
 from fastapi import Depends, FastAPI
-from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
@@ -18,9 +17,9 @@ def _app(settings: Settings) -> FastAPI:
     return app
 
 
-def test_local_loopback_allows_admin_without_token() -> None:
+def test_local_loopback_allows_admin_without_token(non_lifespan_test_client) -> None:
     settings = Settings(app_env="local", admin_api_token=None)
-    client = TestClient(_app(settings))
+    client = non_lifespan_test_client(_app(settings))
 
     response = client.post("/admin-only")
 
@@ -28,18 +27,18 @@ def test_local_loopback_allows_admin_without_token() -> None:
     assert response.json() == {"ok": True}
 
 
-def test_non_local_requires_admin_token_when_missing() -> None:
+def test_non_local_requires_admin_token_when_missing(non_lifespan_test_client) -> None:
     settings = Settings(app_env="production", admin_api_token=None)
-    client = TestClient(_app(settings))
+    client = non_lifespan_test_client(_app(settings))
 
     response = client.post("/admin-only")
 
     assert response.status_code == 401
 
 
-def test_configured_admin_token_is_required_even_in_local() -> None:
+def test_configured_admin_token_is_required_even_in_local(non_lifespan_test_client) -> None:
     settings = Settings(app_env="local", admin_api_token="secret")
-    client = TestClient(_app(settings))
+    client = non_lifespan_test_client(_app(settings))
 
     missing = client.post("/admin-only")
     valid = client.post("/admin-only", headers={"X-Admin-Token": "secret"})

@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     agent_http_timeout_seconds: float = 30.0
     runtime_catalog_shutdown_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     runtime_catalog_health_timeout_seconds: float = Field(default=2.0, gt=0, le=60)
+    application_cleanup_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    database_probe_timeout_seconds: float = Field(default=2.0, gt=0, le=60)
     runtime_required_adapter_keys: str = ""
 
     memory_mode: MemoryMode = "off"

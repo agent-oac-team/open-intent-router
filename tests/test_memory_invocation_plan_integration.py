@@ -7,7 +7,6 @@ import pytest
 from app.core.config import Settings
 from app.core.errors import AgentUnavailableError
 from app.core.memory_runtime import build_memory_runtime_policy
-from app.db.session import create_all_tables, create_session_factory
 from app.invokers.local_function import LocalFunctionInvoker, LocalFunctionRegistry
 from app.invokers.registry import AgentInvokerRegistry
 from app.llm.conversation_formation import (
@@ -362,13 +361,13 @@ async def test_out_of_order_structured_workers_cannot_regress_task_memory() -> N
     )
 
 
-async def test_structured_job_survives_database_process_restart(tmp_path) -> None:
+async def test_structured_job_survives_database_process_restart(tmp_path, managed_database) -> None:
     settings = _settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'structured-restart.db'}",
     )
-    await create_all_tables(settings)
-    first_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    first_factory = await managed_database.session_factory(settings)
     first_repository = DatabaseMemoryFormationTurnJobRepository(first_factory)
     occurred = datetime(2026, 7, 13, tzinfo=UTC)
     published = await StructuredFormationPublisher(
@@ -382,9 +381,9 @@ async def test_structured_job_survives_database_process_restart(tmp_path) -> Non
         occurred_at=occurred,
     )
     assert published is not None
-    await first_factory.kw["bind"].dispose()
+    await managed_database.aclose()
 
-    second_factory = create_session_factory(settings)
+    second_factory = await managed_database.session_factory(settings)
     restarted = DatabaseMemoryFormationTurnJobRepository(second_factory)
     try:
         claimed = await restarted.claim_job(
@@ -397,7 +396,7 @@ async def test_structured_job_survives_database_process_restart(tmp_path) -> Non
         assert claimed.trace_summary["command"]["source_id"] == "plan_continue"
         assert claimed.trace_summary["command"]["candidates"][0]["scope"] == "task_memory"
     finally:
-        await second_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
 @pytest.mark.parametrize(
@@ -1031,13 +1030,15 @@ async def test_reconciler_rejects_cross_owner_result_without_projection_or_capsu
     assert await results.list_formation_pending() == []
 
 
-async def test_database_recovered_turn_capsule_matches_direct_fields(tmp_path) -> None:
+async def test_database_recovered_turn_capsule_matches_direct_fields(
+    tmp_path, managed_database
+) -> None:
     settings = _settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'turn-equivalence.db'}",
     )
-    await create_all_tables(settings)
-    session_factory = create_session_factory(settings)
+    await managed_database.initialize_schema(settings)
+    session_factory = await managed_database.session_factory(settings)
     runs = DatabaseRunRepository(session_factory)
     results = DatabaseResultRepository(session_factory)
     run = AgentRun(
@@ -1084,7 +1085,7 @@ async def test_database_recovered_turn_capsule_matches_direct_fields(tmp_path) -
         exclude={"created_at", "completed_at"}
     )
     assert '"business": "keep-result"' in recovered.assistant_text
-    await session_factory.kw["bind"].dispose()
+    await managed_database.aclose()
 
 
 async def test_invocation_captures_after_run_result_and_capture_failure_keeps_success(
@@ -1124,13 +1125,14 @@ async def test_database_reconciler_recovers_plan_run_result_and_turn_after_resta
     tmp_path,
     settings,
     registry_service,
+    managed_database,
 ) -> None:
     integration_settings = _settings(
         storage_backend="database",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'formation-reconcile.db'}",
     )
-    await create_all_tables(integration_settings)
-    session_factory = create_session_factory(integration_settings)
+    await managed_database.initialize_schema(integration_settings)
+    session_factory = await managed_database.session_factory(integration_settings)
     runs = DatabaseRunRepository(session_factory)
     results = DatabaseResultRepository(session_factory)
     plans = DatabasePlanRepository(session_factory)
@@ -1191,7 +1193,7 @@ async def test_database_reconciler_recovers_plan_run_result_and_turn_after_resta
     )
     assert len(pending_turns) == 1
     assert pending_turns[0].used_memory_ids == []
-    await session_factory.kw["bind"].dispose()
+    await managed_database.aclose()
 
 
 async def test_direct_and_route_invocation_persist_real_turns_and_structured_jobs(
@@ -1508,6 +1510,7 @@ async def test_private_skip_event_is_idempotent_when_marker_fails(
     tmp_path,
     settings,
     registry_service,
+    managed_database,
 ) -> None:
     enabled = _settings()
     session_factory = None
@@ -1522,8 +1525,8 @@ async def test_private_skip_event_is_idempotent_when_marker_fails(
             storage_backend="database",
             database_url=f"sqlite+aiosqlite:///{tmp_path / 'private-skip-idempotency.db'}",
         )
-        await create_all_tables(enabled)
-        session_factory = create_session_factory(enabled)
+        await managed_database.initialize_schema(enabled)
+        session_factory = await managed_database.session_factory(enabled)
         runs = DatabaseRunRepository(session_factory)
         results = FailOnceTurnMarkerDatabaseResultRepository(session_factory)
         plans = DatabasePlanRepository(session_factory)
@@ -1569,7 +1572,7 @@ async def test_private_skip_event_is_idempotent_when_marker_fails(
     assert len(await memories.list_events(tenant_id="t1", user_id="u1")) == 1
     assert await results.list_formation_pending() == []
     if session_factory is not None:
-        await session_factory.kw["bind"].dispose()
+        await managed_database.aclose()
 
 
 async def test_private_plan_claim_suppression_is_atomic() -> None:
