@@ -1,6 +1,6 @@
 {
   "contract": "oac-irs-migration-baseline/v1",
-  "generated_at": "2026-08-07T03:05:41.868715+00:00",
+  "generated_at": "2026-08-25T03:29:15.650882+00:00",
   "irs_source_revision": "348cf93fa3441108481631b7768d5ab7670c706e",
   "oac_source_revision": "cd97c1b with working-tree evidence at 2026-07-16",
   "counts": {
@@ -19,8 +19,8 @@
     },
     {
       "path": "execution-ticket/v1/README.md",
-      "sha256": "c7b671f3ad018c9806187959da3a6e0f522ea619e54ad96abe1d332cc71ff9fc",
-      "bytes": 1684
+      "sha256": "f2cffe11040ebf97071b7e1e77d47bcd46941202603acccaf1c889a0de1319c5",
+      "bytes": 1962
     },
     {
       "path": "execution-ticket/v1/contract.json",
