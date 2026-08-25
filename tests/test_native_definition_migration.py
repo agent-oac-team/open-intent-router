@@ -37,6 +37,7 @@ def _legacy_agent(
     *,
     agent_id: str = "legacy_lookup",
     config: dict[str, object] | None = None,
+    provider_config: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
 ) -> LegacyAgentDefinition:
     return LegacyAgentDefinition(
@@ -57,6 +58,7 @@ def _legacy_agent(
         invocation=LegacyInvocationSpec(
             type="local_function",
             config=config if config is not None else {"function": "lookup_account"},
+            provider_config=provider_config or {},
         ),
         metadata=metadata or {},
     )
@@ -98,7 +100,12 @@ def _target_capabilities(
     )
 
 
-async def _store_legacy(factory, definition: LegacyAgentDefinition) -> None:
+async def _store_legacy(
+    factory,
+    definition: LegacyAgentDefinition,
+    *,
+    staged_handling: dict[str, object] | None = None,
+) -> None:
     """Seed stopped legacy source material without reopening Native writes.
 
     The migration gate is the sole supported reader of these private columns.
@@ -118,7 +125,7 @@ async def _store_legacy(factory, definition: LegacyAgentDefinition) -> None:
                 revision=1,
                 type=definition.type,
                 schema_version=None,
-                handling_text=None,
+                handling_text=dumps(staged_handling) if staged_handling is not None else None,
                 enabled=definition.enabled,
                 domain=definition.domain,
                 capabilities_text=dumps(definition.capabilities),
@@ -171,6 +178,86 @@ async def test_database_dry_run_reports_required_runtime_without_mutating_source
     assert after.type == before.type == "local_function"
     assert after.schema_version is None
     assert after.handling_text is None
+
+
+async def test_database_migration_uses_staged_external_handling_and_restores_legacy_source(
+    database_migration,
+) -> None:
+    factory, _migration = database_migration
+    executor_ref = "1234567890123456789"
+    migration = NativeDefinitionMigrationService(
+        factory,
+        target_capabilities=_target_capabilities(executor_refs=[executor_ref]),
+    )
+    staged_handling = {
+        "kind": "external_execution",
+        "executor_ref": executor_ref,
+        "params": {},
+    }
+    await _store_legacy(
+        factory,
+        _legacy_agent(
+            agent_id="legacy_external_review",
+            provider_config={"platform_agent_id": executor_ref},
+        ),
+        staged_handling=staged_handling,
+    )
+    await migration.prepare(
+        source="database",
+        native_writes_frozen=True,
+        new_execution_frozen=True,
+    )
+
+    plan = await migration.dry_run_database()
+
+    assert plan.report.ready_to_migrate is True
+    assert plan.report.invalid_definition_count == 0
+    assert plan.report.migratable_definition_count == 1
+    assert plan.report.required_runtime_adapter_keys == ()
+    assert plan.report.required_executor_refs == (executor_ref,)
+
+    result = await migration.migrate_database(
+        plan,
+        legacy_runtime_version="oir-legacy-0.1",
+    )
+
+    assert result.snapshot is not None
+    migrated = await _database_row(factory, "legacy_external_review")
+    assert migrated.schema_version == "oir-agent-v2"
+    assert loads(migrated.handling_text, {}) == staged_handling
+    assert migrated.invocation_text == "{}"
+
+    await migration.rollback_database(
+        result.snapshot.snapshot_id,
+        legacy_runtime_restored=True,
+    )
+    restored = await _database_row(factory, "legacy_external_review")
+    assert restored.schema_version is None
+    assert loads(restored.handling_text, {}) == staged_handling
+    assert loads(restored.invocation_text, {})["provider_config"] == {
+        "platform_agent_id": executor_ref
+    }
+
+
+async def test_legacy_provider_configuration_still_requires_explicit_staged_handling(
+    database_migration,
+) -> None:
+    factory, migration = database_migration
+    await _store_legacy(
+        factory,
+        _legacy_agent(provider_config={"platform_agent_id": "1234567890123456789"}),
+    )
+    await migration.prepare(
+        source="database",
+        native_writes_frozen=True,
+        new_execution_frozen=True,
+    )
+
+    plan = await migration.dry_run_database()
+
+    assert plan.report.ready_to_migrate is False
+    assert plan.report.invalid_definition_count == 1
+    assert plan.report.issues[0].reason_code == "legacy_provider_configuration_unsupported"
 
 
 async def test_disabled_legacy_definition_still_validates_without_a_live_binding(

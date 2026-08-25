@@ -11,6 +11,7 @@ from app.schemas.common import JsonDict, StrictBaseModel
 from app.schemas.knowledge_persistence import sanitize_persisted_knowledge
 
 _BINDING_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,127}$")
+_EXTERNAL_EXECUTOR_REFERENCE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 _BINDING_VERSION_FINGERPRINT_PREFIX = "oir-binding-version-sha256-"
 _BINDING_VERSION_FINGERPRINT_PATTERN = re.compile(
     rf"^{_BINDING_VERSION_FINGERPRINT_PREFIX}[0-9a-f]{{64}}$"
@@ -42,6 +43,16 @@ def is_safe_binding_identifier(value: object) -> bool:
     return (
         isinstance(value, str)
         and bool(_BINDING_IDENTIFIER_PATTERN.fullmatch(value))
+        and not _is_secret_like_binding_value(value)
+    )
+
+
+def is_safe_external_executor_reference(value: object) -> bool:
+    """Return whether a persisted External Executor reference is a logical identifier."""
+
+    return (
+        isinstance(value, str)
+        and bool(_EXTERNAL_EXECUTOR_REFERENCE_PATTERN.fullmatch(value))
         and not _is_secret_like_binding_value(value)
     )
 
@@ -118,7 +129,7 @@ class ExternalExecutionBindingSnapshot(StrictBaseModel):
     @field_validator("executor_ref")
     @classmethod
     def require_logical_identifier(cls, value: str) -> str:
-        if not is_safe_binding_identifier(value):
+        if not is_safe_external_executor_reference(value):
             raise ValueError("binding references must be logical identifiers")
         return value
 

@@ -165,12 +165,13 @@ def test_registry_fixtures_parse_and_mapper_round_trips_legacy_fields() -> None:
 
 
 def test_registry_legacy_wire_maps_to_one_canonical_v2_handling_without_changing_wire() -> None:
+    executor_ref = "1234567890123456789"
     bot = RegistryAgent.model_validate(
         {
             "agent_id": "external_agent",
             "name": "External",
             "description": "delegated externally",
-            "bot_id": "host_executor",
+            "bot_id": executor_ref,
             "route_path": "",
             "allowed_user_tags": ["运营版"],
             "positive_keywords": ["delegate"],
@@ -185,7 +186,7 @@ def test_registry_legacy_wire_maps_to_one_canonical_v2_handling_without_changing
 
     assert canonical_bot.handling.model_dump(mode="json", exclude_none=True) == {
         "kind": "external_execution",
-        "executor_ref": "host_executor",
+        "executor_ref": executor_ref,
         "params": {},
     }
     assert canonical_ui.handling.model_dump(mode="json", exclude_none=True) == {

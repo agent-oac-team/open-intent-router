@@ -25,6 +25,7 @@ from app.schemas.common import (
 
 _SYMBOLIC_REFERENCE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,127}$")
+_EXTERNAL_EXECUTOR_REFERENCE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 # Runtime Call Envelopes use a slightly broader locator grammar than public
 # Agent IDs (for example, ``memory:record-1``).  Keeping the secret-aware
 # predicate here means every producer of a governed Adapter projection shares
@@ -362,7 +363,7 @@ class ExternalExecutionHandling(StrictBaseModel):
         return _validate_reference(
             value,
             label="executor_ref",
-            pattern=_SYMBOLIC_REFERENCE_PATTERN,
+            pattern=_EXTERNAL_EXECUTOR_REFERENCE_PATTERN,
         )
 
 

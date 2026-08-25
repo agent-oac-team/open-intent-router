@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.logs import (
     is_external_execution_binding_fingerprint,
-    is_safe_binding_identifier,
+    is_safe_external_executor_reference,
 )
 
 ExecutionTraceEventType = Literal[
@@ -156,7 +156,7 @@ class _ExecutionTraceEventEnvelope(BaseModel):
                 "executor_binding_id must be a non-reversible external binding fingerprint"
             )
         executor_ref = self.facts.get("executor_ref")
-        if executor_ref is not None and not is_safe_binding_identifier(executor_ref):
+        if executor_ref is not None and not is_safe_external_executor_reference(executor_ref):
             raise ValueError("executor_ref must be a logical binding identifier")
         return self
 

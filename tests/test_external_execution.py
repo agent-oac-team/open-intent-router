@@ -1236,6 +1236,53 @@ def test_external_execution_models_reject_raw_binding_tokens() -> None:
         )
 
 
+def test_numeric_external_executor_reference_crosses_host_and_trace_boundaries() -> None:
+    executor_ref = "1234567890123456789"
+    request = ExternalExecutorAcceptanceRequest(
+        acceptance_id="external_acceptance_numeric_ref",
+        executor_ref=executor_ref,
+        agent_id="external-agent",
+        agent_revision=1,
+        principal={"tenant_id": "tenant-1", "user_id": "external-user"},
+    )
+    reservation = ExternalExecutionAcceptanceReservation(
+        acceptance_id=request.acceptance_id,
+        request_fingerprint="a" * 64,
+        executor_ref=executor_ref,
+    )
+    snapshot = ExternalExecutionBindingSnapshot(
+        executor_ref=executor_ref,
+        executor_binding_id=external_execution_binding_fingerprint(
+            "external_binding",
+            secret="external-test-secret",
+        ),
+    )
+    trace = ExecutionTraceEventDraft(
+        trace_id="trace_external-turn",
+        tenant_id="tenant-1",
+        user_id="external-user",
+        session_id="external-session",
+        turn_id="external-turn",
+        run_id="external-run",
+        event_type="agent_run",
+        stage="accepted",
+        status="pending",
+        source="oir:external_execution",
+        source_event_id="external-run:accepted-numeric-ref",
+        facts={
+            "agent_id": "external-agent",
+            "handling_kind": "external_execution",
+            "executor_ref": executor_ref,
+            "executor_binding_id": snapshot.executor_binding_id,
+        },
+    )
+
+    assert request.executor_ref == executor_ref
+    assert reservation.executor_ref == executor_ref
+    assert snapshot.executor_ref == executor_ref
+    assert trace.facts["executor_ref"] == executor_ref
+
+
 def test_external_binding_projection_cannot_be_verified_without_the_secret() -> None:
     projected = external_execution_binding_fingerprint(
         "password_super_secret_123",

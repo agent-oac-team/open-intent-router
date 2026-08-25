@@ -338,6 +338,7 @@ class _SourceRecord:
     storage: Mapping[str, object]
     legacy: bool
     conversion_issue: str | None = None
+    staged_handling: Mapping[str, object] | None = None
 
     @property
     def agent_id(self) -> str | None:
@@ -1663,19 +1664,25 @@ def _convert_record(record: _SourceRecord) -> AgentDefinitionV2:
         legacy = LegacyAgentDefinition.model_validate(dict(record.payload))
     except (TypeError, ValidationError, ValueError) as exc:
         raise _DefinitionConversionError("legacy_definition_invalid") from exc
-    return _legacy_to_v2(legacy)
+    return _legacy_to_v2(legacy, staged_handling=record.staged_handling)
 
 
-def _legacy_to_v2(legacy: LegacyAgentDefinition) -> AgentDefinitionV2:
-    if legacy.invocation.provider_config:
-        raise _DefinitionConversionError("legacy_provider_configuration_unsupported")
+def _legacy_to_v2(
+    legacy: LegacyAgentDefinition,
+    *,
+    staged_handling: Mapping[str, object] | None = None,
+) -> AgentDefinitionV2:
     payload = legacy.model_dump(
         mode="json",
         exclude={"type", "invocation", "ui_handoff", "metadata"},
     )
     payload["schema_version"] = "oir-agent-v2"
     payload["revision"] = legacy.revision + 1
-    if legacy.type == "ui_handoff":
+    if staged_handling is not None:
+        payload["handling"] = dict(staged_handling)
+    elif legacy.invocation.provider_config:
+        raise _DefinitionConversionError("legacy_provider_configuration_unsupported")
+    elif legacy.type == "ui_handoff":
         if legacy.ui_handoff.mode == "none" or not legacy.ui_handoff.route:
             raise _DefinitionConversionError("legacy_ui_handoff_invalid")
         try:
@@ -1747,11 +1754,17 @@ def _validate_v2_target(
 def _database_record_from_row(index: int, row: AgentDefinitionModel) -> _SourceRecord:
     storage = {name: getattr(row, name) for name in _LEGACY_DATABASE_FIELDS}
     schema_version = row.schema_version
+    staged_handling: Mapping[str, object] | None = None
     try:
         if schema_version:
             payload = _v2_payload_from_database_row(row)
             legacy = False
         else:
+            raw_staged_handling = loads(row.handling_text, None)
+            if raw_staged_handling not in (None, {}):
+                if not isinstance(raw_staged_handling, dict):
+                    raise TypeError("legacy handling_text must contain an object")
+                staged_handling = raw_staged_handling
             payload = {
                 "agent_id": row.agent_id,
                 "name": row.name,
@@ -1785,7 +1798,13 @@ def _database_record_from_row(index: int, row: AgentDefinitionModel) -> _SourceR
             legacy=not bool(schema_version),
             conversion_issue="database_definition_serialization_invalid",
         )
-    return _SourceRecord(index, payload, storage, legacy)
+    return _SourceRecord(
+        source_index=index,
+        payload=payload,
+        storage=storage,
+        legacy=legacy,
+        staged_handling=staged_handling,
+    )
 
 
 def _v2_payload_from_database_row(row: AgentDefinitionModel) -> dict[str, object]:

@@ -9,6 +9,7 @@ from app.schemas.delegated_runs import DelegatedRunReference
 from app.schemas.logs import ExternalExecutionBindingSnapshot
 
 _EXECUTOR_IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_-]{0,127}$"
+_EXECUTOR_REFERENCE_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,127}$"
 ExternalExecutorRejectionCode = Literal[
     "external_executor_unsupported",
     "external_executor_unauthorized",
@@ -38,7 +39,7 @@ class ExternalExecutorAcceptanceRequest(StrictBaseModel):
         max_length=128,
         pattern=_EXECUTOR_IDENTIFIER_PATTERN,
     )
-    executor_ref: str = Field(min_length=1, max_length=128, pattern=_EXECUTOR_IDENTIFIER_PATTERN)
+    executor_ref: str = Field(min_length=1, max_length=128, pattern=_EXECUTOR_REFERENCE_PATTERN)
     agent_id: str = Field(min_length=1, max_length=128)
     agent_revision: int = Field(ge=0)
     principal: ExternalExecutionPrincipal
@@ -59,7 +60,7 @@ class ExternalExecutionAcceptanceReservation(StrictBaseModel):
         pattern=_EXECUTOR_IDENTIFIER_PATTERN,
     )
     request_fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
-    executor_ref: str = Field(min_length=1, max_length=128, pattern=_EXECUTOR_IDENTIFIER_PATTERN)
+    executor_ref: str = Field(min_length=1, max_length=128, pattern=_EXECUTOR_REFERENCE_PATTERN)
 
 
 class ExternalExecutorAcceptance(StrictBaseModel):
