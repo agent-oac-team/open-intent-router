@@ -119,6 +119,8 @@ def _normalize_route_response(parsed: object, payload: LLMRouteInput) -> object:
             recovered = _recover_single_agent_route(normalized, payload)
             if recovered is not None:
                 return recovered
+        if decision.get("action") in {"open_agent", "continue_agent"}:
+            decision["action"] = "reply"
         decision["target_agent_id"] = None
         policy = normalized.get("execution_policy") or _plan_policy(normalized["plan"])
         if policy:

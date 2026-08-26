@@ -169,6 +169,20 @@ class PlanConfirmRequest(StrictBaseModel):
     expected_state_version: int = Field(ge=0)
 
 
+class PageTaskCompletionRequest(StrictBaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    expected_state_version: int = Field(ge=0)
+
+
+class PageTaskCompletionResponse(StrictBaseModel):
+    request_id: str
+    duplicate: bool = False
+    conflict: bool = False
+    plan: LegacyPlan
+
+
 class CompatErrorResponse(StrictBaseModel):
     code: str
     message: str

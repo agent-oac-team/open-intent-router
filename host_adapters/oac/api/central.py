@@ -17,6 +17,7 @@ from app.schemas.delegated_runs import (
 )
 from app.schemas.execution_tickets import LegacyExecutionCorrelationQuery
 from app.schemas.execution_traces import ExecutionTraceEventDraft, trace_id_for_turn
+from app.schemas.plans import HostManagedStepCompletion
 from app.schemas.turns import TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketError, ExecutionTicketService
 from host_adapters.oac.application import OacAdapterApplicationPorts
@@ -45,6 +46,8 @@ from host_adapters.oac.schemas.central import (
     CentralRouteRequest,
     CentralRouteResponse,
     NavigationEventRequest,
+    PageTaskCompletionRequest,
+    PageTaskCompletionResponse,
     PlanConfirmRequest,
     PlanConfirmResponse,
 )
@@ -760,6 +763,57 @@ async def confirm_plan(
             raise KeyError(plan_id)
         projected = plan_confirm_to_compat(response, plan=canonical)
         return projected.model_copy(update={"conflict": not response.transitioned})
+    except Exception as exc:
+        _raise_projected(exc)
+
+
+@router.post(
+    "/plans/{plan_id}/steps/{step_id}/page-task-completion",
+    response_model=PageTaskCompletionResponse,
+)
+async def complete_page_task(
+    plan_id: str,
+    step_id: str,
+    request: PageTaskCompletionRequest,
+    identity: TrustedHostIdentity = Depends(get_trusted_host_identity),
+    ports: OacAdapterApplicationPorts = Depends(get_oac_adapter_application_ports),
+) -> PageTaskCompletionResponse:
+    """Apply a Host-owned page completion declaration to one current Plan Step."""
+
+    _authorize(identity, "runtime_write_own")
+    try:
+        before = await ports.plans.get_plan(
+            plan_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+        )
+        if before is None or before.session_id != request.session_id:
+            raise KeyError(plan_id)
+        duplicate = before.last_event_id == request.request_id
+        result = await ports.plans.complete_host_managed_step(
+            plan_id,
+            step_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            completion=HostManagedStepCompletion(
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                expected_state_version=request.expected_state_version,
+            ),
+        )
+        canonical = await ports.plans.get_plan(
+            plan_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+        )
+        if canonical is None:
+            raise KeyError(plan_id)
+        return PageTaskCompletionResponse(
+            request_id=request.request_id,
+            duplicate=duplicate,
+            conflict=not result.transitioned and not duplicate,
+            plan=plan_to_compat(canonical),
+        )
     except Exception as exc:
         _raise_projected(exc)
 

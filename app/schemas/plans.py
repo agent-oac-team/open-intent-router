@@ -114,6 +114,14 @@ class PlanActionResponse(StrictBaseModel):
     reason_code: str | None = Field(default=None, max_length=64)
 
 
+class HostManagedStepCompletion(StrictBaseModel):
+    """A trusted Host declaration that its current Plan Step is complete."""
+
+    request_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    expected_state_version: int = Field(ge=0)
+
+
 class PlanExecutionRequest(StrictBaseModel):
     user: UserContext
     input: JsonDict = Field(default_factory=dict)

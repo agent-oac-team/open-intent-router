@@ -38,7 +38,7 @@ from app.schemas.memory import (
     UserMemoryDeleteResponse,
     UserMemoryListResponse,
 )
-from app.schemas.plans import Plan, PlanActionResponse
+from app.schemas.plans import HostManagedStepCompletion, Plan, PlanActionResponse
 from app.schemas.registry_mutation import RegistryMutationCommand, RegistryMutationResult
 from app.schemas.routing import RouteRequest, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
@@ -416,6 +416,17 @@ class PlanApplicationPort(Protocol):
         user_id: str,
         request_id: str | None = None,
         expected_state_version: int | None = None,
+        publish: bool = True,
+    ) -> PlanActionResponse: ...
+
+    async def complete_host_managed_step(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        completion: HostManagedStepCompletion,
         publish: bool = True,
     ) -> PlanActionResponse: ...
 

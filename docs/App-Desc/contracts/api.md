@@ -542,7 +542,8 @@ Execution Trace 是 append-only 的观察投影，不是 Turn、Run、Result、M
 
 - `GET /api/v1/central/active-plan?session_id={session_id}`：返回当前 owner 在该 OIR Session 中最新的 `pending/running/blocked` Plan；没有 Active Plan 时返回 `plan=null`。用于刷新、跨标签页和跨设备恢复，不返回其他用户或租户的 Plan。
 - `POST /api/v1/central/plans/{plan_id}/confirm`：请求体必须包含稳定 `request_id` 和 `expected_state_version`，成功转换时将 `request_id` 记录为确认事件身份。同一确认身份的重放仍被识别为该转换的 owner，允许宿主从响应中断处继续；其他并发、陈旧或终态请求返回最新 Canonical Plan，并以 `conflict=true` 阻止宿主再次创建受控路由或 Provider 副作用。
-- `POST /api/v1/central/events/agent`：Plan Step 完成动作可携带稳定 `event_id` 和 `expected_state_version`。Adapter 在领取 Execution Ticket 前校验 owner、Plan、当前 Step 与版本；陈旧或终态动作返回 `conflict=true` 和最新 Canonical Plan，不消费 Ticket、不更新 Run/Turn/Trace。未携带版本的旧客户端仍遵循唯一受信关联规则。
+- `POST /api/v1/central/plans/{plan_id}/steps/{step_id}/page-task-completion`：受信 OAC Host 用稳定 `request_id`、OIR `session_id`、`agent_id` 和 `expected_state_version` 声明当前页面任务完成。OAC 在调用前已经从受信 Trace 验证该用户声明对应的路由 Agent 和完成的 UI Handoff；本入口仍只接受 owner/session 匹配、当前 Step/Agent 匹配且 `next_action=open_ui` 的请求，并由 Plans 应用端口原子完成该 Step。同一身份重放标记 `duplicate=true`，陈旧、终态或非 UI Handoff Step 返回 `conflict=true` 与最新 Canonical Plan。该入口不创建 Delegated Run、Execution Ticket、Agent Event 或 Trace Result。
+- `POST /api/v1/central/events/agent`：产生真实 Delegated Run 的 Plan Step 完成动作可携带稳定 `event_id` 和 `expected_state_version`。Adapter 在领取 Execution Ticket 前校验 owner、Plan、当前 Step 与版本；陈旧或终态动作返回 `conflict=true` 和最新 Canonical Plan，不消费 Ticket、不更新 Run/Turn/Trace。页面任务完成不得走此入口。未携带版本的旧客户端仍遵循唯一受信关联规则。
 - `POST /api/v1/central/route` 的 `source=plan_control|agent_event`：对当前 Step 按 Registry 定义投影唯一协作动作。UI Handoff 返回 `blocked + open_ui`；缺少输入返回 `blocked + collect_input`；外部 Agent 返回 `blocked + wait_for_agent_event`。终态 Plan 直接返回 Canonical 完成、失败或取消状态，不重新交给 LLM 判断。
 
 兼容 Plan 响应包含 `status`、`state_version` 和 `next_action`。`next_action` 是唯一 Host 协作指令；终态必须清除陈旧动作。本期 OAC Host 未实现 Plan Step 重试契约，即使收到未知重试 metadata 也不展示重试按钮。

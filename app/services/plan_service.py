@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from app.core.memory_runtime import MemoryRuntimePolicy, build_memory_runtime_policy
 from app.schemas.events import AgentEvent
-from app.schemas.plans import Plan, PlanActionResponse
+from app.schemas.plans import HostManagedStepCompletion, Plan, PlanActionResponse
 
 
 class PlanStateConflict(RuntimeError):
@@ -326,6 +326,77 @@ class PlanService:
             transitioned=True,
         )
 
+    async def complete_host_managed_step(
+        self,
+        plan_id: str,
+        step_id: str,
+        *,
+        tenant_id: str,
+        user_id: str,
+        completion: HostManagedStepCompletion,
+        publish: bool = True,
+    ) -> PlanActionResponse:
+        """Advance exactly the current Host-managed Step without creating a Run or Agent Event."""
+
+        for _ in range(3):
+            plan = await self.get_plan(plan_id, tenant_id=tenant_id, user_id=user_id)
+            if plan is None:
+                raise ValueError("Plan not found")
+            if plan.last_event_id == completion.request_id:
+                return _plan_action_response(plan, transitioned=True)
+            if (
+                plan.state_version != completion.expected_state_version
+                or plan.status in {"completed", "failed", "cancelled"}
+                or plan.current_step_id != step_id
+            ):
+                return _plan_action_response(plan)
+
+            current_step = next((step for step in plan.steps if step.step_id == step_id), None)
+            if (
+                current_step is None
+                or current_step.agent_id != completion.agent_id
+                or plan.next_action is None
+                or plan.next_action.type != "open_ui"
+                or plan.next_action.step_id != step_id
+                or plan.next_action.agent_id != completion.agent_id
+            ):
+                return _plan_action_response(plan)
+
+            updated_steps = []
+            for step in plan.steps:
+                if step.step_id != step_id:
+                    updated_steps.append(step)
+                    continue
+                updated_steps.append(
+                    step.model_copy(
+                        update={"status": _advance_step_status(step.status, "completed")}
+                    )
+                )
+            current_step_id = _next_step_id(updated_steps)
+            updated = plan.model_copy(
+                update={
+                    "steps": updated_steps,
+                    "current_step_id": current_step_id,
+                    "status": _plan_status(updated_steps, current_step_id),
+                    "next_action": None,
+                }
+            )
+            try:
+                stored = await self.save_plan(
+                    updated,
+                    event_type="update",
+                    event_id=completion.request_id,
+                    publish=publish,
+                )
+            except PlanStateConflict:
+                continue
+            return _plan_action_response(stored, transitioned=True)
+
+        canonical = await self.get_plan(plan_id, tenant_id=tenant_id, user_id=user_id)
+        if canonical is None:
+            raise ValueError("Plan not found")
+        return _plan_action_response(canonical)
+
     async def cancel(
         self,
         plan_id: str,
@@ -548,3 +619,14 @@ def _plan_status(steps, current_step_id: str | None) -> str:
     if current_step_id:
         return "running"
     return "pending"
+
+
+def _plan_action_response(plan: Plan, *, transitioned: bool = False) -> PlanActionResponse:
+    return PlanActionResponse(
+        plan_id=plan.plan_id,
+        status=plan.status,
+        current_step_id=plan.current_step_id,
+        next_action=plan.next_action,
+        state_version=plan.state_version,
+        transitioned=transitioned,
+    )

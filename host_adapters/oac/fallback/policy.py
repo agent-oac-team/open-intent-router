@@ -42,6 +42,12 @@ ADAPTER_OPERATIONS = (
         r"/api/v1/central/plans/[^/]+/confirm",
         OperationClass.RUNTIME_WRITE,
     ),
+    _operation(
+        "central.page_task_completion",
+        "POST",
+        r"/api/v1/central/plans/[^/]+/steps/[^/]+/page-task-completion",
+        OperationClass.RUNTIME_WRITE,
+    ),
     _operation("registry.list", "GET", r"/api/v1/admin/agent-registry", OperationClass.READ_ONLY),
     _operation(
         "registry.create", "POST", r"/api/v1/admin/agent-registry", OperationClass.CONTROL_WRITE

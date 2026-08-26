@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.core.errors import (
     InvocationBindingUnavailableError,
+    LLMError,
     PlanBindingUnavailableError,
     RoutingError,
 )
@@ -322,19 +323,23 @@ class RouterService:
                 source_request=source_request,
             )
 
-        output = await self.llm_client.route(
-            LLMRouteInput(
-                request=request,
-                candidates=candidates,
-                context=base_context,
-                projection=(
-                    projection
-                    if self.settings.context_pipeline_mode == "enforced"
-                    or self.runtime_policy.effective_governed_context_memory_enabled
-                    else None
-                ),
+        try:
+            output = await self.llm_client.route(
+                LLMRouteInput(
+                    request=request,
+                    candidates=candidates,
+                    context=base_context,
+                    projection=(
+                        projection
+                        if self.settings.context_pipeline_mode == "enforced"
+                        or self.runtime_policy.effective_governed_context_memory_enabled
+                        else None
+                    ),
+                )
             )
-        )
+        except LLMError:
+            await self._fail_route_turn(request, error_code="llm_error")
+            raise
         output = self._bind_plan_ownership(output, request)
         output = self._normalize_candidate_context(output, base_context, candidate_ids)
         output = self._normalize_agent_continuation(output, request)
@@ -531,6 +536,19 @@ class RouterService:
                     "attachment_count": len(request.input.attachments),
                 },
             ),
+        )
+
+    async def _fail_route_turn(self, request: RouteRequest, *, error_code: str) -> None:
+        if self.turn_service is None:
+            return
+        tenant_id = request.user.tenant_id
+        if not tenant_id:
+            raise RoutingError("Trusted tenant identity is required")
+        await self.turn_service.fail_route(
+            tenant_id=tenant_id,
+            user_id=request.user.id,
+            request_id=request.request_id or "",
+            error_code=error_code,
         )
 
     async def _route_candidate_set(

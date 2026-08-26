@@ -173,6 +173,59 @@ class TurnService:
             return concurrent
         raise TurnTerminalStateError("turn completion conflicted")
 
+    async def fail_route(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        request_id: str,
+        error_code: str,
+    ) -> CanonicalTurn:
+        existing = await self.repository.get_by_request(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
+        if existing is None:
+            raise ValueError("canonical turn not found")
+        final_response = TurnSemanticResponse(
+            kind="error",
+            text="Route decision could not be completed.",
+            error={"code": error_code},
+        )
+        if existing.status.is_terminal:
+            if existing.status == TurnStatus.FAILED and existing.final_response == final_response:
+                return existing
+            raise TurnTerminalStateError("terminal turn cannot be failed again")
+        now = datetime.now(UTC)
+        failed = existing.model_copy(
+            update={
+                "status": TurnStatus.FAILED,
+                "state_version": existing.state_version + 1,
+                "final_response": final_response,
+                "updated_at": now,
+                "completed_at": now,
+            }
+        )
+        stored = await self.repository.update_if_version(
+            failed,
+            expected_version=existing.state_version,
+        )
+        if stored is not None:
+            return stored
+        concurrent = await self.repository.get_by_request(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
+        if (
+            concurrent is not None
+            and concurrent.status == TurnStatus.FAILED
+            and concurrent.final_response == final_response
+        ):
+            return concurrent
+        raise TurnTerminalStateError("turn failure conflicted")
+
     async def attach_activity(
         self,
         *,

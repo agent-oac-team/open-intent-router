@@ -28,7 +28,7 @@ guard 与 capability provider；Core 关闭前先撤销这个 Host Container。�
 
 ## API Surface
 
-- Central：Route、Navigation Event、Agent Event、Active Plan Snapshot、Plan Confirm。
+- Central：Route、Navigation Event、Agent Event、Active Plan Snapshot、Plan Confirm、Page Task Completion。
 - Registry：GET、POST、PUT、enabled PATCH、DELETE。
 - `GET /health`：仅表示 OAC Host 进程存活，不读取 Registry 或探测 Runtime/外部依赖。
 - `GET /capabilities`：仅输出版本、模式、依赖健康、Write Fence 和脱敏签名门禁状态；它可以读取
@@ -54,6 +54,10 @@ Ticket Store、签名配置和 Service 由 Core 统一组装，OAC Adapter 与 N
 既有 `OAC_HOST_EXECUTION_TICKET_SECRET` 仍由 Host composition 投影给该 Core Service；OAC
 `OIR-HOST-V2`、Legacy body 中可选 `execution_ticket`、无 Ticket 的唯一关联迁移规则和冻结 fixture
 均不改变。Native Event 只接受 `X-OIR-Execution-Ticket`，不会复用 OAC Legacy body 投影。
+
+## Page Task Completion
+
+页面任务完成是 OAC Host 持久化的用户声明，不是 Agent Result。OAC 只在已验证本地 Session/Turn 所属，并从受信 Trace 确认同一 Turn 已路由到该 Agent 且对应 UI Handoff 已完成后，以 V2 User Host 身份调用页面完成入口；Trace 暂不可达时 OAC 仅保留可重试的声明，不调用此入口。OIR 只拥有其中 Plan Step 的 Canonical 原子转换。请求必须匹配当前 Plan 的 owner、OIR Session、Step、Agent、版本和 `open_ui` 协作动作；不匹配时返回 Canonical Plan 而不推进。该入口不建立 Delegated Run、Ticket、Agent Event 或 Trace Result，外部执行仍使用原有 Ticket/Event 路径。
 
 ## External Execution Binding
 

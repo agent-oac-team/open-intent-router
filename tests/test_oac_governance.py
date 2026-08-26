@@ -28,7 +28,7 @@ from tests.support.database import raw_engine_scope
 
 
 def test_all_adapter_methods_have_one_static_operation_class() -> None:
-    assert len(ADAPTER_OPERATIONS) == 9
+    assert len(ADAPTER_OPERATIONS) == 10
     assert {item.operation_class for item in ADAPTER_OPERATIONS} == set(OperationClass)
     assert classify_operation("POST", "/api/v1/central/route").operation_class == "route_stateful"
     assert (
@@ -36,6 +36,13 @@ def test_all_adapter_methods_have_one_static_operation_class() -> None:
         == "control_write"
     )
     assert classify_operation("GET", "/api/v1/admin/agent-registry").operation_class == "read_only"
+    assert (
+        classify_operation(
+            "POST",
+            "/api/v1/central/plans/plan-1/steps/step-1/page-task-completion",
+        ).operation_class
+        == "runtime_write"
+    )
     with pytest.raises(KeyError):
         classify_operation("POST", "/api/v1/knowledge/search")
     with pytest.raises(KeyError):

@@ -1,6 +1,7 @@
 import pytest
 
 from app.core.config import Settings
+from app.core.errors import LLMError
 from app.core.memory_runtime import build_memory_runtime_policy
 from app.llm.conversation_formation import (
     ConversationFormationResponse,
@@ -142,6 +143,45 @@ async def test_router_completes_route_only_turn_without_fake_run(
     assert turn.references.result_ids == []
 
 
+async def test_router_terminalizes_turn_when_route_provider_response_is_unrepairable(
+    settings, registry_service
+) -> None:
+    repository = MemoryTurnRepository()
+    service = RouterService(
+        settings=settings,
+        registry=registry_service,
+        llm_client=_UnrepairableRouteLLM(),
+        turn_service=TurnService(repository),
+    )
+    request = RouteRequest.model_validate(
+        {
+            "request_id": "request-unrepairable-route",
+            "session_id": "session-1",
+            "user": {
+                "id": "user-1",
+                "roles": ["operator"],
+                "attributes": {"tenant_id": "tenant-1"},
+            },
+            "input": {"text": "first summarize this text, then create a task"},
+        }
+    )
+
+    with pytest.raises(LLMError, match="does not match RouteResponse"):
+        await service.route(request)
+
+    turn = await repository.get_by_request(
+        tenant_id="tenant-1",
+        user_id="user-1",
+        request_id="request-unrepairable-route",
+    )
+
+    assert turn is not None
+    assert turn.status.value == "failed"
+    assert turn.final_response is not None
+    assert turn.final_response.kind == "error"
+    assert turn.final_response.error == {"code": "llm_error"}
+
+
 class _DirectRouteLLM:
     def __init__(self, action: str) -> None:
         self.action = action
@@ -159,6 +199,13 @@ class _DirectRouteLLM:
                 message=message,
             ),
             context=RouteContext(),
+        )
+
+
+class _UnrepairableRouteLLM:
+    async def route(self, _payload) -> RouteResponse:
+        raise LLMError(
+            "OpenAI-compatible LLM returned a response that does not match RouteResponse"
         )
 
 

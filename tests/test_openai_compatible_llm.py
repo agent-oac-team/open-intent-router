@@ -139,6 +139,42 @@ def test_openai_compatible_llm_normalizes_incomplete_plan() -> None:
     assert normalized["plan"]["steps"][0]["status"] == "pending"
 
 
+@pytest.mark.parametrize("action", ["open_agent", "continue_agent"])
+def test_openai_compatible_llm_normalizes_agent_action_when_plan_has_steps(action: str) -> None:
+    payload = _multi_agent_payload()
+
+    normalized = _normalize_route_response(
+        {
+            "decision": {
+                "status": "ok",
+                "action": action,
+                "target_agent_id": "summarizer",
+                "confidence": 0.8,
+                "reason": "The first step should begin now.",
+                "message": "先处理内容生产。",
+            },
+            "context": {"relation": "multi_task"},
+            "plan": {
+                "steps": [
+                    {"agent_id": "summarizer", "description": "Summarize the text."},
+                    {
+                        "agent_id": "task_creator",
+                        "description": "Create a task.",
+                        "depends_on": ["step_1"],
+                    },
+                ],
+            },
+        },
+        payload,
+    )
+
+    assert isinstance(normalized, dict)
+    assert normalized["decision"]["action"] == "reply"
+    assert normalized["decision"]["target_agent_id"] is None
+    assert normalized["plan"]["steps"][0]["agent_id"] == "summarizer"
+    assert normalized["plan"]["steps"][1]["agent_id"] == "task_creator"
+
+
 def test_openai_compatible_llm_builds_fallback_plan_for_show_plan_without_steps() -> None:
     payload = _multi_agent_payload()
 

@@ -24,7 +24,13 @@ from app.schemas.external_execution import (
 )
 from app.schemas.invocation import AgentInvocationResult
 from app.schemas.logs import external_execution_binding_fingerprint
-from app.schemas.plans import NextAction, Plan, PlanActionResponse, PlanStep
+from app.schemas.plans import (
+    HostManagedStepCompletion,
+    NextAction,
+    Plan,
+    PlanActionResponse,
+    PlanStep,
+)
 from app.schemas.routing import InvocationPreview, RouteContext, RouteDecision, RouteResponse
 from app.schemas.turns import CanonicalTurn, TurnUserInput
 from app.services.execution_ticket_service import ExecutionTicketService
@@ -439,6 +445,7 @@ class PlanPort:
     def __init__(self) -> None:
         self.confirm_request_id = None
         self.accepted_confirm_request_id = None
+        self.completion_request_ids = []
         self.plan = Plan(
             plan_id="plan-1",
             tenant_id="oac",
@@ -486,6 +493,66 @@ class PlanPort:
             current_step_id=self.plan.current_step_id,
             state_version=self.plan.state_version,
             transitioned=transitioned,
+        )
+
+    async def complete_host_managed_step(
+        self,
+        plan_id,
+        step_id,
+        *,
+        tenant_id,
+        user_id,
+        completion: HostManagedStepCompletion,
+        publish=True,
+    ):
+        del publish
+        self.completion_request_ids.append(completion.request_id)
+        if self.plan.last_event_id == completion.request_id:
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status=self.plan.status,
+                current_step_id=self.plan.current_step_id,
+                next_action=self.plan.next_action,
+                state_version=self.plan.state_version,
+                transitioned=True,
+            )
+        if (
+            (tenant_id, user_id) != ("oac", "trusted-user")
+            or self.plan.state_version != completion.expected_state_version
+            or self.plan.current_step_id != step_id
+            or completion.agent_id != self.plan.steps[0].agent_id
+            or self.plan.status in {"completed", "failed", "cancelled"}
+        ):
+            return PlanActionResponse(
+                plan_id=plan_id,
+                status=self.plan.status,
+                current_step_id=self.plan.current_step_id,
+                next_action=self.plan.next_action,
+                state_version=self.plan.state_version,
+                transitioned=False,
+            )
+        steps = [
+            step.model_copy(update={"status": "completed"}) if step.step_id == step_id else step
+            for step in self.plan.steps
+        ]
+        next_step = next((step for step in steps if step.status == "pending"), None)
+        self.plan = self.plan.model_copy(
+            update={
+                "steps": steps,
+                "status": "running" if next_step else "completed",
+                "current_step_id": next_step.step_id if next_step else None,
+                "next_action": None,
+                "last_event_id": completion.request_id,
+                "state_version": self.plan.state_version + 1,
+            }
+        )
+        return PlanActionResponse(
+            plan_id=plan_id,
+            status=self.plan.status,
+            current_step_id=self.plan.current_step_id,
+            next_action=self.plan.next_action,
+            state_version=self.plan.state_version,
+            transitioned=True,
         )
 
 
@@ -1107,6 +1174,104 @@ def test_stale_plan_step_completion_returns_canonical_plan_without_claiming_a_ti
     assert response.json()["plan"]["current_step"] == "step-2"
     assert response.json()["plan"]["state_version"] == 4
     assert delegated.completed is None
+
+
+def test_page_task_completion_advances_a_current_plan_step_without_agent_event(
+    non_lifespan_test_client,
+) -> None:
+    client, delegated, _ = _client(non_lifespan_test_client)
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+    ports.plans.plan = Plan(
+        plan_id="plan-1",
+        tenant_id="oac",
+        user_id="trusted-user",
+        session_id="session-1",
+        status="blocked",
+        current_step_id="step-1",
+        state_version=3,
+        next_action=NextAction(
+            type="open_ui",
+            plan_id="plan-1",
+            step_id="step-1",
+            agent_id="agent-1",
+            route="/production",
+        ),
+        steps=[
+            PlanStep(
+                step_id="step-1",
+                agent_id="agent-1",
+                status="blocked",
+                description="first",
+            ),
+            PlanStep(step_id="step-2", agent_id="agent-2", description="second"),
+        ],
+    )
+
+    response = client.post(
+        "/api/v1/central/plans/plan-1/steps/step-1/page-task-completion",
+        json={
+            "request_id": "page-task-completion-1",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "expected_state_version": 3,
+        },
+    )
+
+    assert response.status_code == 200, response.json()
+    body = response.json()
+    assert body["duplicate"] is False
+    assert body["conflict"] is False
+    assert body["plan"]["current_step"] == "step-2"
+    assert body["plan"]["state_version"] == 4
+    assert delegated.started is None
+    assert delegated.completed is None
+
+    replay = client.post(
+        "/api/v1/central/plans/plan-1/steps/step-1/page-task-completion",
+        json={
+            "request_id": "page-task-completion-1",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "expected_state_version": 3,
+        },
+    )
+    assert replay.status_code == 200, replay.json()
+    assert replay.json()["duplicate"] is True
+    assert replay.json()["conflict"] is False
+    assert replay.json()["plan"]["state_version"] == 4
+
+    stale = client.post(
+        "/api/v1/central/plans/plan-1/steps/step-1/page-task-completion",
+        json={
+            "request_id": "page-task-completion-stale",
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "expected_state_version": 3,
+        },
+    )
+    assert stale.status_code == 200, stale.json()
+    assert stale.json()["conflict"] is True
+    assert stale.json()["plan"]["current_step"] == "step-2"
+
+
+def test_page_task_completion_rejects_a_plan_from_another_oir_session(
+    non_lifespan_test_client,
+) -> None:
+    client, _, _ = _client(non_lifespan_test_client)
+    ports = client.app.dependency_overrides[get_oac_adapter_application_ports]()
+
+    response = client.post(
+        "/api/v1/central/plans/plan-1/steps/step-1/page-task-completion",
+        json={
+            "request_id": "page-task-foreign-session",
+            "session_id": "other-session",
+            "agent_id": "agent-1",
+            "expected_state_version": ports.plans.plan.state_version,
+        },
+    )
+
+    assert response.status_code == 404, response.json()
+    assert ports.plans.completion_request_ids == []
 
 
 def test_current_plan_step_completion_without_restored_ticket_uses_unique_mapping(
