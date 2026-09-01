@@ -211,11 +211,12 @@ class Mem0MemoryAdapter:
     def _memory(self):
         if self._client is not None:
             return self._client
-        self._client = self._client_factory(build_mem0_config(self.settings))
+        client = self._client_factory(build_mem0_config(self.settings))
         _ensure_mem0_milvus_collection_loaded(
-            self._client,
+            client,
             self.settings.effective_memory_milvus_collection,
         )
+        self._client = client
         return self._client
 
     def debug_metadata(self) -> dict[str, Any]:
@@ -428,10 +429,18 @@ class Mem0MemoryAdapter:
                 records=tuple(_provider_records_from_raw(raw)),
             )
         except Exception as exc:
-            await self._record_error("scan", exc)
+            error_code = _safe_error_code(exc, stage="scan")
+            await self._record_error(
+                "scan",
+                exc,
+                memory_id=memory_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                error_code=error_code,
+            )
             return MemoryProviderScanResult(
                 status=MemoryProviderOperationStatus.RETRYABLE_ERROR,
-                error_code=_safe_error_code(exc),
+                error_code=error_code,
             )
 
     async def delete_provider_record(
@@ -453,13 +462,14 @@ class Mem0MemoryAdapter:
                     memory_id=memory_id,
                     external_memory_id=external_memory_id,
                 )
-            await self._record_error("delete", exc, memory_id=memory_id)
+            error_code = _safe_error_code(exc, stage="delete")
+            await self._record_error("delete", exc, memory_id=memory_id, error_code=error_code)
             return MemoryIndexOperationResult(
                 operation=MemoryIndexOperationType.DELETE,
                 status=MemoryProviderOperationStatus.RETRYABLE_ERROR,
                 memory_id=memory_id,
                 external_memory_id=external_memory_id,
-                error_code=_safe_error_code(exc),
+                error_code=error_code,
             )
 
     async def _execute_add(
@@ -471,7 +481,12 @@ class Mem0MemoryAdapter:
             memory_id=operation.memory_id,
         )
         if scan.status != MemoryProviderOperationStatus.SUCCESS:
-            return _provider_error_result(operation, scan.error_code or "provider_scan_failed")
+            return _provider_error_result(
+                operation,
+                _index_operation_error_code(operation, scan.error_code)
+                if scan.error_code
+                else "provider_scan_failed",
+            )
         records = _matching_provider_records(scan.records, item)
         if records:
             keeper = _preferred_provider_record(records, item)
@@ -486,7 +501,10 @@ class Mem0MemoryAdapter:
                 )
                 if not deleted.completed:
                     return _provider_error_result(
-                        operation, deleted.error_code or "duplicate_delete_failed"
+                        operation,
+                        _index_operation_error_code(
+                            operation, deleted.error_code or "duplicate_delete_failed"
+                        ),
                     )
             if keeper.revision_id != item.current_revision_id or keeper.content != item.content:
                 await _call_mem0_update(
@@ -531,7 +549,12 @@ class Mem0MemoryAdapter:
                 memory_id=operation.memory_id,
             )
             if scan.status != MemoryProviderOperationStatus.SUCCESS:
-                return _provider_error_result(operation, scan.error_code or "provider_scan_failed")
+                return _provider_error_result(
+                    operation,
+                    _index_operation_error_code(operation, scan.error_code)
+                    if scan.error_code
+                    else "provider_scan_failed",
+                )
             records = _matching_provider_records(scan.records, item)
             if not records:
                 return _provider_error_result(operation, "external_mapping_missing")
@@ -547,7 +570,10 @@ class Mem0MemoryAdapter:
                 )
                 if not deleted.completed:
                     return _provider_error_result(
-                        operation, deleted.error_code or "duplicate_delete_failed"
+                        operation,
+                        _index_operation_error_code(
+                            operation, deleted.error_code or "duplicate_delete_failed"
+                        ),
                     )
         await _call_mem0_update(
             self._memory(),
@@ -568,8 +594,18 @@ class Mem0MemoryAdapter:
     ) -> MemoryIndexOperationResult:
         external_ids: list[str] = []
         mapped = operation.external_memory_id or _mapped_external_id(item)
+        saw_success = False
         if mapped:
+            result = await self.delete_provider_record(
+                memory_id=operation.memory_id,
+                external_memory_id=mapped,
+            )
+            if not result.completed:
+                return _provider_error_result(
+                    operation, result.error_code or "provider_delete_failed"
+                )
             external_ids.append(mapped)
+            saw_success = result.status == MemoryProviderOperationStatus.SUCCESS
         scan = await self.scan_provider_records(
             tenant_id=operation.tenant_id,
             user_id=(item.user_id or item.subject_id) if item is not None else None,
@@ -577,16 +613,14 @@ class Mem0MemoryAdapter:
         )
         if scan.status != MemoryProviderOperationStatus.SUCCESS:
             return _provider_error_result(operation, scan.error_code or "provider_scan_failed")
-        external_ids.extend(record.external_memory_id for record in scan.records)
-        external_ids = list(dict.fromkeys(external_ids))
-        if not external_ids:
+        if not external_ids and not scan.records:
             return MemoryIndexOperationResult(
                 operation=operation.operation,
                 status=MemoryProviderOperationStatus.NOT_FOUND,
                 memory_id=operation.memory_id,
             )
-        saw_success = False
-        for external_id in external_ids:
+        for record in scan.records:
+            external_id = record.external_memory_id
             result = await self.delete_provider_record(
                 memory_id=operation.memory_id, external_memory_id=external_id
             )
@@ -595,6 +629,8 @@ class Mem0MemoryAdapter:
                     operation, result.error_code or "provider_delete_failed"
                 )
             saw_success = saw_success or result.status == MemoryProviderOperationStatus.SUCCESS
+            if external_id not in external_ids:
+                external_ids.append(external_id)
         return MemoryIndexOperationResult(
             operation=operation.operation,
             status=(
@@ -652,8 +688,13 @@ class Mem0MemoryAdapter:
         item: MemoryItem | None = None,
         request: MemoryRecallRequest | None = None,
         memory_id: str | None = None,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        error_code: str | None = None,
     ) -> None:
-        safe_error = _safe_exception(exc)
+        safe_error = error_code or _safe_error_code(
+            exc, stage=operation if operation in {"scan", "delete"} else None
+        )
         self._degraded = True
         self._last_error = safe_error
         self._last_error_operation = operation
@@ -663,8 +704,8 @@ class Mem0MemoryAdapter:
             status="error",
             item=item,
             memory_id=memory_id,
-            user_id=request.user.id if request else None,
-            tenant_id=request.user.tenant_id if request else None,
+            user_id=user_id or (request.user.id if request else None),
+            tenant_id=tenant_id or (request.user.tenant_id if request else None),
             agent_id=request.agent_id if request else None,
             error=safe_error,
         )
@@ -1104,13 +1145,27 @@ def _provider_error_result(
     )
 
 
-def _safe_error_code(exc: Exception) -> str:
+def _safe_error_code(exc: Exception, *, stage: str | None = None) -> str:
     name = type(exc).__name__.lower()
-    return f"provider_{name}"[:128]
+    prefix = f"provider_{stage}_" if stage else "provider_"
+    return f"{prefix}{name}"[:128]
 
 
 def _safe_exception(exc: Exception) -> str:
     return _safe_error_code(exc)
+
+
+def _index_operation_error_code(operation: MemoryIndexOperation, error_code: str) -> str:
+    if operation.operation not in {
+        MemoryIndexOperationType.ADD,
+        MemoryIndexOperationType.UPDATE,
+    }:
+        return error_code
+    for stage in ("scan", "delete"):
+        prefix = f"provider_{stage}_"
+        if error_code.startswith(prefix):
+            return f"provider_{error_code.removeprefix(prefix)}"
+    return error_code
 
 
 def _hash_ref(value: str) -> str:

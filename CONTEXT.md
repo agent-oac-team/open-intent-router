@@ -397,6 +397,10 @@ _避免_：Index Operation 状态、向量记录状态、Execution Trace 事件
 将特定 Memory Revision 同步到检索投影的一次可重试工作；其状态描述处理过程，不取代 Memory Index State。
 _避免_：Memory Item 可用状态、Memory Revision、Execution Trace 事件
 
+**Memory Deletion Completion（记忆删除完成）**：
+已验证一个 Memory Item 的全部外部检索投影均不存在、可以收口其 Canonical Data 的删除结果；仅删除已知外部映射不构成完成。
+_避免_：修复请求已受理、任务已重新提交、已知外部记录已删除
+
 **Knowledge（知识）**：
 由组织管理、可被多个请求检索引用的参考内容，不是从某个用户对话形成的长期记忆。
 _避免_：Memory、Evidence、Prompt

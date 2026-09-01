@@ -14,7 +14,12 @@ from app.repositories.memory_traces import MemoryFormationTraceRepository
 from app.schemas.common import UserContext
 from app.schemas.memory import MemoryItem, MemoryRecallRequest, MemoryWriteCandidate
 from app.services.mem0_config import build_mem0_config, mem0_static_metadata
-from app.services.memory_adapter import Mem0AdapterError, Mem0MemoryAdapter, _search_filter_sets
+from app.services.memory_adapter import (
+    Mem0AdapterError,
+    Mem0MemoryAdapter,
+    MemoryProviderOperationStatus,
+    _search_filter_sets,
+)
 from app.services.memory_observability import MemoryObservabilityService
 from app.services.memory_service import MemoryService
 from app.services.registry_service import AgentRegistryService
@@ -215,6 +220,41 @@ async def test_mem0_adapter_loads_milvus_collection_after_client_init() -> None:
     )
 
     assert fake.vector_store.client.loaded_collections == ["oir_memory_vectors"]
+
+
+async def test_mem0_adapter_reinitializes_after_collection_load_failure() -> None:
+    settings = Settings(storage_backend="memory", memory_strategy_provider="mem0")
+    failed_client = FakeMem0Client()
+    failed_client.vector_store = FakeVectorStore(collection_name="oir_memory_vectors")
+    failed_client.vector_store.client = FailingLoadMilvusClient()
+    recovered_client = FakeMem0Client()
+    factory_calls: list[None] = []
+
+    def client_factory(_config):
+        factory_calls.append(None)
+        return [failed_client, recovered_client][len(factory_calls) - 1]
+
+    adapter = Mem0MemoryAdapter(
+        settings,
+        MemoryItemRepository(),
+        client_factory=client_factory,
+    )
+
+    failed = await adapter.scan_provider_records(
+        tenant_id="t1",
+        user_id="u1",
+        memory_id="mem_client_recovery",
+    )
+    recovered = await adapter.scan_provider_records(
+        tenant_id="t1",
+        user_id="u1",
+        memory_id="mem_client_recovery",
+    )
+
+    assert failed.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert recovered.status == MemoryProviderOperationStatus.SUCCESS
+    assert len(factory_calls) == 2
+    assert failed_client.vector_store.client.load_attempts == 1
 
 
 async def test_mem0_adapter_uses_explicit_memory_collection_for_runtime_operations() -> None:
@@ -762,6 +802,16 @@ class FakeMilvusClient:
     def search(self, **kwargs):
         self.search_output_fields.append(kwargs.get("output_fields"))
         return []
+
+
+class FailingLoadMilvusClient(FakeMilvusClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.load_attempts = 0
+
+    def load_collection(self, *, collection_name: str) -> None:
+        self.load_attempts += 1
+        raise RuntimeError("collection load unavailable")
 
 
 class FakeVectorStore:

@@ -39,6 +39,7 @@ from app.services.execution_trace_service import ExecutionTraceService
 from app.services.memory_adapter import (
     Mem0MemoryAdapter,
     MemoryProviderOperationStatus,
+    MemoryProviderScanResult,
     RepositoryMemoryAdapter,
 )
 from app.services.memory_indexing import (
@@ -200,9 +201,66 @@ async def test_update_provider_failure_is_retryable_without_second_memory() -> N
     result = await adapter.execute_index_operation(operation, item=item)
 
     assert result.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert result.error_code == "provider_runtimeerror"
     assert result.completed is False
     assert list(client.records) == ["ext_update"]
     assert client.records["ext_update"]["memory"] == "old value"
+
+
+async def test_add_and_update_keep_generic_error_codes_when_internal_scan_fails() -> None:
+    repository = MemoryItemRepository()
+    client = IndexFakeMem0()
+    client.fail_scan = True
+    adapter = _adapter(repository, client)
+    add_item = _item(memory_id="mem_add_scan", revision_id="rev_add_scan", content="add")
+    update_item = _item(
+        memory_id="mem_update_scan",
+        revision_id="rev_update_scan",
+        content="update",
+    )
+    update_operation = MemoryIndexOperation(
+        idempotency_key="update:mem_update_scan:rev_update_scan",
+        operation=MemoryIndexOperationType.UPDATE,
+        memory_id=update_item.memory_id,
+        revision_id=update_item.current_revision_id,
+        tenant_id="t1",
+    )
+
+    add_result = await adapter.execute_index_operation(_index_add(add_item), item=add_item)
+    update_result = await adapter.execute_index_operation(update_operation, item=update_item)
+
+    assert add_result.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert add_result.error_code == "provider_runtimeerror"
+    assert update_result.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert update_result.error_code == "provider_runtimeerror"
+
+
+async def test_add_and_update_preserve_scan_fallback_without_provider_error_code() -> None:
+    repository = MemoryItemRepository()
+    adapter = MissingErrorCodeScanAdapter(
+        _settings(),
+        repository,
+        client_factory=lambda _config: IndexFakeMem0(),
+    )
+    add_item = _item(memory_id="mem_add_fallback", revision_id="rev_add_fallback", content="add")
+    update_item = _item(
+        memory_id="mem_update_fallback",
+        revision_id="rev_update_fallback",
+        content="update",
+    )
+    update_operation = MemoryIndexOperation(
+        idempotency_key="update:mem_update_fallback:rev_update_fallback",
+        operation=MemoryIndexOperationType.UPDATE,
+        memory_id=update_item.memory_id,
+        revision_id=update_item.current_revision_id,
+        tenant_id="t1",
+    )
+
+    add_result = await adapter.execute_index_operation(_index_add(add_item), item=add_item)
+    update_result = await adapter.execute_index_operation(update_operation, item=update_item)
+
+    assert add_result.error_code == "provider_scan_failed"
+    assert update_result.error_code == "provider_scan_failed"
 
 
 async def test_index_worker_completes_mapping_and_never_completes_provider_failure() -> None:
@@ -673,7 +731,7 @@ async def test_ttl_worker_hard_deletes_revision_provider_and_pending_payloads() 
     assert client.deleted_ids == ["ext_ttl_delete"]
 
 
-async def test_delete_scan_failure_keeps_canonical_and_all_provider_records() -> None:
+async def test_delete_scan_failure_deletes_known_mapping_and_retry_completes() -> None:
     settings = _settings()
     repository, outbox, store = _stores()
     item = _item(
@@ -689,6 +747,7 @@ async def test_delete_scan_failure_keeps_canonical_and_all_provider_records() ->
     client.seed(item, external_id="ext_mapped")
     client.seed(item, external_id="ext_duplicate")
     client.fail_scan = True
+    now = [datetime(2026, 7, 14, tzinfo=UTC)]
     worker = MemoryIndexOperationWorker(
         settings=settings,
         adapter=_adapter(repository, client),
@@ -696,16 +755,71 @@ async def test_delete_scan_failure_keeps_canonical_and_all_provider_records() ->
         outbox=outbox,
         lifecycle_store=store,
         owner="worker-delete-scan-failure",
+        clock=lambda: now[0],
     )
 
-    result = await worker.run_once()
+    failed = await worker.run_once()
 
-    assert result is not None and result.completed is False
-    assert result.provider_result.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert failed is not None and failed.completed is False
+    assert failed.provider_result.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert failed.provider_result.error_code == "provider_scan_runtimeerror"
+    assert failed.operation.status == "retry"
+    assert failed.operation.next_attempt_at is not None
     stored = await repository.get_by_id(item.memory_id, tenant_id="t1")
     assert stored is not None and stored.lifecycle_status == "deletion_pending"
-    assert set(client.records) == {"ext_mapped", "ext_duplicate"}
-    assert client.deleted_ids == []
+    assert set(client.records) == {"ext_duplicate"}
+    assert client.deleted_ids == ["ext_mapped"]
+
+    client.fail_scan = False
+    now[0] = failed.operation.next_attempt_at
+
+    completed = await worker.run_once()
+
+    assert completed is not None and completed.completed is True
+    assert await repository.get_by_id(item.memory_id, tenant_id="t1") is None
+    assert client.records == {}
+    assert client.deleted_ids == ["ext_mapped", "ext_duplicate"]
+
+
+async def test_provider_cleanup_failures_use_safe_stage_codes_and_correlated_events() -> None:
+    repository = MemoryItemRepository()
+    client = IndexFakeMem0()
+    secret = "postgresql://db-user:db-pass@host/oir?token=uri-secret"
+    client.scan_error = RuntimeError(secret)
+    adapter = _adapter(repository, client)
+
+    scanned = await adapter.scan_provider_records(
+        tenant_id="t1",
+        user_id="u1",
+        memory_id="mem_cleanup_failure",
+    )
+
+    assert scanned.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert scanned.error_code == "provider_scan_runtimeerror"
+    scan_event = repository.events[-1]
+    assert scan_event.event_type == "mem0_scan"
+    assert scan_event.memory_id == "mem_cleanup_failure"
+    assert scan_event.tenant_id == "t1"
+    assert scan_event.user_id == "u1"
+    assert scan_event.payload["error"] == "provider_scan_runtimeerror"
+
+    client.scan_error = None
+    client.delete_error = RuntimeError(secret)
+    deleted = await adapter.delete_provider_record(
+        memory_id="mem_cleanup_failure",
+        external_memory_id="ext_cleanup_failure",
+    )
+
+    assert deleted.status == MemoryProviderOperationStatus.RETRYABLE_ERROR
+    assert deleted.error_code == "provider_delete_runtimeerror"
+    delete_event = repository.events[-1]
+    assert delete_event.event_type == "mem0_delete"
+    assert delete_event.memory_id == "mem_cleanup_failure"
+    assert delete_event.payload["error"] == "provider_delete_runtimeerror"
+    serialized = str(
+        (scanned.error_code, deleted.error_code, scan_event.model_dump(), delete_event.model_dump())
+    )
+    assert secret not in serialized
 
 
 async def test_delete_not_found_is_preserved_in_tombstone_event() -> None:
@@ -715,13 +829,15 @@ async def test_delete_not_found_is_preserved_in_tombstone_event() -> None:
         memory_id="mem_delete_missing",
         revision_id="rev_delete_missing",
         content="remove missing",
+        metadata={"mem0_memory_id": "ext_missing"},
     )
     await repository.add(item)
     lifecycle = MemoryLifecycleService(settings=settings, store=store)
     await lifecycle.request_delete(_delete_operation(item))
+    client = IndexFakeMem0()
     worker = MemoryIndexOperationWorker(
         settings=settings,
-        adapter=_adapter(repository, IndexFakeMem0()),
+        adapter=_adapter(repository, client),
         repository=repository,
         outbox=outbox,
         lifecycle_store=store,
@@ -732,6 +848,7 @@ async def test_delete_not_found_is_preserved_in_tombstone_event() -> None:
 
     assert result is not None and result.completed is True
     assert result.provider_result.status == MemoryProviderOperationStatus.NOT_FOUND
+    assert client.delete_attempts == ["ext_missing"]
     tombstone = next(
         event for event in repository.events if event.event_type == "memory_deleted_tombstone"
     )
@@ -1186,10 +1303,13 @@ class IndexFakeMem0:
         self.add_calls: list[dict] = []
         self.update_calls: list[dict] = []
         self.deleted_ids: list[str] = []
+        self.delete_attempts: list[str] = []
         self.fail_add = False
         self.fail_update = False
         self.fail_delete = False
         self.fail_scan = False
+        self.delete_error: Exception | None = None
+        self.scan_error: Exception | None = None
         self._next_id = 1
 
     def seed(self, item: MemoryItem, *, external_id: str, content: str | None = None) -> None:
@@ -1232,6 +1352,9 @@ class IndexFakeMem0:
         return {"message": "updated"}
 
     def delete(self, *, memory_id: str):
+        self.delete_attempts.append(memory_id)
+        if self.delete_error is not None:
+            raise self.delete_error
         if self.fail_delete:
             raise RuntimeError("provider delete unavailable")
         if memory_id not in self.records:
@@ -1240,6 +1363,8 @@ class IndexFakeMem0:
         self.records.pop(memory_id)
 
     def get_all(self, *, filters: dict, top_k: int):
+        if self.scan_error is not None:
+            raise self.scan_error
         if self.fail_scan:
             raise RuntimeError("provider scan unavailable")
         return {
@@ -1252,6 +1377,11 @@ class IndexFakeMem0:
 
     def search(self, query: str, *, filters: dict, top_k: int):
         return self.get_all(filters=filters, top_k=top_k)
+
+
+class MissingErrorCodeScanAdapter(Mem0MemoryAdapter):
+    async def scan_provider_records(self, **_kwargs) -> MemoryProviderScanResult:
+        return MemoryProviderScanResult(status=MemoryProviderOperationStatus.RETRYABLE_ERROR)
 
 
 class LosingCasMemoryRepository(MemoryItemRepository):
