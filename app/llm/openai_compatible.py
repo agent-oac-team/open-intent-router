@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import LLMError
+from app.llm.openai_compatible_api import structured_output_request, structured_output_text
 from app.prompts.router_prompt import RouterPromptTemplate
 from app.schemas.agents import CandidateAgentV2
 from app.schemas.routing import LLMRouteInput, RouteResponse
@@ -16,8 +17,14 @@ PROMPT_ONLY_RESPONSE_KEYS = {"rules", "routing_rules"}
 
 
 class OpenAICompatibleLLMClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.settings = settings
+        self.transport = transport
         self.prompt_template = RouterPromptTemplate.from_file(settings.router_prompt_file)
 
     async def route(self, payload: LLMRouteInput) -> RouteResponse:
@@ -35,13 +42,12 @@ class OpenAICompatibleLLMClient:
                 details={"setting": "ROUTER_LLM_API_KEY"},
             )
 
-        url = self.settings.router_llm_base_url.rstrip("/") + "/v1/chat/completions"
-        body = {
-            "model": self.settings.router_llm_model,
-            "messages": self.prompt_template.messages(payload),
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-        }
+        url, body = structured_output_request(
+            base_url=self.settings.router_llm_base_url,
+            api_style=self.settings.router_llm_api_style,
+            model=self.settings.router_llm_model,
+            messages=self.prompt_template.messages(payload),
+        )
         headers = {
             "Authorization": f"Bearer {self.settings.router_llm_api_key}",
             "Content-Type": "application/json",
@@ -49,7 +55,8 @@ class OpenAICompatibleLLMClient:
 
         try:
             async with httpx.AsyncClient(
-                timeout=self.settings.router_llm_timeout_seconds
+                timeout=self.settings.router_llm_timeout_seconds,
+                transport=self.transport,
             ) as client:
                 response = await client.post(url, headers=headers, json=body)
                 response.raise_for_status()
@@ -58,11 +65,14 @@ class OpenAICompatibleLLMClient:
                 "OpenAI-compatible LLM request failed", details={"error": str(exc)}
             ) from exc
 
-        data = response.json()
         try:
-            content = data["choices"][0]["message"]["content"]
+            data = response.json()
+            content = structured_output_text(
+                data,
+                api_style=self.settings.router_llm_api_style,
+            )
             parsed = json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError) as exc:
             raise LLMError("OpenAI-compatible LLM returned invalid JSON") from exc
         parsed = _normalize_route_response(parsed, payload)
         try:

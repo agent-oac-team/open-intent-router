@@ -40,6 +40,7 @@ async def runtime_config(
         registry_agent_count=len(registry.state.agents),
         route_mode=settings.route_mode,
         router_llm_provider=settings.router_llm_provider,
+        router_llm_api_style=settings.router_llm_api_style,
         router_llm_model=settings.router_llm_model,
         router_llm_base_url=(
             redact_connection_location(settings.router_llm_base_url)

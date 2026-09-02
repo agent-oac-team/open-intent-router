@@ -74,6 +74,9 @@ def test_enabled_mem0_rejects_missing_explicit_memory_infrastructure() -> None:
             memory_milvus_collection=None,
             memory_embedding_model=None,
             memory_embedding_dims=None,
+            memory_mem0_llm_model=None,
+            memory_mem0_llm_base_url=None,
+            memory_mem0_llm_api_key=None,
             knowledge_milvus_uri="https://knowledge-milvus.example",
             knowledge_milvus_collection="knowledge-vectors",
             knowledge_embedding_base_url="https://knowledge-embedding.example/v1",
@@ -89,6 +92,9 @@ def test_enabled_mem0_rejects_missing_explicit_memory_infrastructure() -> None:
     assert "MEMORY_MILVUS_COLLECTION" in message
     assert "MEMORY_EMBEDDING_MODEL" in message
     assert "MEMORY_EMBEDDING_DIMS" in message
+    assert "MEMORY_MEM0_LLM_MODEL" in message
+    assert "MEMORY_MEM0_LLM_BASE_URL" in message
+    assert "MEMORY_MEM0_LLM_API_KEY" in message
     assert "KNOWLEDGE_" not in message
 
 
@@ -102,6 +108,9 @@ def test_knowledge_and_router_configuration_cannot_change_memory_config() -> Non
         memory_milvus_collection="oir_memory_vectors",
         memory_embedding_model="text-embedding-v4",
         memory_embedding_dims=1024,
+        memory_mem0_llm_model="memory-model",
+        memory_mem0_llm_base_url="https://memory-llm.example/v1",
+        memory_mem0_llm_api_key="memory-key",
         knowledge_enabled=False,
         knowledge_embedding_base_url="https://knowledge-embedding.example/v1",
         knowledge_embedding_api_key="knowledge-key",
@@ -120,7 +129,11 @@ def test_knowledge_and_router_configuration_cannot_change_memory_config() -> Non
         "model": "text-embedding-v4",
         "embedding_dims": 1024,
     }
-    assert "llm" not in config
+    assert config["llm"]["config"] == {
+        "model": "memory-model",
+        "openai_base_url": "https://memory-llm.example/v1",
+        "api_key": "memory-key",
+    }
 
 
 def test_memory_bootstrap_uses_the_explicit_memory_database(monkeypatch) -> None:

@@ -62,14 +62,17 @@ Memory 不再读取 `DATABASE_URL`、通用 `EMBEDDING_*`、`KNOWLEDGE_*` 或重
 `MEMORY_MEM0_MILVUS_*` / `MEMORY_MEM0_EMBEDDING_*`。`MEMORY_MODE=observe|on`
 时必须显式提供 `MEMORY_DATABASE_URL`；选择 mem0 策略时还必须提供
 `MEMORY_MILVUS_URI`、`MEMORY_MILVUS_COLLECTION`、`MEMORY_EMBEDDING_MODEL`
-和 `MEMORY_EMBEDDING_DIMS`。缺项会在 Settings/启动阶段列出并失败，不会创建默认
-Collection。
+和 `MEMORY_EMBEDDING_DIMS`。当前 mem0 SDK 在 client 初始化时还会构造 LLM，
+即使 OIR 的 ADD 使用 `infer=False`、治理任务只做 scan/delete，也必须显式提供
+`MEMORY_MEM0_LLM_MODEL`、`MEMORY_MEM0_LLM_BASE_URL` 和
+`MEMORY_MEM0_LLM_API_KEY`。缺项会在 Settings/启动阶段列出并失败，不会创建默认
+Collection 或等到治理任务运行时才暴露错误。
 
-mem0 只有在显式配置 `MEMORY_MEM0_LLM_*` 时才获得 LLM 配置，不复用 Router LLM：
+mem0 只读取显式的 `MEMORY_MEM0_LLM_*`，不复用 Router LLM：
 
 ```env
-MEMORY_MEM0_LLM_MODEL=qwen-plus
-MEMORY_MEM0_LLM_BASE_URL=https://provider.example/v1
+MEMORY_MEM0_LLM_MODEL=deepseek-v4-flash
+MEMORY_MEM0_LLM_BASE_URL=https://api.deepseek.com
 MEMORY_MEM0_LLM_API_KEY=replace-with-real-key
 ```
 

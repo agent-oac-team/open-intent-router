@@ -1,3 +1,6 @@
+import json
+
+import httpx
 import pytest
 
 from app.core.config import Settings
@@ -31,6 +34,72 @@ async def test_openai_compatible_llm_rejects_placeholder_api_key() -> None:
         )
 
     assert "placeholder" in exc_info.value.message
+
+
+async def test_openai_compatible_llm_supports_responses_api_without_assuming_output_order() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "content": "internal"},
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {
+                                        "assistant_message": "交给 Summarizer 处理。",
+                                        "decision": {
+                                            "status": "ok",
+                                            "action": "open_agent",
+                                            "target_agent_id": "summarizer",
+                                            "confidence": 0.9,
+                                            "reason": "Matched summarization intent.",
+                                            "message": "Routing to summarizer.",
+                                        },
+                                        "context": {"relation": "new_task"},
+                                        "plan": None,
+                                        "invocation": None,
+                                    }
+                                ),
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+
+    client = OpenAICompatibleLLMClient(
+        Settings(
+            router_llm_provider="openai_compatible",
+            router_llm_api_style="responses",
+            router_llm_model="deepseek-v4-flash",
+            router_llm_base_url="https://api.deepseek.com",
+            router_llm_api_key="test-key",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = await client.route(_payload())
+
+    assert response.decision.target_agent_id == "summarizer"
+    assert captured["url"] == "https://api.deepseek.com/responses"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["model"] == "deepseek-v4-flash"
+    assert body["text"] == {"format": {"type": "json_object"}}
+    assert isinstance(body["instructions"], str)
+    assert body["input"][0]["role"] == "user"
+    assert "messages" not in body
+    assert "response_format" not in body
 
 
 def test_openai_compatible_llm_normalizes_framework_fields() -> None:

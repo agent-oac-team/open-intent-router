@@ -10,7 +10,17 @@ The project SHALL provide documented local environment configuration for using D
 #### Scenario: Configure DeepSeek routing
 
 - **WHEN** a developer follows the DeepSeek environment instructions
-- **THEN** the backend can be configured with `ROUTER_LLM_PROVIDER=openai_compatible`, `ROUTER_LLM_MODEL=deepseek-chat`, `ROUTER_LLM_BASE_URL=https://api.deepseek.com`, and `ROUTER_LLM_API_KEY`
+- **THEN** the backend can be configured with `ROUTER_LLM_PROVIDER=openai_compatible`, `ROUTER_LLM_API_STYLE=responses`, `ROUTER_LLM_MODEL=deepseek-v4-flash`, `ROUTER_LLM_BASE_URL=https://api.deepseek.com`, and `ROUTER_LLM_API_KEY`
+
+#### Scenario: Preserve legacy Chat Completions deployments
+
+- **WHEN** `ROUTER_LLM_API_STYLE` is omitted
+- **THEN** the backend continues to use `chat_completions` so existing OpenAI-compatible deployments do not change behavior
+
+#### Scenario: Parse Responses output items safely
+
+- **WHEN** a Responses payload contains reasoning or tool output before its assistant message
+- **THEN** the backend extracts structured JSON from `output_text` content without assuming the first output item is the answer
 
 #### Scenario: Preserve provider abstraction
 
@@ -39,4 +49,3 @@ The documentation SHALL explain how original project DeepSeek fields map to open
 
 - **WHEN** a developer references the original project's `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, and `DEEPSEEK_BASE_URL`
 - **THEN** the docs show the corresponding `ROUTER_LLM_API_KEY`, `ROUTER_LLM_MODEL`, and `ROUTER_LLM_BASE_URL` fields
-

@@ -19,6 +19,7 @@ def test_runtime_config_exposes_safe_status() -> None:
         storage_backend="memory",
         registry_backend="database",
         router_llm_provider="openai_compatible",
+        router_llm_api_style="responses",
         router_llm_model="deepseek-chat",
         router_llm_base_url="https://api.deepseek.com",
         router_llm_api_key="secret-key",
@@ -45,6 +46,7 @@ def test_runtime_config_exposes_safe_status() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["router_llm_provider"] == "openai_compatible"
+    assert body["router_llm_api_style"] == "responses"
     assert body["router_llm_model"] == "deepseek-chat"
     assert body["router_llm_base_url"] == "https://api.deepseek.com"
     assert body["router_llm_api_key_configured"] is True

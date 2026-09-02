@@ -209,7 +209,8 @@ cp .env.deepseek.example .env
 
 ```dotenv
 ROUTER_LLM_PROVIDER=openai_compatible
-ROUTER_LLM_MODEL=deepseek-chat
+ROUTER_LLM_API_STYLE=responses
+ROUTER_LLM_MODEL=deepseek-v4-flash
 ROUTER_LLM_BASE_URL=https://api.deepseek.com
 ROUTER_LLM_API_KEY=replace-with-real-key
 ```

@@ -47,6 +47,7 @@ def test_mem0_config_uses_only_explicit_memory_fields() -> None:
         memory_embedding_base_url="https://dashscope.example/v1",
         memory_embedding_api_key="dash-key",
         memory_mem0_llm_model="qwen-plus",
+        memory_mem0_llm_base_url="https://llm.example/v1",
         memory_mem0_llm_api_key="llm-key",
     )
     explicit_config = build_mem0_config(explicit)
@@ -72,6 +73,9 @@ def test_mem0_config_uses_only_explicit_memory_fields() -> None:
         embedding_api_key="dash-key",
         embedding_model="text-embedding-v4",
         embedding_dim=1024,
+        memory_mem0_llm_model=None,
+        memory_mem0_llm_base_url=None,
+        memory_mem0_llm_api_key=None,
     )
     unrelated_config = build_mem0_config(unrelated)
     assert "openai_base_url" not in unrelated_config["embedder"]["config"]

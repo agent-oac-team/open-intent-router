@@ -248,7 +248,8 @@ cp .env.deepseek.example .env
 
 ```dotenv
 ROUTER_LLM_PROVIDER=openai_compatible
-ROUTER_LLM_MODEL=deepseek-chat
+ROUTER_LLM_API_STYLE=responses
+ROUTER_LLM_MODEL=deepseek-v4-flash
 ROUTER_LLM_BASE_URL=https://api.deepseek.com
 ROUTER_LLM_API_KEY=replace-with-real-key
 ```
@@ -260,6 +261,10 @@ ROUTER_LLM_API_KEY=replace-with-real-key
 | `DEEPSEEK_API_KEY` | `ROUTER_LLM_API_KEY` |
 | `DEEPSEEK_MODEL` | `ROUTER_LLM_MODEL` |
 | `DEEPSEEK_BASE_URL` | `ROUTER_LLM_BASE_URL` |
+
+`ROUTER_LLM_API_STYLE` 默认为兼容旧部署的 `chat_completions`；DeepSeek v4
+推荐显式设为 `responses`。Responses 接入同时用于 Router 与 Conversation Formation，
+但不会隐式传给 Mem0。
 
 ## 文档
 

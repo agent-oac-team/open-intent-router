@@ -8,6 +8,7 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from app.core.config import Settings
 from app.core.errors import LLMError
+from app.llm.openai_compatible_api import structured_output_request, structured_output_text
 from app.prompts.memory_formation_prompt import MemoryFormationPrompt
 from app.schemas.common import StrictBaseModel
 from app.schemas.memory import (
@@ -159,12 +160,12 @@ class OpenAICompatibleConversationFormationModel:
             existing_memories=existing_memories,
             response_schema=ConversationFormationResponse.model_json_schema(),
         )
-        body = {
-            "model": self.settings.memory_formation_model,
-            "messages": messages,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-        }
+        url, body = structured_output_request(
+            base_url=base_url,
+            api_style=self.settings.router_llm_api_style,
+            model=self.settings.memory_formation_model,
+            messages=messages,
+        )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -177,7 +178,7 @@ class OpenAICompatibleConversationFormationModel:
                 response_bytes = bytearray()
                 async with client.stream(
                     "POST",
-                    base_url.rstrip("/") + "/v1/chat/completions",
+                    url,
                     headers=headers,
                     json=body,
                 ) as response:
@@ -195,10 +196,13 @@ class OpenAICompatibleConversationFormationModel:
 
         try:
             envelope = json.loads(response_bytes)
+            if not isinstance(envelope, dict):
+                raise TypeError("response envelope must be an object")
             self._last_usage.set(_numeric_usage(envelope.get("usage")))
-            content = envelope["choices"][0]["message"]["content"]
-            if not isinstance(content, str):
-                raise TypeError("message content must be a string")
+            content = structured_output_text(
+                envelope,
+                api_style=self.settings.router_llm_api_style,
+            )
             parsed = json.loads(content)
             validated = ConversationFormationResponse.model_validate(parsed)
         except (ValueError, KeyError, IndexError, TypeError, ValidationError) as exc:

@@ -16,6 +16,7 @@ RegistryBackend = Literal["database", "file", "hybrid"]
 StorageBackend = Literal["memory", "database"]
 RouteMode = Literal["route_only", "route_and_invoke"]
 LLMProvider = Literal["mock", "openai_compatible"]
+LLMApiStyle = Literal["chat_completions", "responses"]
 MemoryStrategyProvider = Literal["memory", "mem0"]
 Mem0VectorProvider = Literal["milvus"]
 Mem0HistoryBackend = Literal["postgresql", "sqlite", "none"]
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     registry_file_fallback_on_empty: bool = False
 
     router_llm_provider: LLMProvider = "mock"
+    router_llm_api_style: LLMApiStyle = "chat_completions"
     router_llm_model: str = "mock-router"
     router_llm_base_url: str | None = None
     router_llm_api_key: str | None = Field(default=None)
@@ -249,6 +251,9 @@ class Settings(BaseSettings):
                     "MEMORY_MILVUS_COLLECTION": self.memory_milvus_collection,
                     "MEMORY_EMBEDDING_MODEL": self.memory_embedding_model,
                     "MEMORY_EMBEDDING_DIMS": self.memory_embedding_dims,
+                    "MEMORY_MEM0_LLM_MODEL": self.memory_mem0_llm_model,
+                    "MEMORY_MEM0_LLM_BASE_URL": self.memory_mem0_llm_base_url,
+                    "MEMORY_MEM0_LLM_API_KEY": self.memory_mem0_llm_api_key,
                 }
                 missing.extend(name for name, value in required_mem0.items() if not value)
             if missing:

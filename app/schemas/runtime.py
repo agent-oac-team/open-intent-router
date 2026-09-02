@@ -59,6 +59,7 @@ class RuntimeConfigResponse(StrictBaseModel):
     registry_agent_count: int = 0
     route_mode: str
     router_llm_provider: str
+    router_llm_api_style: str
     router_llm_model: str
     router_llm_base_url: str | None = None
     router_prompt_file: str | None = None

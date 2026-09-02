@@ -233,6 +233,54 @@ async def test_openai_formation_adapter_uses_independent_model_prompt_and_timeou
     assert prompt_payload["turns"][0]["used_memory_ids"] == ["memory_old"]
 
 
+async def test_openai_formation_adapter_supports_responses_api() -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "content": "internal"},
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": ConversationFormationResponse(
+                                    candidates=[_candidate()]
+                                ).model_dump_json(),
+                            }
+                        ],
+                    },
+                ],
+                "usage": {"input_tokens": 17, "output_tokens": 9, "total_tokens": 26},
+            },
+        )
+
+    model = OpenAICompatibleConversationFormationModel(
+        _settings(router_llm_api_style="responses"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    candidates = await model.form(turns=[_turn()])
+
+    assert candidates == [_candidate()]
+    assert model.last_usage == {
+        "input_tokens": 17,
+        "output_tokens": 9,
+        "total_tokens": 26,
+    }
+    assert captured["url"] == "https://provider.example/responses"
+    assert captured["body"]["model"] == "formation-model-only"
+    assert captured["body"]["text"] == {"format": {"type": "json_object"}}
+    prompt_payload = json.loads(captured["body"]["input"][0]["content"])
+    assert prompt_payload["prompt_version"] == "formation-prompt-test"
+
+
 @pytest.mark.parametrize(
     ("response", "error_type"),
     [
